@@ -52,10 +52,14 @@ Run in shadow mode (`shadow: true`) first — findings log, nothing posts.
 Cutover checklist: 48h shadow diff reviewed → host decision recorded (always-on
 host OR explicitly accepted sleep gap) → PAT scopes enumerated + rotation set.
 
-## Status
+## Status — DEPLOYED (pilot live 2026-08-31)
 
-v0.1 — engine core, config schema, fix-lane rails, 42 tests green (incl. the
-adversarial subset: injection, malformed payloads, fork safety, stale state,
-atomicity, cycle lock, misleading success). Roadmap on map #63: gatekeeper
-filter stage, scoped learnings, dependency-dashboard state issue, acceptance
-metrics surfacing, GitHub-App trigger adapter (v2).
+v0.1.2 runs in production on five repos (see PILOT.md): kinocut, Epoch,
+devarch-framework, Innerscape, Elixis — live posting, review-only. 49 tests
+green including the adversarial subset; the build passed an adversarial
+review gate (8 blockers found and fixed — see LEARNINGS.md). The runner is a
+harness automation (hourly, :20) driving `python3 -m codesitter.cli`. PM: the
+kino PM (first codesitter PM, CEO-appointed 2026-08-31). Roadmap on map #63:
+gatekeeper filter stage, scoped learnings, dependency-dashboard state,
+acceptance-metrics surfacing, GitHub-App trigger adapter (v2), fix-lane
+executor wiring.
