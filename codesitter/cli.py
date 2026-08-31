@@ -75,6 +75,15 @@ def main() -> int:
     _org_model_keys()
     state_path = Path.home() / ".codesitter" / f"{config.repo.replace('/', '__')}.state.json"
     report = run_cycle(config, state_path, get_diff=make_get_diff(config.repo))
+    # Config-presence surveillance (learning 16): racing branches have twice
+    # silently reverted adoptions; every cycle verifies the IN-REPO config
+    # still exists on main and alerts if the adoption was lost.
+    probe = subprocess.run(  # noqa: S603,607
+        ["gh", "api", f"repos/{config.repo}/contents/.codesitter.yaml", "--jq", ".name"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if probe.returncode != 0:
+        print(f"ALERT: adoption lost — .codesitter.yaml missing on {config.repo} main (re-adopt)")
     print(
         f"codesitter cycle: repo={report.repo} scanned={report.scanned} "
         f"reviewed={report.reviewed} shadow={config.shadow} "
