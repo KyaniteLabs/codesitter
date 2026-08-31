@@ -65,6 +65,21 @@ class ForgeAdapter:
     ) -> list[PullRequest]:  # pragma: no cover - interface
         raise NotImplementedError
 
+    bot_login: str = "codesitter-bot"
+
+    def _paginated(self, path: str, page_size: int, max_pages: int = 10) -> list[dict]:
+        """Page through until a short page (finding 6: PRs/comments past
+        page one must not be invisible)."""
+        out: list[dict] = []
+        for page in range(1, max_pages + 1):
+            batch = self._call("GET", f"{path}{'&' if '?' in path else '?'}page={page}&per_page={page_size}")
+            if not isinstance(batch, list):
+                raise ForgeError(f"paginated {path}: unexpected shape")
+            out.extend(batch)
+            if len(batch) < page_size:
+                break
+        return out
+
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:  # id, body  # pragma: no cover
         raise NotImplementedError
 
@@ -80,7 +95,7 @@ class GitHubAdapter(ForgeAdapter):
     supports_fork_ci_approval = True
 
     def list_open_prs(self, repo: str, since_iso: str | None = None) -> list[PullRequest]:
-        data = self._call("GET", f"/repos/{repo}/pulls?state=open&per_page=50")
+        data = self._paginated(f"/repos/{repo}/pulls?state=open", page_size=50)
         prs = []
         for p in data:
             prs.append(
@@ -99,9 +114,13 @@ class GitHubAdapter(ForgeAdapter):
         return prs
 
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:
-        for c in self._call("GET", f"/repos/{repo}/issues/{number}/comments?per_page=100"):
-            if "codesitter:v1:" in (c.get("body") or ""):
-                return c["id"], c["body"]
+        for c in self._paginated(f"/repos/{repo}/issues/{number}/comments", page_size=100):
+            body = c.get("body") or ""
+            author = ((c.get("user") or {}).get("login") or "").lower()
+            # Marker substring alone is hijackable by any commenter (review
+            # finding 2): require BOTH marker and our own authorship.
+            if "codesitter:v1:" in body and author == self.bot_login:
+                return c["id"], body
         return None
 
     def create_comment(self, repo: str, number: int, body: str) -> int:
@@ -118,7 +137,7 @@ class ForgejoAdapter(ForgeAdapter):
     supports_fork_ci_approval = False
 
     def list_open_prs(self, repo: str, since_iso: str | None = None) -> list[PullRequest]:
-        data = self._call("GET", f"/repos/{repo}/pulls?state=open&limit=50")
+        data = self._paginated(f"/repos/{repo}/pulls?state=open", page_size=50)
         prs = []
         for p in data:
             head_repo = ((p.get("head") or {}).get("repo") or {}).get("full_name")
@@ -138,9 +157,11 @@ class ForgejoAdapter(ForgeAdapter):
         return prs
 
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:
-        for c in self._call("GET", f"/repos/{repo}/issues/{number}/comments?limit=50"):
-            if "codesitter:v1:" in (c.get("body") or ""):
-                return c["id"], c["body"]
+        for c in self._paginated(f"/repos/{repo}/issues/{number}/comments", page_size=50):
+            body = c.get("body") or ""
+            author = ((c.get("user") or {}).get("login") or "").lower()
+            if "codesitter:v1:" in body and author == self.bot_login:
+                return c["id"], body
         return None
 
     def create_comment(self, repo: str, number: int, body: str) -> int:

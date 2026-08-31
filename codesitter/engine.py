@@ -45,12 +45,14 @@ class CycleReport:
 def run_cycle(
     config: RepoConfig,
     state_path: Path,
+    get_diff: Callable[[PullRequest], tuple[set[str], str]],
     trigger_reason: str = "cron",
-    get_diff: Callable[[PullRequest], tuple[set[str], str]] | None = None,
     shadow_sink: ShadowSink | None = None,
 ) -> CycleReport:
     """One poll-invariant cycle. `reason` is annotation only — the predicate
-    in state.needs_review decides; nothing bypasses it."""
+    in state.needs_review decides; nothing bypasses it. `get_diff` is
+    REQUIRED: grounding without a real diff file-set is vacuous (review
+    finding 1) — a missing fetcher is a config error that aborts loudly."""
     report = CycleReport(repo=config.repo, shadow_only=config.shadow)
     primary_name = next(k for k, b in config.forges.items() if b.role == "primary")
     primary: ForgeAdapter = adapter_for(config.forges[primary_name])
@@ -77,7 +79,7 @@ def run_cycle(
                     state.mark_reviewed(st, pr.number, pr.head_sha, "dependency-skip")
                     continue
                 try:
-                    diff_files, diff_text = get_diff(pr) if get_diff else (set(), "")
+                    diff_files, diff_text = get_diff(pr)
                     doc = analyze(pr, diff_files, diff_text, config)
                 except ModelUnavailable as exc:
                     log.warning("model unavailable for %s#%s: %s", config.repo, pr.number, exc)
@@ -110,7 +112,8 @@ def run_cycle(
                     primary.update_comment(config.repo, pr.number, existing[0], body)
                 else:
                     primary.create_comment(config.repo, pr.number, body)
-                state.mark_reviewed(st, pr.number, pr.head_sha, f"reviewed:{len(doc.findings)}")
+                outcome = f"shadow:{len(doc.findings)}" if config.shadow else f"reviewed:{len(doc.findings)}"
+                state.mark_reviewed(st, pr.number, pr.head_sha, outcome)
                 report.reviewed += 1
             state.save_state(state_path, st)
     except CycleLockHeld:

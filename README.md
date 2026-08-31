@@ -13,9 +13,10 @@ mirror, SHA-deduped) → scrub all untrusted text → LLM-brained findings
 (champion route + fallback) → ground every finding (rule in vocab, severity in
 vocab, path in diff — ungrounded findings are dropped+logged, never posted) →
 render the persistent comment (one per PR, edited in place, 🆕 deltas) →
-hand actionable findings to the fix lane (worktree → PR → CI-gated merge of
-OWN PRs only; fork PRs are comment-only forever; fix-depth cap escalates to
-humans instead of looping).
+hand actionable findings to the fix lane. **v0.1 ships the fix lane as a
+tested library** (rails: fork comment-only, bot PRs read-only, merge
+re-verifies authorship+CI at the call site, depth cap escalates) — engine
+wiring lands with the first live deployment (#69), not before.
 
 ## Safety architecture (the parts that are laws, not features)
 

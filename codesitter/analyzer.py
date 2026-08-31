@@ -86,7 +86,11 @@ def analyze(pr: PullRequest, diff_files: set[str], diff_text: str, config: RepoC
     if not content:
         raise ModelUnavailable(f"all model routes failed: {last_err}")
 
-    raw = json.loads(content[content.index("{") : content.rindex("}") + 1])
+    try:
+        start, end = content.index("{"), content.rindex("}")
+        raw = json.loads(content[start : end + 1])
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise ModelUnavailable(f"model output not parseable JSON: {str(exc)[:120]}") from exc
     findings: list[Finding] = []
     dropped: list[str] = []
     for item in raw.get("findings", []):
@@ -106,6 +110,7 @@ def analyze(pr: PullRequest, diff_files: set[str], diff_text: str, config: RepoC
             continue
         f.message = scrub.scrub(f.message)
         f.proposal = scrub.scrub(f.proposal)
+        f.category = scrub.scrub(f.category)
         findings.append(f)
 
     digest: dict[str, int] = {}

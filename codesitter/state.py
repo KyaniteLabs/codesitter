@@ -44,10 +44,16 @@ class CycleLock:
                 pid = int(self.path.read_text().strip() or "0")
                 os.kill(pid, 0)
                 raise CycleLockHeld(f"cycle lock held by pid {pid}") from None
-            except (ValueError, ProcessLookupError, PermissionError):
-                # Stale or unreadable lock: break it and retake once.
+            except PermissionError:
+                # pid alive but foreign: treat as held (never break a live lock).
+                raise CycleLockHeld("cycle lock held by foreign pid") from None
+            except (ValueError, ProcessLookupError):
+                # Stale: break and retake once; losing the retake race = held.
                 self.path.unlink(missing_ok=True)
-                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                try:
+                    fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                except FileExistsError:
+                    raise CycleLockHeld("lost lock retake race") from None
                 os.write(fd, str(os.getpid()).encode())
                 os.close(fd)
                 self._held = True
@@ -93,8 +99,13 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
 
 
 def needs_review(state: dict[str, Any], pr_number: int, head_sha: str) -> bool:
-    """The poll-invariant predicate: re-review iff SHA diverges or unknown."""
-    return state["prs"].get(str(pr_number), {}).get("last_reviewed_sha") != head_sha
+    """The poll-invariant predicate: re-review iff SHA diverges, is unknown,
+    or the only prior outcome was SHADOW (shadow reviews never count as
+    reviewed — the dogfood cutover must post, not no-op)."""
+    rec = state["prs"].get(str(pr_number), {})
+    if rec.get("last_reviewed_sha") != head_sha:
+        return True
+    return str(rec.get("last_outcome", "")).startswith("shadow")
 
 
 def mark_reviewed(state: dict[str, Any], pr_number: int, head_sha: str, outcome: str) -> None:
@@ -102,11 +113,3 @@ def mark_reviewed(state: dict[str, Any], pr_number: int, head_sha: str, outcome:
         "last_reviewed_sha": head_sha,
         "last_outcome": outcome,
     }
-
-
-def prune_closed(state: dict[str, Any], open_numbers: set[int], grace_keep: int = 50) -> None:
-    """Prune closed PRs with a grace window (keep the most recent N records)."""
-    keep = sorted(
-        ((int(k), v) for k, v in state["prs"].items() if int(k) in open_numbers),
-    )[-grace_keep:]
-    state["prs"] = {str(n): v for n, v in keep}

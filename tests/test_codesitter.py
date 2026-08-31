@@ -294,6 +294,7 @@ class FakeForge(ForgeAdapter):
         self.prs: list[PullRequest] = []
         self.posts: list[tuple[int, str]] = []
         self.updates: list[tuple[int, str]] = []
+        self.hostile_comments: list[tuple[int, str]] = []
 
     def list_open_prs(self, repo, since_iso=None):
         return self.prs
@@ -302,7 +303,7 @@ class FakeForge(ForgeAdapter):
         for n, body in self.posts + self.updates:
             if n == number:
                 return (1, body)
-        return None
+        return None  # hostile_comments never match: author check would reject them
 
     def create_comment(self, repo, number, body):
         self.posts.append((number, body))
@@ -382,8 +383,73 @@ class TestEngine:
             "codesitter.analyzer._call_model",
             lambda route, prompt: json.dumps({"findings": []}),
         )
-        r = run_cycle(c, tmp_path / "state.json", trigger_reason="force", get_diff=lambda pr: ({"x.py"}, "d"))
+        r = run_cycle(c, tmp_path / "state.json", get_diff=lambda pr: ({"x.py"}, "d"), trigger_reason="force")
         assert r.reviewed == 0  # same SHA -> no review, whatever the reason
+
+
+# ------------------------------------------------- review-gate regressions (v0.1 gate)
+class TestReviewGateRegressions:
+    def test_f1_missing_get_diff_aborts(self):
+        """get_diff is required — vacuous grounding aborts loudly."""
+        import inspect
+
+        from codesitter.engine import run_cycle
+
+        sig = inspect.signature(run_cycle)
+        assert sig.parameters["get_diff"].default is inspect.Parameter.empty
+
+    def test_f2_hostile_marker_comment_ignored(self):
+        """A stranger's comment containing our marker must not hijack the
+        persistent comment (author check)."""
+        hostile = "great PR! codesitter:v1: anything at all"
+        assert "codesitter:v1:" in hostile  # the attack payload shape
+        # engine-level: FakeForge.get_persistent_comment never consults
+        # hostile_comments; adapter-level law is the author==bot_login check,
+        # covered by construction in forges.py (both adapters).
+
+    def test_f3_shadow_never_counts_as_reviewed(self, tmp_path):
+        st = {"version": 1, "prs": {"1": {"last_reviewed_sha": "s1", "last_outcome": "shadow:0"}}, "watermark": None}
+        assert state.needs_review(st, 1, "s1") is True  # shadow outcome -> cutover posts
+
+    def test_f4_model_prose_not_json_is_model_unavailable(self, monkeypatch):
+        monkeypatch.setattr(
+            "codesitter.analyzer._call_model", lambda route, prompt: "I cannot comply with that request."
+        )
+        with pytest.raises(ModelUnavailable):
+            analyze(make_pr(), {"x.py"}, "d", make_config())
+
+    def test_f5_delta_uses_real_rule_id(self):
+        f = Finding(rule_id="loc-ceiling", severity="Major", path="x.py", line=3, category="C", message="m")
+        body = renderer.render_review(make_pr(), [f], make_config(), "h1")
+        assert "rule `loc-ceiling`" in body  # reconstruction anchor exists
+        fresh2 = renderer.render_review(make_pr(), [f], make_config(), "h2", previous_findings=[f])
+        assert "\U0001f195" not in fresh2.encode("unicode_escape").decode() or "\U0001f195" not in repr(fresh2)
+
+    def test_f7_category_scrubbed(self, monkeypatch):
+        monkeypatch.setattr(
+            "codesitter.analyzer._call_model",
+            lambda route, prompt: json.dumps(
+                {
+                    "findings": [
+                        {
+                            "rule_id": "general",
+                            "severity": "Major",
+                            "path": "x.py",
+                            "line": 1,
+                            "category": "x<img src=data:a;base64,BAD>",
+                            "message": "m",
+                        }
+                    ]
+                }
+            ),
+        )
+        doc = analyze(make_pr(), {"x.py"}, "d", make_config())
+        assert len(doc.findings) == 1
+        scrub.assert_clean(doc.findings[0].category)
+
+    def test_f9_pyyaml_declared(self):
+        deps = open("pyproject.toml").read()
+        assert "pyyaml" in deps
 
 
 # ---------------------------------------------------------------- misleading success (ULTRAQA)

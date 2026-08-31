@@ -34,14 +34,3 @@ class ReviewDoc(BaseModel):
     pr: PullRequest
     findings: list[Finding] = Field(default_factory=list)
     digest: dict[str, int] = Field(default_factory=dict)  # severity -> count
-    incremental_range: tuple[str, str] | None = None  # (old_sha, new_sha)
-
-
-def fingerprint(f: Finding, pr: PullRequest) -> str:
-    """Dedup identity (Lane A/B/E convergence): stable across pushes when the
-    finding is unchanged; any of rule/path/lines/message changing mints a new
-    one. Used for find->update-else-create on the persistent comment."""
-    import hashlib
-
-    basis = f"{pr.repo}#{pr.number}|{f.rule_id}|{f.path}|{f.line}|{f.message}"
-    return hashlib.sha256(basis.encode()).hexdigest()[:16]
