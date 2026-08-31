@@ -1,0 +1,43 @@
+# Reference instance — the kinocut repo law as data (AGENTS.md subset).
+repo: KyaniteLabs/kinocut
+forges:
+  github:
+    role: primary
+    api_base: https://api.github.com
+    token_env: CODESITTER_GITHUB_TOKEN
+  forgejo:
+    role: mirror
+    api_base: https://git.kyanitelabs.tech/api/v1
+    token_env: CODESITTER_FORGEJO_TOKEN
+model:
+  endpoint: http://localhost:8317/v1/chat/completions
+  model: qwen3.8-27b
+  key_env: CODESITTER_QWEN_KEY
+  temperature: 0.2
+  max_tokens: 4000
+fallback_model:
+  endpoint: https://api.deepinfra.com/v1/openai/chat/completions
+  model: deepseek-ai/DeepSeek-V4-Flash-0731
+  key_env: CODESITTER_DEEPSEEK_KEY
+  temperature: 0.2
+  max_tokens: 4000
+review:
+  custom-errors: "Raise custom types from kinocut.errors; never raw ValueError/KeyError."
+  defaults-central: "All defaults in defaults.py; validation constants in validation.py."
+  loc-ceiling: "No module may exceed 800 LOC, tests included."
+  escaping: "User values into FFmpeg filters must use the _escape_ffmpeg_* helpers."
+  subprocess-law: "subprocess calls need timeout + closed stdin; catch TimeoutExpired."
+severity_vocab: [Critical, Major, Minor, Nit]
+tone: balanced
+tone_fork_override: balanced
+path_filters:
+  ignore: ["docs/status/**", "**/*.md"]
+fix:
+  enabled: true
+  merge_own_prs: true
+  max_fix_depth: 2
+  fork_policy: comment-only
+  dependency_policy: skip-patch
+known_env_failures:
+  - tests/test_kinocut_distribution.py::test_mcpb_launcher_is_compatible_with_the_declared_node_floor
+shadow: true  # dogfood phase: log, post nothing (48h per #69)
