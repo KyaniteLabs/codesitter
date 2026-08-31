@@ -19,7 +19,7 @@ from typing import Callable, Protocol
 from . import fixlane, renderer, state
 from .analyzer import ModelUnavailable, analyze
 from .config import RepoConfig
-from .forges import ForgeAdapter, adapter_for
+from .forges import ForgeAdapter, ForgeError, adapter_for
 from .models import Finding, PullRequest
 from .state import CycleLock, CycleLockHeld
 
@@ -36,6 +36,7 @@ class CycleReport:
     scanned: int = 0
     reviewed: int = 0
     skipped_mirror: int = 0
+    mirror_degraded: int = 0
     skipped_dependency: int = 0
     fix_escalations: int = 0
     model_unavailable: int = 0
@@ -65,10 +66,17 @@ def run_cycle(
             seen_shas: dict[str, str] = {}
             for pr in prs:
                 seen_shas.setdefault(pr.head_sha, f"{pr.forge}:{pr.number}")
-            for m in mirrors:  # mirror dedupe (ralplan): same SHA = same PR
-                for mpr in m.list_open_prs(config.repo):
-                    if mpr.head_sha in seen_shas:
-                        report.skipped_mirror += 1
+            for m in mirrors:  # mirror dedupe (ralplan): same SHA = same PR.
+                # Degradation law: a mirror is a dedupe optimization, NEVER a
+                # correctness dependency — an unreachable/unauthorized mirror
+                # logs and skips; the primary cycle proceeds regardless.
+                try:
+                    for mpr in m.list_open_prs(config.repo):
+                        if mpr.head_sha in seen_shas:
+                            report.skipped_mirror += 1
+                except ForgeError as exc:
+                    log.warning("mirror %s unavailable (degraded, continuing): %s", m.name, exc)
+                    report.mirror_degraded += 1
             report.scanned = len(prs)
             for pr in prs:
                 if not state.needs_review(st, pr.number, pr.head_sha):
