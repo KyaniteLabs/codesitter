@@ -57,7 +57,10 @@ def run_cycle(
     report = CycleReport(repo=config.repo, shadow_only=config.shadow)
     primary_name = next(k for k, b in config.forges.items() if b.role == "primary")
     primary: ForgeAdapter = adapter_for(config.forges[primary_name])
+    primary.bot_login = config.bot_login
     mirrors = [adapter_for(b) for b in config.forges.values() if b.role == "mirror"]
+    for m in mirrors:
+        m.bot_login = config.bot_login
 
     try:
         with CycleLock(state_path.with_suffix(".lock")):
