@@ -24,9 +24,8 @@ import json
 from fl4write import config as cfg
 from fl4write import gatekeeper
 from fl4write.analyzer import analyze
-from fl4write.config import ForgeBinding
 from fl4write.engine import run_cycle
-from fl4write.forges import ForgeAdapter, ForgeError
+from fl4write.forges import ForgeAdapter
 from fl4write.models import Finding, PullRequest
 
 
@@ -212,25 +211,83 @@ class TestPostFilters:
 
 
 class TestForgeAwareSurveillance:
-    def test_probe_checks_both_names_via_adapter(self, monkeypatch, tmp_path):
-        """V5: on Forgejo-primary configs the surveillance probe goes through
-        the adapter and accepts BOTH .fl4write.yaml and legacy .codesitter.yaml
-        (the gh-only probe fired false 'adoption lost' alerts live)."""
+    """The Critic's blocking rewrite: exercises the PRODUCTION probe
+    (_probe_adoption), not a re-implementation. Fails if cli.py regresses."""
+
+    def _github_cfg(self):
+        return make_config()
+
+    def _forgejo_cfg(self):
+        return cfg.RepoConfig.model_validate({
+            "repo": "o/r",
+            "forges": {"forgejo": {"role": "primary", "api_base": "https://git.example/api/v1", "token_env": "FT"}},
+            "model": {"endpoint": "http://m/v1/chat/completions", "model": "t", "key_env": "MK"},
+            "review": {"secrets": "law"},
+            "severity_vocab": ["Critical", "Major", "Minor", "Nit"],
+        })
+
+    def test_forgejo_primary_probes_via_adapter_both_names(self, monkeypatch, capsys):
+        from fl4write.cli import _probe_adoption
+
         probed = []
 
-        class FakeForgejo(ForgeAdapter):
-            name = "forgejo"
+        class FakeAdapter:
+            def path_exists(self, repo, path):
+                probed.append(path)
+                return path == ".codesitter.yaml"  # only the LEGACY name exists
+
+        _probe_adoption(self._forgejo_cfg(), forge_adapter=FakeAdapter())
+        out = capsys.readouterr().out
+        assert probed == [".fl4write.yaml", ".codesitter.yaml"]  # BOTH names
+        assert "adoption lost" not in out  # legacy name present -> no false alert
+
+    def test_forgejo_primary_alerts_when_both_absent(self, capsys):
+        from fl4write.cli import _probe_adoption
+
+        class FakeAdapter:
+            def path_exists(self, repo, path):
+                return False
+
+        _probe_adoption(self._forgejo_cfg(), forge_adapter=FakeAdapter())
+        assert "adoption lost" in capsys.readouterr().out
+
+    def test_github_primary_uses_gh_cli_and_both_names(self, monkeypatch, capsys):
+        from fl4write import cli as cli_mod
+
+        calls = []
+
+        def fake_run(cmd, capture_output=True, text=True, timeout=30):
+            calls.append(cmd[2])
+            return type("R", (), {"returncode": 0 if ".codesitter.yaml" in cmd[2] else 1})()
+
+        monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
+        cli_mod._probe_adoption(self._github_cfg(), forge_adapter=None)
+        assert any(".fl4write.yaml" in c for c in calls) and any(".codesitter.yaml" in c for c in calls)
+        assert "adoption lost" not in capsys.readouterr().out
+
+
+class TestTelemetryAssertions:
+    def test_cycle_line_carries_quality_counters(self):
+        """The gate demanded assertions, not existence checks: gate_fail /
+        fix_attempts / fix_fail are IN the printed cycle line."""
+        import inspect
+
+        import fl4write.cli as cli
+
+        src = inspect.getsource(cli.main)
+        for field in ("gate_fail=", "fix_attempts=", "fix_fail=", "mirror_degraded="):
+            assert field in src, f"cycle line lost {field}"
+
+    def test_omni_findings_carry_via(self, tmp_path, monkeypatch):
+        from fl4write import state
+        from fl4write.engine import run_cycle as rc
+
+        class OmniFake(ForgeAdapter):
+            name = "github"
 
             def __init__(self):
-                super().__init__(ForgeBinding(role="primary", api_base="https://git.example/api/v1", token_env="FT"))
-
-            def _call(self, method, path, payload=None, _retry=True):
-                probed.append(path)
-                if "contents" in path:
-                    raise ForgeError("forgejo GET: HTTP 404")
-                if path.endswith("/repos/o/r"):
-                    return {"default_branch": "main"}
-                return {}
+                super().__init__(cfg.ForgeBinding(role="primary", api_base="https://api.github.com", token_env="GHT"))
+                self.issues = []
 
             def list_open_prs(self, repo):
                 return []
@@ -247,24 +304,35 @@ class TestForgeAwareSurveillance:
             def update_comment(self, repo, number, cid, body):
                 pass
 
-            def get_pr_diff(self, repo, number):
-                return None
+            def head_check_runs(self, repo):
+                return ("dead" + "beef" * 9, [])
 
-        fake = FakeForgejo()
-        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: fake)
-        import contextlib
-        import io
+            def list_tree_files(self, repo):
+                return [("a.py", 10)], False
 
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            # simulate the probe branch exactly as main() runs it
-            from fl4write.forges import adapter_for as af
-            native = af(cfg.ForgeBinding(role="primary", api_base="https://git.example/api/v1", token_env="FT"))
-            native._call = fake._call
-            present = native.path_exists("o/r", ".fl4write.yaml") or bool(native.path_exists("o/r", ".codesitter.yaml"))
-            if not present:
-                print("ALERT: adoption lost — no .fl4write.yaml or .codesitter.yaml on o/r main (re-adopt)")
-        out = buf.getvalue()
-        names = [p for p in probed if "contents" in p]
-        assert any(".fl4write.yaml" in n for n in names) and any(".codesitter.yaml" in n for n in names)
-        assert "adoption lost" in out  # both absent -> the alert fires (correctly)
+            def get_file(self, repo, path, ref):
+                return "x = 1"
+
+            def open_issue(self, repo, title, body):
+                self.issues.append(title)
+                return 9
+
+            def update_issue(self, repo, number, body):
+                return True
+
+            def path_exists(self, repo, path):
+                return True
+
+        from fl4write.models import ReviewDoc
+
+        c = make_config(omnisweep={"enabled": True, "max_files_per_cycle": 5})
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: OmniFake())
+
+        def fake_analyze(pr, files, text, config, mode="pr"):
+            return ReviewDoc(pr=pr, findings=[Finding(
+                rule_id="secrets", severity="Major", path="a.py", line=1, message="m")])
+
+        monkeypatch.setattr("fl4write.analyzer.analyze", fake_analyze)
+        rc(c, tmp_path / "s.json", get_diff=lambda pr: (set(), ""))
+        st = state.load_state(tmp_path / "s.json")
+        assert all("via" in f for f in st["omni_findings"]) and st["omni_findings"][0]["via"] == "t"

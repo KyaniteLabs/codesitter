@@ -424,10 +424,14 @@ def _omni_fix_phase(
             category="omnisweep", message=f["msg"],
         )
         result = executor.attempt_fix(synth, finding, config)
-        if result.get("status") == "pr_opened":
+        status = result.get("status")
+        if status == "pr_opened":
             report.fix_prs_opened += 1
+        elif status in ("error", "testfail", "nofix"):
+            report.fix_failures += 1
+            report._fix_failure_notes.append(f"omni {f['path']}:{f['line']} {status}: {str(result.get('reason'))[:60]}")
         else:
-            log.warning("omni fix failed for %s:%s: %s", f["path"], f["line"], result.get("reason"))
+            log.warning("omni fix %s for %s:%s", status, f["path"], f["line"])
 
 
 def _omnisweep_step(

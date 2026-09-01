@@ -105,6 +105,38 @@ def _install_sigterm_handler() -> None:
         pass
 
 
+def _probe_adoption(config, forge_adapter=None) -> None:
+    """Surveillance: verify the IN-REPO config still exists on the default
+    branch; alert on loss. GitHub-primary uses the gh CLI; any other primary
+    probes BOTH config names via the forge adapter (the gh path 404s there).
+    Extracted for testability (the Critic's blocking item: the probe must be
+    exercisable by tests, not re-implemented by them)."""
+    import logging
+
+    if forge_adapter is None:
+        present = False
+        for name in (".fl4write.yaml", ".codesitter.yaml"):
+            try:
+                probe = subprocess.run(
+                    ["gh", "api", f"repos/{config.repo}/contents/{name}", "--jq", ".name"],
+                    capture_output=True, text=True, timeout=30,
+                )
+            except subprocess.TimeoutExpired:
+                print(f"ALERT: config probe timed out for {config.repo} (inconclusive — not an adoption-loss claim)")
+                return
+            if probe.returncode == 0:
+                present = True
+                break
+    else:
+        present = bool(
+            forge_adapter.path_exists(config.repo, ".fl4write.yaml")
+            or forge_adapter.path_exists(config.repo, ".codesitter.yaml")
+        )
+    if not present:
+        print(f"ALERT: adoption lost — no .fl4write.yaml or .codesitter.yaml on {config.repo} main (re-adopt)")
+        logging.getLogger("fl4write.cli").warning("adoption probe negative for %s", config.repo)
+
+
 def main() -> int:
     _install_sigterm_handler()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -160,26 +192,10 @@ def main() -> int:
         run_issues=run_issues,
         deadline=time.monotonic() + budget_s,
     )
-    # Config-presence surveillance (learning 16): racing branches have twice
-    # silently reverted adoptions; every cycle verifies the IN-REPO config
-    # still exists on main and alerts if the adoption was lost. Accepts the
-    # renamed .fl4write.yaml and the legacy .codesitter.yaml during migration.
-    try:
-        probe = subprocess.run(
-
-            ["gh", "api", f"repos/{config.repo}/contents/.fl4write.yaml", "--jq", ".name"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if probe.returncode != 0:
-            probe = subprocess.run(
-
-                ["gh", "api", f"repos/{config.repo}/contents/.codesitter.yaml", "--jq", ".name"],
-                capture_output=True, text=True, timeout=30,
-            )
-        if probe.returncode != 0:
-            print(f"ALERT: adoption lost — no .fl4write.yaml or .codesitter.yaml on {config.repo} main (re-adopt)")
-    except subprocess.TimeoutExpired:
-        print(f"ALERT: config probe timed out for {config.repo} (inconclusive — not an adoption-loss claim)")
+    # Config-presence surveillance (learning 16) — FORGE-AWARE (2026-09-01):
+    # the old gh-only probe 404'd every cycle on Forgejo-primary repos and
+    # fired false "adoption lost" alerts, live-observed on the 23:00 cycle.
+    _probe_adoption(config, native if "api.github.com" not in primary_binding.api_base else None)
     for a in report.alerts:
         print(f"ALERT: {a}")
     print(
