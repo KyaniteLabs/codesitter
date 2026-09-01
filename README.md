@@ -52,7 +52,15 @@ Run in shadow mode (`shadow: true`) first — findings log, nothing posts.
 Cutover checklist: 48h shadow diff reviewed → host decision recorded (always-on
 host OR explicitly accepted sleep gap) → PAT scopes enumerated + rotation set.
 
-## Status — DEPLOYED (pilot live 2026-08-31)
+## Status — v0.2.0 ALL COMPONENTS BUILT (pilot live on 31 repos)
+
+**v0.2.0 adds the four remaining planned components:**
+- **Fix-lane executor** (`executor.py`): real worktree → model patch → test → PR → CI-gated merge of OWN PRs (authorship asserted in code). Closes the loop: codesitter can now FIX what it finds, not just report it.
+- **Gatekeeper nit-filter** (`gatekeeper.py`): staff-engineer second pass that kills nits before posting (fail-open on model down). The Greptile 79%-nits lesson, implemented.
+- **Issues lane** (`issues.py`): GitHub + Forgejo issue triage — duplicate detection, label routing, answer drafting, regression flags. Comment-only (never closes or reassigns). Enable via `--issues` flag.
+- **Acceptance metrics** (`metrics.py`): address-rate tracking per cycle (`acceptance=42%` in the runner report). The quality signal that tells us if findings are being acted on.
+
+**Usage:** `python3 -m codesitter.cli <config> [--live] [--fixes] [--issues]`
 
 v0.1.2 runs in production on five repos (see PILOT.md): kinocut, Epoch,
 devarch-framework, Innerscape, Elixis — live posting, review-only. 49 tests
