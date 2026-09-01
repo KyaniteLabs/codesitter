@@ -84,14 +84,14 @@ def main() -> int:
     config = load_config(sys.argv[1])
     if live:
         config = config.model_copy(update={"shadow": False})
-    # GitHub App auth: every interaction signed as kyanitelabs[bot].
+    # GitHub App auth: every interaction signed as fl4write[bot].
     # Installation resolved PER REPO — the app has separate org and user
     # installations and a token from the wrong one 404s.
     try:
         from .appauth import install_token_to_env
 
         install_token_to_env(repo=config.repo)
-        config = config.model_copy(update={"bot_login": "kyanitelabs[bot]"})
+        config = config.model_copy(update={"bot_login": "fl4write[bot]"})
     except Exception as exc:
         print(f"WARNING: GitHub App auth failed ({exc}); falling back to PAT", file=sys.stderr)
         config = config.model_copy(update={"bot_login": "simongonzalezdc"})

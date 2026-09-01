@@ -96,7 +96,7 @@ def find_existing_triage(forge: ForgeAdapter, repo: str, number: int, bot_login:
         author = ((c.get("user") or {}).get("login") or "").lower()
         if (
             "fl4write-triage:v1" in body or "codesitter-triage:v1" in body
-        ) and author == bot_login:
+        ) and (author == bot_login or author in ("kyanitelabs[bot]",)):
             return c["id"], body
     return None
 

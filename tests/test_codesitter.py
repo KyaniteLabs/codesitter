@@ -360,13 +360,13 @@ class TestEngine:
 
         def fake_create(repo, number, body):
             posted.append(number)
-            forge.issue_comments.append((number, 1, "kyanitelabs[bot]", body))
+            forge.issue_comments.append((number, 1, "fl4write[bot]", body))
             forge.posts.append((number, body))
             return 1
 
         forge.create_comment = fake_create
         c = make_config(shadow=False)
-        c = c.model_copy(update={"bot_login": "kyanitelabs[bot]"})
+        c = c.model_copy(update={"bot_login": "fl4write[bot]"})
         monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr(
             "fl4write.issues._call_model",
