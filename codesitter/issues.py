@@ -65,7 +65,7 @@ def render_triage_comment(issue_num: int, triage: dict[str, Any], config: RepoCo
     """Render the triage comment body."""
     urgency = triage.get("urgency", "low")
     marker = _URGENCY_MARKER.get(urgency, "")
-    labels = ", ".join(f"`{l}`" for l in triage.get("labels", [])) or "none suggested"
+    labels = ", ".join(f"`{lbl}`" for lbl in triage.get("labels", [])) or "none suggested"
 
     parts = [
         f"## codesitter triage — issue #{issue_num}",
