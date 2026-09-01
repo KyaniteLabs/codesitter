@@ -210,6 +210,54 @@ class ForgeAdapter:
             })
         return out
 
+    # Omnisweep surface (issue-backed report + tree discovery). None/False
+    # everywhere = degrade (findings live in state; the report retries).
+    def open_issue(self, repo: str, title: str, body: str) -> int | None:  # pragma: no cover - interface
+        """Create an issue; return its number, or None when creation failed."""
+        raise NotImplementedError
+
+    def update_issue(self, repo: str, number: int, body: str) -> bool:  # pragma: no cover - interface
+        """Edit an issue body in place (edit-in-place never re-notifies)."""
+        raise NotImplementedError
+
+    def list_tree_files(self, repo: str) -> tuple[list[tuple[str, int]], bool] | None:
+        """([(path, size_bytes), ...], truncated) for the default-branch HEAD,
+        or None when unqueryable. One recursive git-trees call; `truncated`
+        flags GitHub's 100k-entry/7MB cap — the caller must ALERT on it."""
+        try:
+            branch = self._call("GET", f"/repos/{repo}").get("default_branch") or "main"
+            head = self._call("GET", f"/repos/{repo}/commits/{branch}")
+            sha = head.get("sha") or ""
+            if not sha:
+                return None
+            tree = self._call("GET", f"/repos/{repo}/git/trees/{sha}?recursive=1")
+            files = [
+                (e.get("path") or "", int(e.get("size") or 0))
+                for e in (tree.get("tree") or [])
+                if e.get("type") == "blob"
+            ]
+            return files, bool(tree.get("truncated"))
+        except ForgeError:
+            return None
+
+    def get_file(self, repo: str, path: str, ref: str) -> str | None:
+        """File content at an exact ref, or None when unfetchable. Refuses
+        non-base64/empty responses (the >1MB vacuous-premise law — the model
+        must never 'review' or fix an empty file it didn't get)."""
+        import base64
+        from urllib.parse import quote
+
+        try:
+            data = self._call("GET", f"/repos/{repo}/contents/{quote(path, safe='')}?ref={quote(ref, safe='')}")
+        except ForgeError:
+            return None
+        if data.get("encoding") != "base64" or not data.get("content"):
+            return None
+        try:
+            return base64.b64decode(data["content"]).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:  # id, body  # pragma: no cover
         raise NotImplementedError
 
@@ -312,6 +360,19 @@ class GitHubAdapter(ForgeAdapter):
         except ForgeError:
             return None
 
+    def open_issue(self, repo: str, title: str, body: str) -> int | None:
+        try:
+            return self._call("POST", f"/repos/{repo}/issues", {"title": title, "body": body})["number"]
+        except ForgeError:
+            return None
+
+    def update_issue(self, repo: str, number: int, body: str) -> bool:
+        try:
+            self._call("PATCH", f"/repos/{repo}/issues/{number}", {"body": body})
+            return True
+        except ForgeError:
+            return False
+
 
 class ForgejoAdapter(ForgeAdapter):
     """Forgejo/Gitea share the v1 API shape; differences degrade to prose."""
@@ -393,6 +454,19 @@ class ForgejoAdapter(ForgeAdapter):
 
     def head_check_runs(self, repo: str) -> tuple[str, list[dict]] | None:
         return None  # v1: check-runs (GHA) only; Forgejo commit statuses unsupported
+
+    def open_issue(self, repo: str, title: str, body: str) -> int | None:
+        try:
+            return self._call("POST", f"/repos/{repo}/issues", {"title": title, "body": body})["number"]
+        except ForgeError:
+            return None
+
+    def update_issue(self, repo: str, number: int, body: str) -> bool:
+        try:
+            self._call("PATCH", f"/repos/{repo}/issues/{number}", {"body": body})
+            return True
+        except ForgeError:
+            return False
 
     def get_pr_diff(self, repo: str, number: int) -> tuple[set[str], str] | None:
         """(changed-file set, unified diff text) or None when unfetchable.

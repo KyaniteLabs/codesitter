@@ -92,7 +92,7 @@ def _run(tmp_path, forge, monkeypatch, fix_result=None, **cfg_over):
     monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
     monkeypatch.setattr(
         "fl4write.analyzer._call_model",
-        lambda route, prompt: json.dumps({"findings": []}),
+        lambda route, prompt, mode="pr": json.dumps({"findings": []}),
     )
     if fix_result is not None:
         def fake_fix(pr, finding, config):

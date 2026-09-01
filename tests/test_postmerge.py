@@ -111,7 +111,7 @@ def _run(tmp_path, forge, monkeypatch, diff=None, **cfg_over):
     monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
     monkeypatch.setattr(
         "fl4write.analyzer._call_model",
-        lambda route, prompt: json.dumps({"findings": []}),
+        lambda route, prompt, mode="pr": json.dumps({"findings": []}),
     )
     return run_cycle(
         c,
@@ -120,11 +120,20 @@ def _run(tmp_path, forge, monkeypatch, diff=None, **cfg_over):
     )
 
 
+
+def _hours_ago(h: int, hhmm: str = "12:00:00") -> str:
+    """A merged_at safely inside the default 24h lookback for future runs
+    (fixed calendar dates rot out of the window — the same time-bomb class
+    the comorbidity pass caught in the retro fixtures)."""
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(hours=h)).strftime("%Y-%m-%d") + f"T{hhmm}Z"
+
 # ---------------------------------------------------------------- the sweep
 class TestPostMergeSweep:
     def test_merged_pr_reviewed_once_and_watermark_advances(self, tmp_path, monkeypatch):
         forge = FakeForge()
-        forge.merged_prs = [make_pr(number=9, merged_at="2026-09-01T12:00:00Z")]
+        forge.merged_prs = [make_pr(number=9, merged_at=_hours_ago(3))]
         r = _run(tmp_path, forge, monkeypatch)
         assert r.postmerge_reviewed == 1 and len(forge.posts) == 1
         assert "(post-merge)" in forge.posts[0][1]
@@ -135,7 +144,7 @@ class TestPostMergeSweep:
         """Watermark rewound (or PR merged mid-sweep): the head-SHA predicate,
         not the watermark, is the at-most-once guard."""
         forge = FakeForge()
-        forge.merged_prs = [make_pr(number=9, merged_at="2026-09-01T12:00:00Z")]
+        forge.merged_prs = [make_pr(number=9, merged_at=_hours_ago(3))]
         _run(tmp_path, forge, monkeypatch)
         # rewind the watermark to force a re-list
         st = state.load_state(tmp_path / "state.json")
@@ -153,7 +162,7 @@ class TestPostMergeSweep:
         _run(tmp_path, forge, monkeypatch)
         assert len(forge.posts) == 1
         forge.open_prs = []
-        forge.merged_prs = [make_pr(number=9, head_sha=pr.head_sha, merged_at="2026-09-01T12:00:00Z")]
+        forge.merged_prs = [make_pr(number=9, head_sha=pr.head_sha, merged_at=_hours_ago(3))]
         r2 = _run(tmp_path, forge, monkeypatch)
         assert r2.postmerge_reviewed == 0 and len(forge.posts) == 1
 
@@ -164,7 +173,7 @@ class TestPostMergeSweep:
         forge.open_prs = [make_pr(number=9, head_sha="a" * 40)]
         _run(tmp_path, forge, monkeypatch)
         forge.open_prs = []
-        forge.merged_prs = [make_pr(number=9, head_sha="b" * 40, merged_at="2026-09-01T12:00:00Z")]
+        forge.merged_prs = [make_pr(number=9, head_sha="b" * 40, merged_at=_hours_ago(3))]
         r2 = _run(tmp_path, forge, monkeypatch)
         assert r2.postmerge_reviewed == 1
         assert len(forge.posts) == 1 and len(forge.updates) == 1  # edit-in-place, never a second comment
@@ -188,8 +197,8 @@ class TestPostMergeSweep:
         by the head-SHA guard (no model call, no post)."""
         forge = FakeForge()
         forge.merged_prs = [
-            make_pr(number=1, head_sha="a" * 40, merged_at="2026-09-01T12:00:00Z"),
-            make_pr(number=2, head_sha="b" * 40, merged_at="2026-09-01T12:00:00Z"),
+            make_pr(number=1, head_sha="a" * 40, merged_at=_hours_ago(3)),
+            make_pr(number=2, head_sha="b" * 40, merged_at=_hours_ago(3)),
         ]
         r1 = _run(tmp_path, forge, monkeypatch, post_merge={"enabled": True, "max_per_cycle": 1})
         assert r1.postmerge_reviewed == 1 and forge.posts[0][0] == 1
@@ -198,7 +207,7 @@ class TestPostMergeSweep:
 
         model_calls = []
 
-        def counting(route, prompt):
+        def counting(route, prompt, mode="pr"):
             model_calls.append(prompt)
             return orig(route, prompt)
 
@@ -240,7 +249,7 @@ class TestPostMergeSweep:
 
     def test_disabled_by_default_never_lists(self, tmp_path, monkeypatch):
         forge = FakeForge()
-        forge.merged_prs = [make_pr(number=9, merged_at="2026-09-01T12:00:00Z")]
+        forge.merged_prs = [make_pr(number=9, merged_at=_hours_ago(3))]
         listed = []
         orig = forge.list_merged_prs
 
@@ -258,7 +267,7 @@ class TestPostMergeSweep:
         forge = FakeForge()
         forge.merged_prs = [
             make_pr(number=1, merged_at="2020-01-01T00:00:00Z"),  # ancient: outside window
-            make_pr(number=2, merged_at="2026-08-31T20:00:00Z"),  # recent: inside 24h
+            make_pr(number=2, merged_at=_hours_ago(4, "20:00:00")),  # recent: inside 24h
         ]
         r = _run(tmp_path, forge, monkeypatch)
         assert r.postmerge_reviewed == 1
@@ -269,7 +278,7 @@ class TestPostMergeSweep:
         forge.merged_prs = [
             make_pr(
                 number=5, is_bot_author=True, title="chore(deps): bump patch",
-                merged_at="2026-09-01T12:00:00Z",
+                merged_at=_hours_ago(3),
             )
         ]
         r = _run(tmp_path, forge, monkeypatch)
@@ -368,7 +377,7 @@ class TestMergeScanRegression:
         monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr(
             "fl4write.analyzer._call_model",
-            lambda route, prompt: json.dumps({"findings": []}),
+            lambda route, prompt, mode="pr": json.dumps({"findings": []}),
         )
         run_cycle(c, tmp_path / "s.json", get_diff=lambda pr: ({"x.py"}, "d"), run_fixes=True)
         assert calls == ["fl4write[bot]"]  # called WITH the identity, exactly once

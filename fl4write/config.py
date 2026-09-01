@@ -98,6 +98,30 @@ class RetroAuditConfig(_StrictModel):
     freshness_gate: bool = True  # skip findings whose path is gone from HEAD
 
 
+class OmniSweepConfig(_StrictModel):
+    """Omnisweep (CEO charter 2026-09-01: "go to town — find and fix
+    everything / scan the whole thing prelaunch"): full-tree scan at HEAD,
+    findings land in ONE audit issue per repo (edited in place), an optional
+    conservative fix phase drives the existing fix lane via stable-id
+    synthetic PRs. Fix phase is SEPARATELY gated: cold-code findings lack the
+    reviewed-diff premise the fix lane was built on, and merge_own_prs
+    defaults True — so omni fixes are opt-in and Critical-only by default."""
+
+    enabled: bool = False
+    fix: bool = False  # separate gate; scan-only is the safe default
+    fix_min_severity: str = Field(default="Critical", pattern="^(Critical|Major)$")
+    max_files_per_cycle: int = Field(default=10, ge=1, le=50)
+    max_total_files: int = Field(default=2000, ge=10, le=20000)  # sweep-wide abort bound
+    max_findings_in_issue: int = Field(default=20, ge=5, le=100)  # body cap; rest in state
+    exclude: list[str] = Field(default_factory=lambda: [
+        "node_modules/*", "vendor/*", "dist/*", "build/*", ".git/*",
+        "*.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock",
+        "*.png", "*.jpg", "*.jpeg", "*.gif", "*.ico", "*.webp", "*.svg",
+        "*.woff", "*.woff2", "*.ttf", "*.eot", "*.pdf", "*.zip", "*.gz",
+        "*.mp4", "*.mp3", "*.wav", "*.wasm", "*.bin",
+    ])
+
+
 class RepoConfig(_StrictModel):
     """The full per-repo config. Validated fail-loud at startup."""
 
@@ -116,6 +140,7 @@ class RepoConfig(_StrictModel):
     post_merge: PostMergeConfig = Field(default_factory=PostMergeConfig)
     ci_watch: CIWatchConfig = Field(default_factory=CIWatchConfig)
     retro_audit: RetroAuditConfig = Field(default_factory=RetroAuditConfig)
+    omnisweep: OmniSweepConfig = Field(default_factory=OmniSweepConfig)
     known_env_failures: list[str] = Field(default_factory=list)  # test ids to ignore
     shadow: bool = False  # True = log findings, post nothing
     gatekeeper: bool = True  # nit-filter second pass (fail-open)

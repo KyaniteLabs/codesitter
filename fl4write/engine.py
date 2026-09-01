@@ -66,6 +66,8 @@ class CycleReport:
     ci_red_heads: int = 0
     ci_fix_prs_opened: int = 0
     ci_escalations: int = 0
+    omni_scanned: int = 0
+    omni_findings: int = 0
     alerts: list[str] = field(default_factory=list)
 
 
@@ -307,6 +309,237 @@ def _post_merge_sweep(
 
 # CI-watch conclusions that mean RED (everything not in the benign set).
 _CI_BENIGN = {"success", "skipped", "neutral", "canceled"}
+
+# Omnisweep bounds (consensus-gated): files above this are skipped (the
+# contents API refuses >1MB; anything near it is generated/vendored).
+_OMNI_MAX_FILE_BYTES = 200_000
+_OMNI_FIX_ATTEMPTS_PER_CYCLE = 3
+
+
+def _omni_report_body(config: RepoConfig, findings: list[dict], scanned: int, total: int, complete: bool) -> str:
+    """The audit-issue body: severity table + top-N findings + progress.
+    Capped — the rest live in state (GitHub issue bodies cap at 64KB)."""
+    cap = config.omnisweep.max_findings_in_issue
+    sev_order = {s: i for i, s in enumerate(config.severity_vocab)}
+    ordered = sorted(findings, key=lambda f: sev_order.get(f["sev"], 99))
+    counts: dict[str, int] = {}
+    for f in findings:
+        counts[f["sev"]] = counts.get(f["sev"], 0) + 1
+    table = "| Severity | Count |\n|---|---|\n" + "\n".join(
+        f"| {s} | {counts.get(s, 0)} |" for s in config.severity_vocab
+    )
+    lines = [
+        "## 🔍 Fl4wRite omnisweep — full-tree audit" + (" (COMPLETE)" if complete else ""),
+        "",
+        table,
+        "",
+        f"Progress: **{scanned}/{total}** files scanned at HEAD." if total else "",
+        "",
+    ]
+    for f in ordered[:cap]:
+        lines.append(f"### {f['sev']} — `{f['path']}:{f['line']}` — `{f['rule']}`\n{f['msg']}\n")
+    if len(ordered) > cap:
+        lines.append(f"… and {len(ordered) - cap} more findings recorded in sweep state.\n")
+    if complete:
+        lines.append("_Sweep complete. Findings above are at current HEAD; the fix lane (if enabled for this repo) will open PRs for qualifying severities._")
+    return "\n".join(lines)
+
+
+def _omni_fix_phase(
+    config: RepoConfig, primary: ForgeAdapter, st: dict[str, Any], report: CycleReport
+) -> None:
+    """Post-completion fix drain. SEPARATELY gated (omnisweep.fix) — cold-code
+    findings lack the reviewed-diff premise the fix lane was built on.
+    Rails asserted HERE, not only in config: severity floor, GitHub-only,
+    stable hash-salted branch numbers (blake2b(head:id) — no positional
+    arithmetic, no wrap, ever)."""
+    import hashlib
+
+    from . import executor
+
+    if config.omnisweep.fix_min_severity not in config.severity_vocab:  # rail, in code
+        report.alerts.append("omnisweep.fix_min_severity invalid — fix phase skipped")
+        return
+    if primary.name != "github":
+        report.alerts.append("omnisweep fix phase: GitHub-only in v1 — findings stay in the audit issue")
+        return
+    sev_floor = config.severity_vocab.index(config.omnisweep.fix_min_severity)
+    head = st.get("omni_head", "")
+    if not head:
+        return
+    attempts = 0
+    for f in st.get("omni_findings", []):
+        if attempts >= _OMNI_FIX_ATTEMPTS_PER_CYCLE:
+            break
+        if f.get("fix_attempted") or config.severity_vocab.index(f["sev"]) > sev_floor:
+            continue
+        f["fix_attempted"] = True
+        attempts += 1
+        synth = PullRequest(
+            forge=primary.name,
+            number=int(hashlib.blake2b(f"{head}:{f['id']}".encode(), digest_size=8).hexdigest()[:12], 16),
+            repo=config.repo,
+            title=f"omnisweep fix: {f['path']}:{f['line']}",
+            head_sha=head,
+        )
+        from .models import Finding as _F
+
+        finding = _F(
+            rule_id=f["rule"], severity=f["sev"], path=f["path"], line=f["line"],
+            category="omnisweep", message=f["msg"],
+        )
+        result = executor.attempt_fix(synth, finding, config)
+        if result.get("status") == "pr_opened":
+            report.fix_prs_opened += 1
+        else:
+            log.warning("omni fix failed for %s:%s: %s", f["path"], f["line"], result.get("reason"))
+
+
+def _omnisweep_step(
+    config: RepoConfig,
+    primary: ForgeAdapter,
+    state_path: Path,
+    shadow_sink: ShadowSink | None,
+    st: dict[str, Any],
+    report: CycleReport,
+    deadline: float | None,
+) -> None:
+    """Omnisweep: full-tree scan at HEAD, one file per model call, findings
+    compacted into state and surfaced as ONE audit issue edited in place.
+    Cursor-resumable, capped per cycle, terminal on exhaustion; the total-
+    files cap aborts the sweep loudly. Fix phase runs only after completion
+    and only through the separately-gated _omni_fix_phase."""
+    import fnmatch
+
+    from . import gatekeeper
+    from .analyzer import ModelUnavailable, analyze
+
+    if st.get("omni_complete"):
+        if config.omnisweep.fix and st.get("omni_findings"):
+            _omni_fix_phase(config, primary, st, report)
+        return
+
+    tree = primary.list_tree_files(config.repo)
+    if tree is None:
+        report.alerts.append("omnisweep: tree listing unqueryable (skipped this cycle)")
+        return
+    files, truncated = tree
+    if truncated:
+        report.alerts.append("omnisweep: tree listing TRUNCATED by the forge — sweep may miss files")
+
+    excludes = config.omnisweep.exclude + (config.path_filters or {}).get("ignore", [])
+    scan = sorted(
+        p for (p, size) in files
+        if 0 < size <= _OMNI_MAX_FILE_BYTES
+        and not any(fnmatch.fnmatch(p, pat) for pat in excludes)
+    )
+    total = len(scan)
+    scanned_total = int(st.get("omni_scanned_total", 0))
+    if scanned_total + total > config.omnisweep.max_total_files:
+        report.alerts.append(
+            f"omnisweep ABORTED: {scanned_total + total} files exceeds "
+            f"max_total_files={config.omnisweep.max_total_files} — widen the cap or narrow excludes"
+        )
+        st["omni_complete"] = True
+        return
+
+    cursor = st.get("omni_cursor", "")
+    pending = [p for p in scan if p > cursor][: config.omnisweep.max_files_per_cycle]
+    if not pending:
+        st["omni_complete"] = True
+        findings = st.get("omni_findings", [])
+        _omni_upsert_issue(config, primary, st, findings, len(scan), len(scan), complete=True, report=report)
+        report.alerts.append(f"omnisweep complete: {len(findings)} findings across {total} files")
+        if config.omnisweep.fix and findings:
+            _omni_fix_phase(config, primary, st, report)
+        return
+
+    # anchor for the fix phase: HEAD moves mid-sweep → findings from an older
+    # HEAD are re-anchored by the freshness of the file fetch at fix time.
+    if not st.get("omni_head"):
+        anchor = primary.head_check_runs(config.repo)
+        if anchor:
+            st["omni_head"] = anchor[0]
+
+    scanned_this_cycle = 0
+    for path in pending:
+        if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
+            report.alerts.append("omnisweep deferred — cycle deadline reached")
+            break
+        content = primary.get_file(config.repo, path, st.get("omni_head", "") or "HEAD")
+        if content is None:
+            st["omni_cursor"] = path  # unfetchable files are skipped, not retried forever
+            continue
+        synth = PullRequest(
+            forge=primary.name, number=0, repo=config.repo,
+            title=f"omnisweep: {path}", head_sha=st.get("omni_head", "") or "HEAD",
+        )
+        try:
+            doc = analyze(synth, {path}, content, config, mode="file")
+        except ModelUnavailable as exc:
+            report.model_unavailable += 1
+            log.warning("omnisweep model unavailable at %s: %s", path, exc)
+            break  # deferred: cursor stays before this file
+        findings = doc.findings
+        if findings:
+            findings, dropped = gatekeeper.filter_findings(findings, config)
+            report.gatekeeper_dropped += dropped
+        next_id = int(st.get("omni_next_id", 1))
+        for f in findings:
+            st.setdefault("omni_findings", []).append({
+                "id": next_id, "path": f.path, "line": f.line, "rule": f.rule_id,
+                "sev": f.severity, "msg": f.message[:200],  # compact: no proposals in state
+            })
+            next_id += 1
+        st["omni_next_id"] = next_id
+        st["omni_cursor"] = path
+        scanned_this_cycle += 1
+        state.save_state(state_path, st)  # checkpoint after each file
+    st["omni_scanned_total"] = scanned_total + scanned_this_cycle
+    report.omni_scanned = scanned_this_cycle
+    report.omni_findings = len(st.get("omni_findings", []))
+    done = st.get("omni_cursor", "") >= scan[-1] if scan else True
+    if done and scanned_this_cycle:
+        # finalized in the SAME cycle as the last file — no idle hourly hop
+        st["omni_complete"] = True
+        report.alerts.append(
+            f"omnisweep complete: {report.omni_findings} findings across {total} files"
+        )
+        _omni_upsert_issue(
+            config, primary, st, st.get("omni_findings", []),
+            total, total, complete=True, report=report,
+        )
+        if config.omnisweep.fix and st.get("omni_findings"):
+            _omni_fix_phase(config, primary, st, report)
+    else:
+        _omni_upsert_issue(
+            config, primary, st, st.get("omni_findings", []),
+            len([p for p in scan if p <= st.get("omni_cursor", "")]), total, complete=False, report=report,
+        )
+
+
+def _omni_upsert_issue(
+    config: RepoConfig, primary: ForgeAdapter, st: dict[str, Any],
+    findings: list[dict], scanned: int, total: int, complete: bool, report: CycleReport,
+) -> None:
+    """Create-or-edit the ONE audit issue per repo, through the adapter.
+    Shadow mode touches nothing. Findings live in state — an issue failure
+    degrades to next-cycle retry, never data loss."""
+    if config.shadow or not findings:
+        return
+    body = _omni_report_body(config, findings, scanned, total, complete)
+    number = st.get("omni_issue")
+    if number:
+        if not primary.update_issue(config.repo, number, body):
+            report.alerts.append(f"omnisweep: issue #{number} update failed — retrying next cycle")
+        return
+    created = primary.open_issue(
+        config.repo, f"omnisweep: full-tree audit of {config.repo}", body,
+    )
+    if created is None:
+        report.alerts.append("omnisweep: audit-issue creation failed — retrying next cycle")
+        return
+    st["omni_issue"] = created
 
 
 def _retro_sweep(
@@ -636,6 +869,11 @@ def run_cycle(
                 merged_keep |= _retro_sweep(
                     config, primary, state_path, get_diff, shadow_sink, st,
                     report, deadline,
+                )
+
+            if config.omnisweep.enabled:
+                _omnisweep_step(
+                    config, primary, state_path, shadow_sink, st, report, deadline,
                 )
 
             state.prune_closed(st, open_numbers | merged_keep)

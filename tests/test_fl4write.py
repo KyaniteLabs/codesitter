@@ -161,7 +161,7 @@ class TestGrounding:
     def _analyze_with(self, monkeypatch, findings_json, diff="--- a/x.py\n+++ b/x.py\n+pass"):
         monkeypatch.setattr(
             "fl4write.analyzer._call_model",
-            lambda route, prompt: json.dumps({"findings": findings_json}),
+            lambda route, prompt, mode="pr": json.dumps({"findings": findings_json}),
         )
         pr = make_pr()
         return analyze(pr, {"x.py"}, diff, make_config())
@@ -207,7 +207,7 @@ class TestGrounding:
     def test_adv_model_unavailable_never_silent(self, monkeypatch):
         monkeypatch.setattr(
             "fl4write.analyzer._call_model",
-            lambda route, prompt: (_ for _ in ()).throw(RuntimeError("endpoint down")),
+            lambda route, prompt, mode="pr": (_ for _ in ()).throw(RuntimeError("endpoint down")),
         )
         with pytest.raises(ModelUnavailable):
             analyze(make_pr(), {"x.py"}, "d", make_config())
@@ -340,7 +340,7 @@ class TestEngine:
         monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr(
             "fl4write.analyzer._call_model",
-            lambda route, prompt: json.dumps({"findings": []}),
+            lambda route, prompt, mode="pr": json.dumps({"findings": []}),
         )
         return run_cycle(
             c,
@@ -370,7 +370,7 @@ class TestEngine:
         monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr(
             "fl4write.issues._call_model",
-            lambda route, prompt: json.dumps(
+            lambda route, prompt, mode="pr": json.dumps(
                 {"labels": ["bug"], "is_duplicate": False, "duplicate_hint": None,
                  "draft_reply": "r", "urgency": "low", "is_regression": False,
                  "regression_version": None}
@@ -421,7 +421,7 @@ class TestEngine:
         monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr(
             "fl4write.analyzer._call_model",
-            lambda route, prompt: (_ for _ in ()).throw(RuntimeError("down")),
+            lambda route, prompt, mode="pr": (_ for _ in ()).throw(RuntimeError("down")),
         )
         r = run_cycle(c, tmp_path / "s.json", get_diff=lambda pr: ({"x.py"}, "d"))
         assert r.model_unavailable == 1 and forge.posts == []
@@ -437,7 +437,7 @@ class TestEngine:
         monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr(
             "fl4write.analyzer._call_model",
-            lambda route, prompt: json.dumps({"findings": []}),
+            lambda route, prompt, mode="pr": json.dumps({"findings": []}),
         )
         r = run_cycle(c, tmp_path / "state.json", get_diff=lambda pr: ({"x.py"}, "d"), trigger_reason="force")
         assert r.reviewed == 0  # same SHA -> no review, whatever the reason
@@ -469,7 +469,7 @@ class TestReviewGateRegressions:
 
     def test_f4_model_prose_not_json_is_model_unavailable(self, monkeypatch):
         monkeypatch.setattr(
-            "fl4write.analyzer._call_model", lambda route, prompt: "I cannot comply with that request."
+            "fl4write.analyzer._call_model", lambda route, prompt, mode="pr": "I cannot comply with that request."
         )
         with pytest.raises(ModelUnavailable):
             analyze(make_pr(), {"x.py"}, "d", make_config())
@@ -484,7 +484,7 @@ class TestReviewGateRegressions:
     def test_f7_category_scrubbed(self, monkeypatch):
         monkeypatch.setattr(
             "fl4write.analyzer._call_model",
-            lambda route, prompt: json.dumps(
+            lambda route, prompt, mode="pr": json.dumps(
                 {
                     "findings": [
                         {
@@ -562,7 +562,7 @@ class TestAuditRegressions:
         f = Finding(rule_id="secrets", severity="Major", path="a.py", line=1, category="C", message="m")
         import fl4write.gatekeeper as gk
         orig = gk._call_model
-        gk._call_model = lambda route, prompt: '{"keep": [{"path": "OTHER.py", "line": "9"}]}'
+        gk._call_model = lambda route, prompt, mode="pr": '{"keep": [{"path": "OTHER.py", "line": "9"}]}'
         try:
             kept, dropped = gk.filter_findings([f], c)
         finally:
@@ -639,7 +639,7 @@ class TestAuditRegressions:
         monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr(
             "fl4write.issues._call_model",
-            lambda route, prompt: json.dumps({"labels": [], "is_duplicate": False, "duplicate_hint": None,
+            lambda route, prompt, mode="pr": json.dumps({"labels": [], "is_duplicate": False, "duplicate_hint": None,
                                               "draft_reply": "r", "urgency": "low", "is_regression": False,
                                               "regression_version": None}))
         c = make_config(shadow=True, issues_enabled=True)
@@ -654,7 +654,7 @@ class TestAuditRegressions:
         monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr(
             "fl4write.analyzer._call_model",
-            lambda route, prompt: json.dumps({"findings": []}))
+            lambda route, prompt, mode="pr": json.dumps({"findings": []}))
         r = run_cycle(make_config(shadow=False), tmp_path / "s.json", get_diff=lambda pr: None)
         assert r.reviewed == 0 and r.skipped_diff_unavailable == 1
         st = state.load_state(tmp_path / "s.json")

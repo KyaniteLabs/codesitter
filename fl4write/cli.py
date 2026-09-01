@@ -114,6 +114,14 @@ def main() -> int:
     live = "--live" in sys.argv
     run_fixes = "--fixes" in sys.argv
     run_issues = "--issues" in sys.argv
+    if "--omni" in sys.argv:
+        # One-shot prelaunch kick: a NORMAL run_cycle (CycleLock, deadline,
+        # one-state-owner all preserved) with the per-cycle file cap raised —
+        # repeated capped cycles under the same lock, never a side door.
+        config = load_config(sys.argv[1])
+        config = config.model_copy(update={
+            "omnisweep": config.omnisweep.model_copy(update={"enabled": True, "max_files_per_cycle": 50}),
+        })
     config = load_config(sys.argv[1])
     if live:
         config = config.model_copy(update={"shadow": False})
@@ -179,6 +187,7 @@ def main() -> int:
         f"reviewed={report.reviewed} shadow={config.shadow} "
         f"postmerge={report.postmerge_reviewed} "
         f"retro={report.retro_reviewed} retro_zombie={report.retro_zombies} "
+        f"omni={report.omni_scanned}/{report.omni_findings}f "
         f"ci_red={report.ci_red_heads} ci_fix={report.ci_fix_prs_opened} "
         f"ci_esc={report.ci_escalations} "
         f"dep_skipped={report.skipped_dependency} model_down={report.model_unavailable} "
