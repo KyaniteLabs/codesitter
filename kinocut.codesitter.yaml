@@ -9,9 +9,9 @@ forges:
     api_base: https://git.kyanitelabs.tech/api/v1
     token_env: CODESITTER_FORGEJO_TOKEN
 model:
-  endpoint: http://localhost:8317/v1/chat/completions
-  model: qwen3.8-27b
-  key_env: CODESITTER_QWEN_KEY
+  endpoint: https://api.deepinfra.com/v1/openai/chat/completions
+  model: deepseek-ai/DeepSeek-V4-Flash-0731
+  key_env: CODESITTER_DEEPSEEK_KEY
   temperature: 0.2
   max_tokens: 4000
 fallback_model:
