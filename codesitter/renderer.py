@@ -1,11 +1,14 @@
-"""Renderer: the BEHAVIOR.md comment contract + tone presets.
+"""Renderer: the BEHAVIOR.md comment contract + tone presets + design system v1.
 
 Persistent-comment law: ONE comment per PR, created once, then EDITED IN PLACE
 on every re-review (edit-in-place never re-notifies — Codecov's law). New
-findings get the NEW delta marker; resolved findings get the addressed marker.
-Tone is a renderer-only preset (Lane D): the analyzer is tone-blind; roast is
+findings get the 🆕 delta marker; resolved findings get the ✅ marker.
+Tone is a renderer-only preset: the analyzer is tone-blind; roast is
 internal-only and HARD-overridden for fork PRs and first-time contributors;
 security-urgency is always rendered regardless of tone.
+
+Design system v1: severity emoji badges, severity-count table header,
+collapsible fix proposals, visible branded footer, personality per tone.
 """
 
 from __future__ import annotations
@@ -15,33 +18,57 @@ from .models import Finding, PullRequest
 
 MARKER = "codesitter:v1:{review_hash}"
 
+_SEVERITY_EMOJI = {"Critical": "🔴", "Major": "🟠", "Minor": "🟡", "Nit": "🔵"}
+_URGENCY = {"Critical": "🚨 **Do NOT merge** until this is addressed."}
+
 _TONES = {
     "quiet": "",
-    "balanced": "",
-    "assertive": "",
+    "balanced": "> _Thanks for this PR. Here's what I found:_\n",
+    "assertive": "> _Straight to it:_\n",
     "roast": (
-        "> 🔥 Roast mode (internal repo, opted in). Findings below are ranked by "
-        "how much they'll hurt at 3am. No feelings were spared; none were targeted.\n\n"
+        "> 🔥 **Roast mode.** Findings ranked by how much they'll hurt at 3am. No feelings spared; none targeted.\n\n"
     ),
 }
-
-_URGENCY = {"Critical": "🚨 **Do NOT merge** until this is addressed."}
 
 
 def _tone_for(pr: PullRequest, config: RepoConfig) -> str:
     if pr.is_fork:
-        return config.tone_fork_override  # hard override, not configurable away
+        return config.tone_fork_override
     return config.tone
 
 
 def render_finding(f: Finding, tone: str) -> str:
+    """One finding as a section with emoji badge + collapsible fix proposal."""
+    emoji = _SEVERITY_EMOJI.get(f.severity, "⚪")
     urgency = _URGENCY.get(f.severity, "")
-    line = f"- **[{f.severity}] {f.path}:{f.line}** ({f.category}, rule `{f.rule_id}`) — {f.message}"
+    parts: list[str] = [f"### {emoji} {f.severity} — `{f.path}:{f.line}` — `{f.rule_id}`", ""]
+    parts.append(f.message)
     if f.proposal:
-        line += f"\n  - Proposal: `{f.proposal}`"
+        parts += [
+            "",
+            "<details>",
+            "<summary>💡 How to fix</summary>",
+            "",
+            "```",
+            f.proposal,
+            "```",
+            "",
+            "</details>",
+        ]
     if urgency:
-        line += f"\n  - {urgency}"
-    return line
+        parts += ["", urgency]
+    return "\n".join(parts)
+
+
+def _severity_table(findings: list[Finding]) -> str:
+    counts = _count_severities(findings)
+    rows = [
+        f"| 🔴 Critical | {counts.get('Critical', 0)} |",
+        f"| 🟠 Major | {counts.get('Major', 0)} |",
+        f"| 🟡 Minor | {counts.get('Minor', 0)} |",
+        f"| 🔵 Nit | {counts.get('Nit', 0)} |",
+    ]
+    return "| Severity | Count |\n|---|---|\n" + "\n".join(rows)
 
 
 def render_review(
@@ -50,25 +77,35 @@ def render_review(
     config: RepoConfig,
     review_hash: str,
     previous_findings: list[Finding] | None = None,
+    gatekeeper_dropped: int = 0,
 ) -> str:
-    """Full persistent-comment body. previous_findings drives the NEW deltas."""
+    """Full persistent-comment body with the design system applied."""
     tone = _tone_for(pr, config)
     previous_keys = {(f.path, f.line, f.rule_id) for f in (previous_findings or [])}
-    head = f"## codesitter review — {pr.repo}#{pr.number} @ `{pr.head_sha[:8]}`\n\n"
+
+    head = "## 🔍 codesitter review\n\n"
+
     if findings:
-        digest = " · ".join(f"**{n}** {s}" for s, n in sorted(_count_severities(findings).items()))
-        body = (
-            f"Findings: {digest}\n\n"
-            + _TONES[tone]
-            + "\n".join(
-                ("🆕 " if (f.path, f.line, f.rule_id) not in previous_keys else "") + render_finding(f, tone)
-                for f in findings
-            )
+        head += _severity_table(findings) + "\n\n"
+        head += f"`{pr.repo}#{pr.number}` @ `{pr.head_sha[:8]}` · {len(findings)} findings"
+        if gatekeeper_dropped:
+            head += f" · 🧹 {gatekeeper_dropped} nits filtered"
+        head += "\n\n"
+        body = _TONES[tone] + "\n---\n\n".join(
+            ("🆕 " if (f.path, f.line, f.rule_id) not in previous_keys else "") + render_finding(f, tone)
+            for f in findings
         )
     else:
-        body = _TONES[tone] + "No actionable comments were generated in the recent review. 🎉"
-    footer = f"\n\n---\n<!-- {MARKER.format(review_hash=review_hash)} -->\n"
+        body = _TONES[tone] + "## ✨ Clean review — nothing to fix.\n\nGo merge it. 🎉"
+
+    footer = (
+        f"\n\n---\n"
+        f"*Reviewed by **codesitter** · tone: {tone} · "
+        f"[org law](https://github.com/KyaniteLabs/codesitter/blob/main/codesitter/law.py)*\n"
+        f"<!-- {MARKER.format(review_hash=review_hash)} -->\n"
+    )
     out = head + body + footer
+
     from . import scrub
 
     scrub.assert_clean(out.replace(MARKER.format(review_hash=review_hash), ""))

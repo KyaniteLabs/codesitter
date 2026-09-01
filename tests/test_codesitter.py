@@ -247,7 +247,7 @@ class TestRenderer:
 
     def test_clean_pr_celebration(self):
         body = renderer.render_review(make_pr(), [], make_config(), "h")
-        assert "No actionable comments" in body
+        assert "Clean review" in body and "Go merge it" in body
 
 
 # ---------------------------------------------------------------- fix lane rails (#68)
@@ -421,7 +421,7 @@ class TestReviewGateRegressions:
     def test_f5_delta_uses_real_rule_id(self):
         f = Finding(rule_id="loc-ceiling", severity="Major", path="x.py", line=3, category="C", message="m")
         body = renderer.render_review(make_pr(), [f], make_config(), "h1")
-        assert "rule `loc-ceiling`" in body  # reconstruction anchor exists
+        assert "`loc-ceiling`" in body  # reconstruction anchor exists
         fresh2 = renderer.render_review(make_pr(), [f], make_config(), "h2", previous_findings=[f])
         assert "\U0001f195" not in fresh2.encode("unicode_escape").decode() or "\U0001f195" not in repr(fresh2)
 

@@ -90,8 +90,6 @@ def main() -> int:
 
         install_token_to_env()
     except Exception as exc:
-        import sys
-
         print(f"WARNING: GitHub App auth failed ({exc}); falling back to PAT", file=sys.stderr)
     _org_model_keys()
     state_path = Path.home() / ".codesitter" / f"{config.repo.replace('/', '__')}.state.json"
