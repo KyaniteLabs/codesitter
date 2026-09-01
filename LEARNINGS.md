@@ -19,3 +19,28 @@
 14. **bot_login must equal the posting account.** The hijack-defense author check with a mismatched default rejects OUR OWN persistent comment → double-post. Configurable now, wired to adapters.
 15. **Inaugural proof (live, kinocut #503):** all three paths verified in production — 🎉 celebration (clean diff), grounded Critical finding (planted token → rule `secrets` + proposal), edit-in-place on re-review (one comment, updated with 🆕).
 16. **Active repos eat adoptions twice.** Elixis (#149) lost its config to a racing branch exactly like Innerscape (#304) — verify-once is insufficient while branches are in flight. Countermeasure: the runner now verifies in-repo config presence on main EVERY cycle and alerts on loss.
+
+## 17. One state owner per cycle (the email storm, 2026-09-01)
+The engine loads state at cycle start; the issues lane did its OWN load+save
+mid-cycle; the engine's end-of-cycle save then overwrote the file from its
+stale in-memory copy — wiping `last_triaged_number` EVERY cycle. Combined
+with a bot_login identity mismatch (posting as kyanitelabs[bot], checking for
+simongonzalezdc), every run re-triaged every open issue as a NEW comment:
+maintainers got the same triage email 3–4× (237 duplicate comments deleted
+across 15 repos). Fix: lanes mutate the engine-owned dict; ONE save. Plus a
+marker-under-any-identity guard: never post a second copy, skip + log.
+**Law: any module that persists state must receive the shared state dict, never
+its own load/save pair.**
+
+## 18. Renames need diff review, not grep-and-pray
+The line-filtered codesitter→fl4write sweep protected the marker literals but
+silently rewrote a URL string — the surveillance fallback probe ended up
+checking `.fl4write.yaml` twice, printing a spurious "adoption lost" alert for
+every repo. Grep for the old name AFTER a sweep and eyeball every remaining
+hit; a "protected literals" list protects literals, not identifiers-in-strings.
+
+## 19. Identity follows the token, or edit-in-place dies
+bot_login must match the identity the token posts AS. With per-repo app
+installations the poster is kyanitelabs[bot]; a hardcoded personal login makes
+every "find my comment" lookup miss → new comment instead of edit → email.
+bot_login is now derived from the auth route (app=bot, PAT fallback=user).
