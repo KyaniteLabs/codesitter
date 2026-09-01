@@ -38,7 +38,7 @@ _URGENCY_MARKER = {"critical": "🚨", "high": "⚠️", "medium": "", "low": ""
 
 def collect_new_issues(forge: ForgeAdapter, repo: str, last_number: int) -> list[dict[str, Any]]:
     """Fetch open issues with number > last_number."""
-    issues = forge._call("GET", f"/repos/{repo}/issues?state=open&type=issue&per_page=30")
+    issues = forge._call("GET", f"/repos/{repo}/issues?state=open&per_page=30")
     if not isinstance(issues, list):
         return []
     return [i for i in issues if i.get("number", 0) > last_number and "pull_request" not in i]
