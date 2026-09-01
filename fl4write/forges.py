@@ -455,6 +455,37 @@ class ForgejoAdapter(ForgeAdapter):
     def head_check_runs(self, repo: str) -> tuple[str, list[dict]] | None:
         return None  # v1: check-runs (GHA) only; Forgejo commit statuses unsupported
 
+    def list_tree_files(self, repo: str) -> tuple[list[tuple[str, int]], bool] | None:
+        """Forgejo variant: Gitea's ?recursive=true TRUNCATES at 1000 entries
+        (live-caught on KyaniteLabs/liminal: 862 of a much larger tree) and
+        Gitea accepts a branch NAME in the trees path — so walk manually:
+        root non-recursive, then per-subtree recursion. Complete at any size."""
+        try:
+            branch = self._call("GET", f"/repos/{repo}").get("default_branch") or "main"
+            out: list[tuple[str, int]] = []
+            truncated = False
+
+            def walk(sha: str, prefix: str) -> None:
+                nonlocal truncated
+                t = self._call("GET", f"/repos/{repo}/git/trees/{sha}")
+                if t.get("truncated"):
+                    truncated = True
+                for e in t.get("tree") or []:
+                    if e.get("type") == "blob":
+                        out.append((prefix + (e.get("path") or ""), int(e.get("size") or 0)))
+                    elif e.get("type") == "tree":
+                        walk(e.get("sha"), prefix + (e.get("path") or "") + "/")
+
+            root = self._call("GET", f"/repos/{repo}/git/trees/{branch}")
+            for e in root.get("tree") or []:
+                if e.get("type") == "blob":
+                    out.append(((e.get("path") or ""), int(e.get("size") or 0)))
+                elif e.get("type") == "tree":
+                    walk(e.get("sha"), (e.get("path") or "") + "/")
+            return out, truncated
+        except ForgeError:
+            return None
+
     def open_issue(self, repo: str, title: str, body: str) -> int | None:
         try:
             return self._call("POST", f"/repos/{repo}/issues", {"title": title, "body": body})["number"]

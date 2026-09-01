@@ -1,16 +1,10 @@
-repo: KyaniteLabs/fl4write
+repo: simon/puenteworks-os
 forges:
-  github:
+  forgejo:
     role: primary
-    api_base: https://api.github.com
-    token_env: CODESITTER_GITHUB_TOKEN
+    api_base: https://git.kyanitelabs.tech/api/v1
+    token_env: CODESITTER_FORGEJO_TOKEN
 model:
-  endpoint: https://api.deepinfra.com/v1/openai/chat/completions
-  model: deepseek-ai/DeepSeek-V4-Flash-0731
-  key_env: CODESITTER_DEEPSEEK_KEY
-  temperature: 0.2
-  max_tokens: 4000
-fallback_model:
   endpoint: https://api.deepinfra.com/v1/openai/chat/completions
   model: deepseek-ai/DeepSeek-V4-Flash-0731
   key_env: CODESITTER_DEEPSEEK_KEY
@@ -24,7 +18,7 @@ severity_vocab: [Critical, Major, Minor, Nit]
 tone: balanced
 tone_fork_override: balanced
 fix:
-  enabled: true
+  enabled: false
   merge_own_prs: false
   max_fix_depth: 2
   fork_policy: comment-only
@@ -33,11 +27,8 @@ post_merge:
   enabled: true
   initial_lookback_h: 24
   max_per_cycle: 10
-ci_watch:
-  enabled: true
-  escalate_issues: true
-shadow: false
 retro_audit:
   enabled: true
   lookback_days: 90
   max_per_cycle: 5
+shadow: false
