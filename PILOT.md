@@ -1,32 +1,56 @@
-# The pilot program (live 2026-08-31)
+# The pilot program (live 2026-08-31; renamed + consolidated 2026-09-01)
 
-Five repos: kinocut, Epoch, devarch-framework, Innerscape, Elixis (every org
-repo that ran CodeRabbit). Live posting, review-only (fix lane off), balanced
-tone with fork hard-override, qwen3.8-27b brain + DeepSeek-V4-Flash-0731
-fallback, hourly runner at :20.
+**31 repos** — 5 wave-1 org repos (kinocut, Epoch, devarch-framework,
+Innerscape, Elixis) + 26 wave-2 repos (org + owner's personal; originally-ours
+only, no forks/collabs; `voice-to-sculpture-app` removed — repo never existed
+under that spelling; **liminal held** — Sinter's repo, #999 conversation, not
+unilateral). Full product live: review + gatekeeper + metrics + **fix lane** +
+**issues lane** (all four enabled 2026-09-01, CEO order). Brain:
+DeepSeek-V4-Flash-0731 via deepinfra (the $40-budget ledger route). Identity:
+`fl4write[bot]` (GitHub App "Fl4wRite", ID 3592379; per-repo installation
+resolution across the org AND user-account installations).
+
+## The runner (single-host law)
+
+- **Host**: nucbox `simon@100.113.174.74`, clone at `~/workspaces/fl4write`,
+  crontab `0 * * * * ~/workspaces/fl4write/run-cycle.sh` (self-updating —
+  pulls main first; model key read from `~/.bashrc`, quote-stripped).
+- **Log**: `~/workspaces/fl4write/runner.log` — per-cycle summary line, ERR
+  lines, and per-repo ALERT lines (adoption-lost etc.; surfaced 2026-09-01 —
+  an "ok" status used to hide alerts).
+- The zcode/laptop-hosted runner automation was RETIRED 2026-09-01: two
+  hosts with independent state files = duplicate posts (LEARNINGS #17).
+  One runner, one state dir. Do not re-add a second host.
 
 ## Monitoring (fl4write PM)
 
-- **Telemetry** = the runner's hourly one-line-per-repo reports (scanned /
-  reviewed / dep_skipped / model_down) + `~/.fl4write/*.state.json`.
-- **PM review cadence**: each session reads the runner reports since last
-  look; anything anomalous (crash loops, model_down persistence, double
-  posts) files to the map (.github #63) and BUG-SMELL-REGISTRY per
-  empower-orchestrator law.
+- **Telemetry** = the hourly runner.log line + `~/.fl4write/*.state.json`.
+  A green cycle is `31 ok / 0 errors` with zero ALERT lines.
+- **PM review cadence**: each session reads runner.log since last look;
+  anything anomalous (crash loops, model_down persistence, double posts,
+  ALERT repeats) files to the map (KyaniteLabs/.github #63) and
+  BUG-SMELL-REGISTRY.md per empower-orchestrator law.
 - **Acceptance metrics** (Greptile lesson): watch address-rate of posted
   findings per repo; a repo whose findings are never addressed = tuning
   conversation, not louder reviewing.
+- **Racing-branch surveillance**: config-presence check every cycle. Five
+  adoption losses so far (Innerscape ×1, Elixis ×2, devarch-framework ×1,
+  tastecheck ×1, content-production-system ×1). An ALERT means: re-adopt on
+  current main, then verify CONTENTS-ON-MAIN — never trust the merge event.
+
+## Pilot soak (clock restarted 2026-09-01)
+
+Day 1 of 14. Criteria before repo #32 or more autonomy: **14 incident-free
+days OR 100 incident-free reviews** — zero double-posts, zero email storms,
+model-route stability, surveillance proven. Incidents so far (all fixed with
+regression tests, see LEARNINGS.md): the email storm (#17), the rename-sweep
+URL bug (#18), the app-slug identity change (#20). Soak counts post-fix days.
 
 ## Expansion beyond the pilot
 
-New repo = a `.fl4write.yaml` (in-repo) + a central config in this repo +
-one line in the runner prompt. Criteria for admitting repo #6+: the pilot
-shows (a) no double-post/marker incidents, (b) model route stability, (c) at
-least one addressed finding per active repo. Pilot window: 2 weeks or first
-incident-free 100 reviews, whichever first.
-
-## Wave 2 (2026-08-31, CEO order "deploy all")
-
-28 repos added (all originally-ours, no forks, no collabs, ≥14d quiet): chance, reverse-engineering, research-scout, cerafica-api, cerafica-client, kyanite-landing, tradesflow, vocal-layer-studio, handoff-cms, Achiote, unstuck-coach-protocol, voice-to-sculpture-app, research-pipeline-prod, Creator-kit, dev-learning-archaeologist, content-production-system, small-business-skills, unstuck-coach, achiote-food-memory-researcher, codex-small-business-skills, web-typography-skill, personal-llm, unstuck-coach-live, checkyourself, tastecheck, complyos, evo-x2-ec. **liminal held** (Sinter team repo — #999 conversation, not unilateral).
-
-Pilot total: **32 repos** (5 wave-1 + 27 wave-2). All configs verified on main (32/32 ok, 0 alerts). Runner auto-discovers via glob — no prompt edit needed (which would re-pause the automation).
+Unchanged ladder (each gate before the next): acceptance metrics surfaced →
+fix-lane first real fix verified → issues-lane behavior contract
+(BEHAVIOR.md covers PR review only) → gatekeeper tuning from live data →
+repo #32+. Adding a repo = a `<repo>.fl4write.yaml` in this repo + the
+in-repo config (direct contents-PUT where allowed; **8 repos have rulesets
+requiring PRs — PUT 409s; research-scout allows squash merges only**).

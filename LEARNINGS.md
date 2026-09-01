@@ -44,3 +44,35 @@ bot_login must match the identity the token posts AS. With per-repo app
 installations the poster is kyanitelabs[bot]; a hardcoded personal login makes
 every "find my comment" lookup miss → new comment instead of edit → email.
 bot_login is now derived from the auth route (app=bot, PAT fallback=user).
+
+## 20. Renaming a GitHub App changes the bot login (2026-09-01)
+CEO renamed the app kyanitelabs → "Fl4wRite"; the SLUG followed, so the
+posting identity changed kyanitelabs[bot] → fl4write[bot] — while every
+identity check in the codebase still expected the old login. That is the
+email-storm failure mode reborn, caught only because "verify the CEO's
+clicks via GET /app" was run instead of taking the confirmation at face
+value. Fix: bot_login defaults follow the current slug; comments authored
+under legacy slugs are recognized as ours (is_own_identity).
+**Law: after ANY app-settings change, re-fetch /app and diff name, slug, and
+avatar — the slug is identity.**
+
+## 21. Ruleset repos reject direct contents-PUT with 409 (2026-09-01)
+8 of 31 repos return "Repository rule violations found — Changes must be
+made through a pull request" on contents PUT (409, not 403). Branch+PR+merge
+is the route; research-scout additionally allows ONLY squash merges (merge
+PUT 405s with "Merge commits are not allowed"). Also: never pin branch=main
+on contents calls — several repos default to master (404).
+
+## 22. .bashrc is invisible to cron and SSH (and its values may be quoted)
+Non-interactive shells never reach ~/.bashrc exports (Ubuntu early-return),
+so cron-run processes see no model key — and the .bashrc value can be
+wrapped in literal double quotes, which survive `cut -d= -f2-` and 401 the
+Authorization header. Extract with quote-stripping inside the runner script
+itself (run-cycle.sh carries this, host-guarded).
+
+## 23. Before asking the CEO to click, query what is observable (2026-09-01)
+"Install the app on your user account" turned out to be already-installed
+since May — the real bug was a hardcoded org installation ID. GitHub App
+state is fully observable via GET /app/installations with the app JWT.
+**Law: a click request is a last resort; every checkable claim gets checked
+first.**

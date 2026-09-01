@@ -1,4 +1,4 @@
-"""Codesitter test suite — the ralplan test-spec criteria + the executable
+"""fl4write test suite — the ralplan test-spec criteria + the executable
 ultraqa adversarial subset (injection, malformed payloads, fork safety,
 stale state, atomicity, cycle lock, misleading success)."""
 
