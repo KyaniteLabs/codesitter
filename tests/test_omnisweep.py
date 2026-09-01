@@ -224,6 +224,43 @@ class TestSweepLaws:
         assert paths == {"src/a.py"}  # stray dropped, grounded kept
 
 
+class TestLivelockRegression:
+    def test_permanently_failing_file_skipped_not_livelocked(self, tmp_path, monkeypatch):
+        """Live-caught on simongonzalezdc/chance: a file whose review exceeds
+        max_tokens defers FOREVER on a linear tree walk — everything behind it
+        never scans. Law: two failures, then skip-and-record; the sweep
+        completes; the final alert discloses the unscannable file."""
+        from fl4write.analyzer import ModelUnavailable
+        from fl4write.models import ReviewDoc
+
+        forge = OmniForge(files=[("a_ok.py", 100), ("b_huge.rs", 150_000), ("c_ok.py", 100)])
+        c = make_config()
+        attempts = {"n": 0}
+
+        def flaky_analyze(pr, files, text, config, mode="pr"):
+            path = next(iter(files))
+            if path == "b_huge.rs":
+                attempts["n"] += 1
+                raise ModelUnavailable("completion truncated at max_tokens")
+            return ReviewDoc(pr=pr, findings=[])
+
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        monkeypatch.setattr("fl4write.analyzer.analyze", flaky_analyze)
+        sp = tmp_path / "s.json"
+        run_cycle(c, sp, get_diff=lambda pr: (set(), ""))  # cycle 1: a_ok, b fails (attempt 1)
+        assert attempts["n"] == 1
+        r2 = run_cycle(c, sp, get_diff=lambda pr: (set(), ""))  # cycle 2: b fails again -> SKIPPED
+        assert attempts["n"] == 2
+        st = state.load_state(sp)
+        assert "b_huge.rs" in st.get("omni_unscannable", [])
+        # the skip-continue lets c_ok scan in the SAME cycle as the skip —
+        # completion may land in cycle 2 or 3; the law is: it LANDS, disclosed
+        r3 = run_cycle(c, sp, get_diff=lambda pr: (set(), ""))
+        all_alerts = r2.alerts + r3.alerts
+        assert any("omnisweep complete" in a and "1 unscannable" in a for a in all_alerts)
+        assert state.load_state(sp)["omni_complete"]
+
+
 class TestFixPhaseLaws:
     def _completed_state(self, tmp_path, monkeypatch, findings, **omni):
         forge = OmniForge(model_findings=findings)

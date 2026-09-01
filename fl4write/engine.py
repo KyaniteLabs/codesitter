@@ -476,10 +476,21 @@ def _omnisweep_step(
         )
         try:
             doc = analyze(synth, {path}, content, config, mode="file")
+            st.setdefault("omni_file_fails", {}).pop(path, None)
         except ModelUnavailable as exc:
             report.model_unavailable += 1
-            log.warning("omnisweep model unavailable at %s: %s", path, exc)
-            break  # deferred: cursor stays before this file
+            fails = int(st.setdefault("omni_file_fails", {}).get(path, 0)) + 1
+            st["omni_file_fails"][path] = fails
+            # A linear tree walk must never LIVeLOCK on one file (live-caught:
+            # a file whose review exceeds max_tokens deferred forever, stalling
+            # everything behind it). One retry, then skip-and-record.
+            if fails >= 2:
+                st.setdefault("omni_unscannable", []).append(path)
+                st["omni_cursor"] = path
+                log.warning("omnisweep: %s unscannable after %d attempts — skipped, recorded", path, fails)
+                continue
+            log.warning("omnisweep model unavailable at %s (attempt %d): %s", path, fails, exc)
+            break  # one retry next cycle, cursor holds
         findings = doc.findings
         if findings:
             findings, dropped = gatekeeper.filter_findings(findings, config)
@@ -502,8 +513,10 @@ def _omnisweep_step(
     if done and scanned_this_cycle:
         # finalized in the SAME cycle as the last file — no idle hourly hop
         st["omni_complete"] = True
+        unscannable = len(st.get("omni_unscannable", []))
         report.alerts.append(
             f"omnisweep complete: {report.omni_findings} findings across {total} files"
+            + (f" ({unscannable} unscannable — model failed twice, skipped + recorded)" if unscannable else "")
         )
         _omni_upsert_issue(
             config, primary, st, st.get("omni_findings", []),
