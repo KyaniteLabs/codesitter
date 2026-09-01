@@ -71,7 +71,7 @@ def escalate(pr: PullRequest, findings: list[Finding], reason: str) -> str:
     """The human-escalation comment body for a blocked fix lane."""
     listing = "\n".join(f"- [{f.severity}] {f.path}:{f.line} — {f.message[:100]}" for f in findings)
     return (
-        f"## Fl4wRite fix lane — human action required\n\n"
+        f"## FL4WRITE fix lane — human action required\n\n"
         f"Blocked: {reason}\n\nOutstanding findings:\n{listing or '(none recorded)'}\n\n"
         "_This is an escalation, not a retry; the lane stops here by design._"
     )

@@ -127,7 +127,7 @@ def render_review(
     current_keys = {(f.path, f.line, f.rule_id) for f in findings}
     resolved = [f for f in (previous_findings or []) if (f.path, f.line, f.rule_id) not in current_keys]
 
-    head = "## 🔍 Fl4wRite review (post-merge)\n\n" if post_merge else "## 🔍 Fl4wRite review\n\n"
+    head = "## 🔍 FL4WRITE review (post-merge)\n\n" if post_merge else "## 🔍 FL4WRITE review\n\n"
 
     if findings or resolved:
         head += _severity_table(findings) + "\n\n"
@@ -157,7 +157,7 @@ def render_review(
 
     footer = (
         f"\n\n---\n"
-        f"*Reviewed by **Fl4wRite** · tone: {tone} · "
+        f"*Reviewed by **FL4WRITE** · tone: {tone} · "
         f"[org law](https://github.com/KyaniteLabs/fl4write/blob/main/fl4write/law.py)*\n"
         f"<!-- {MARKER.format(review_hash=review_hash)} -->\n"
     )

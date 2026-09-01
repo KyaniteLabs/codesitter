@@ -23,7 +23,7 @@ today DeepSeek-V4-Flash-0731 via deepinfra (the $40-budget ledger route) —
 consensus system** (2026-09-01); when it lands, the model routes in these
 configs change and the fallback==primary warning becomes moot. Coordinate
 with that lane before touching model routing. Identity:
-`fl4write[bot]` (GitHub App "Fl4wRite", ID 3592379; per-repo installation
+`fl4write[bot]` (GitHub App, ID 3592379 — display name being re-cased to FL4WRITE by the CEO; per-repo installation
 resolution across the org AND user-account installations).
 
 ## The runner (single-host law)

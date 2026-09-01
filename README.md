@@ -1,6 +1,6 @@
-# Fl4wRite (`fl4write`)
+# FL4WRITE (`fl4write`)
 
-*Formerly `codesitter` — renamed 2026-09-01. Brand: Fl4wRite (FL4W + RITE, from fluorite); package/repo: `fl4write`.*
+*Official stylization (CEO, 2026-09-01): **FL4WRITE**. Identity surfaces unchanged by law: repo/package `fl4write`, env vars `CODESITTER_*`, markers `fl4write:v1:`, bot logins.*
 
 Self-hosted, multi-forge code review bot — the org's CodeRabbit replacement.
 Chartered by the CEO 2026-08-31; built under wayfinder map
@@ -57,7 +57,7 @@ host OR explicitly accepted sleep gap) → PAT scopes enumerated + rotation set.
 ## Status — v0.4.0 ALL COMPONENTS BUILT (pilot live on 31 repos)
 
 **v0.2.0 adds the four remaining planned components:**
-- **Fix-lane executor** (`executor.py`): real worktree → model patch → test → PR → CI-gated merge of OWN PRs (authorship asserted in code). Closes the loop: Fl4wRite can now FIX what it finds, not just report it.
+- **Fix-lane executor** (`executor.py`): real worktree → model patch → test → PR → CI-gated merge of OWN PRs (authorship asserted in code). Closes the loop: FL4WRITE can now FIX what it finds, not just report it.
 - **Gatekeeper nit-filter** (`gatekeeper.py`): staff-engineer second pass that kills nits before posting (fail-open on model down). The Greptile 79%-nits lesson, implemented.
 - **Issues lane** (`issues.py`): GitHub + Forgejo issue triage — duplicate detection, label routing, answer drafting, regression flags. Comment-only (never closes or reassigns). Enable via `--issues` flag.
 - **Acceptance metrics** (`metrics.py`): address-rate tracking per cycle (surfaced as `acceptance=NN%` in the runner report once findings accumulate). The quality signal that tells us if findings are being acted on.

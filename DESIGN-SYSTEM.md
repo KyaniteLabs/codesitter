@@ -1,4 +1,4 @@
-# DESIGN-SYSTEM.md — Fl4wRite (the code review bot)
+# DESIGN-SYSTEM.md — FL4WRITE (the code review bot)
 
 **Status:** approved · **Date:** 2026-08-31 · **Version:** 2 (Pokemon direction)
 

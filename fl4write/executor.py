@@ -239,7 +239,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             "head": branch,
             "base": base,
             "body": (
-                "Automated fix by Fl4wRite.\n\n"
+                "Automated fix by FL4WRITE.\n\n"
                 f"Finding: [{finding.severity}] {finding.path}:{finding.line} — {finding.message}\n"
                 f"Proposal: {finding.proposal}\n\nTests pass. Review and merge."
             ),

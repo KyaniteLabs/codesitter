@@ -78,7 +78,7 @@ def render_triage_comment(issue_num: int, triage: dict[str, Any], config: RepoCo
     labels = ", ".join(f"`{lbl}`" for lbl in triage.get("labels", [])) or "none suggested"
 
     parts = [
-        f"## Fl4wRite triage — issue #{issue_num}",
+        f"## FL4WRITE triage — issue #{issue_num}",
         "",
         f"**Urgency:** {marker} {urgency}" if marker else f"**Urgency:** {urgency}",
         f"**Suggested labels:** {labels}",

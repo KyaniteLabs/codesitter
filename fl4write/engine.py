@@ -329,7 +329,7 @@ def _omni_report_body(config: RepoConfig, findings: list[dict], scanned: int, to
         f"| {s} | {counts.get(s, 0)} |" for s in config.severity_vocab
     )
     lines = [
-        "## 🔍 Fl4wRite omnisweep — full-tree audit" + (" (COMPLETE)" if complete else ""),
+        "## 🔍 FL4WRITE omnisweep — full-tree audit" + (" (COMPLETE)" if complete else ""),
         "",
         table,
         "",
@@ -795,7 +795,7 @@ def _ci_watch_step(
                 config.repo,
                 title=f"CI red on main @ {head[:8]} — {', '.join(r.get('name') or '?' for r in failing)}",
                 body=(
-                    "## Fl4wRite CI watch — human action required\n\n"
+                    "## FL4WRITE CI watch — human action required\n\n"
                     f"Default-branch HEAD `{head}` is red; no automated fix landed.\n\n"
                     f"Failing checks:\n" + "\n".join(summaries) +
                     "\n\n_Findings from annotations:_\n"
