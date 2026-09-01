@@ -20,6 +20,9 @@ for f in *.fl4write.yaml; do
     OUT=$(timeout 300 python3 -m fl4write.cli "$f" --fixes --issues 2>&1)
     if echo "$OUT" | grep -q "cycle:"; then
         OK=$((OK+1))
+        echo "$OUT" | grep "ALERT" | while read -r line; do
+            echo "$(date -Iseconds) $line" >> ~/workspaces/fl4write/runner.log
+        done
     else
         ERR=$((ERR+1))
         echo "$(date -Iseconds) ERR: $f — $(echo "$OUT" | tail -3)" >> ~/workspaces/fl4write/runner.log
