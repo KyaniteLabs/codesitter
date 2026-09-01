@@ -24,7 +24,7 @@ from .forges import ForgeAdapter, ForgeError, adapter_for
 from .models import Finding, PullRequest
 from .state import CycleLock, CycleLockHeld
 
-log = logging.getLogger("codesitter")
+log = logging.getLogger("fl4write")
 
 
 class ShadowSink(Protocol):

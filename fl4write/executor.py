@@ -28,7 +28,7 @@ from .config import RepoConfig
 from .fixlane import FixLaneBlocked, dependency_depth, escalate, fix_allowed, merge_own_pr
 from .models import Finding, PullRequest
 
-log = logging.getLogger("codesitter.executor")
+log = logging.getLogger("fl4write.executor")
 
 PATCH_SYSTEM = (
     "You are a code-fixer. You receive a finding, the file's current content, "
@@ -119,7 +119,7 @@ def attempt_fix(
         return {"status": "nofix", "reason": "model returned no fix"}
 
     # Create a temporary worktree
-    workdir = Path(tempfile.mkdtemp(prefix="codesitter-fix-"))
+    workdir = Path(tempfile.mkdtemp(prefix="fl4write-fix-"))
     try:
         # Clone the PR branch
         clone = _run(
@@ -144,11 +144,11 @@ def attempt_fix(
                 "commit",
                 "-q",
                 "-m",
-                f"fix({finding.rule_id}): {finding.message[:60]}\n\nCo-authored-by: codesitter <codesitter@kyanitelabs.tech>",
+                f"fix({finding.rule_id}): {finding.message[:60]}\n\nCo-authored-by: fl4write <fl4write@kyanitelabs.tech>",
             ],
             cwd=workdir,
         )
-        branch = f"codesitter/fix-{pr.number}-{finding.rule_id[:20]}"
+        branch = f"fl4write/fix-{pr.number}-{finding.rule_id[:20]}"
         _run(["git", "branch", "-M", branch], cwd=workdir)
         push = _run(
             [
@@ -173,7 +173,7 @@ def attempt_fix(
                 "title": f"fix({finding.rule_id}): {finding.message[:60]}",
                 "head": branch,
                 "base": "main",
-                "body": f"Automated fix by codesitter.\n\nFinding: [{finding.severity}] {finding.path}:{finding.line} — {finding.message}\nProposal: {finding.proposal}\n\nTests pass. Review and merge.",
+                "body": f"Automated fix by Fl4wRite.\n\nFinding: [{finding.severity}] {finding.path}:{finding.line} — {finding.message}\nProposal: {finding.proposal}\n\nTests pass. Review and merge.",
             }
         ).encode()
         req = urllib.request.Request(
@@ -218,7 +218,7 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str = "simongonzal
 
     merged = []
     try:
-        prs = api("GET", f"/repos/{config.repo}/pulls?state=open&head=KyaniteLabs:codesitter/")
+        prs = api("GET", f"/repos/{config.repo}/pulls?state=open&head=KyaniteLabs:fl4write/")
         for pr_data in prs:
             author = (pr_data.get("user") or {}).get("login", "")
             number = pr_data["number"]

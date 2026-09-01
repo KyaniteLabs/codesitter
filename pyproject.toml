@@ -1,6 +1,6 @@
 [project]
-name = "codesitter"
-version = "0.1.0"
+name = "fl4write"
+version = "0.3.0"
 description = "Self-hosted multi-forge code review bot - the org's CodeRabbit replacement."
 requires-python = ">=3.11"
 dependencies = ["pydantic>=2.5", "pyyaml>=6"]

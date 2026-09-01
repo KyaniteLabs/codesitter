@@ -22,7 +22,7 @@ from .config import RepoConfig
 from .forges import ForgeAdapter, ForgeError
 from .state import load_state, save_state
 
-log = logging.getLogger("codesitter.issues")
+log = logging.getLogger("fl4write.issues")
 
 _TRIAGE_SYSTEM = (
     "You are an issue triager. You receive an issue (title + body) and the "
@@ -68,7 +68,7 @@ def render_triage_comment(issue_num: int, triage: dict[str, Any], config: RepoCo
     labels = ", ".join(f"`{lbl}`" for lbl in triage.get("labels", [])) or "none suggested"
 
     parts = [
-        f"## codesitter triage — issue #{issue_num}",
+        f"## Fl4wRite triage — issue #{issue_num}",
         "",
         f"**Urgency:** {marker} {urgency}" if marker else f"**Urgency:** {urgency}",
         f"**Suggested labels:** {labels}",
@@ -83,9 +83,9 @@ def render_triage_comment(issue_num: int, triage: dict[str, Any], config: RepoCo
     if draft:
         parts.append(f"\n> {draft}")
 
-    parts.append("\n---\n<!-- codesitter-triage:v1 -->")
+    parts.append("\n---\n<!-- fl4write-triage:v1 -->")
     result = "\n".join(parts)
-    scrub.assert_clean(result.replace("<!-- codesitter-triage:v1 -->", ""))
+    scrub.assert_clean(result.replace("<!-- fl4write-triage:v1 -->", ""))
     return result
 
 
@@ -94,7 +94,9 @@ def find_existing_triage(forge: ForgeAdapter, repo: str, number: int, bot_login:
     for c in forge._paginated(f"/repos/{repo}/issues/{number}/comments", page_size=50):
         body = c.get("body") or ""
         author = ((c.get("user") or {}).get("login") or "").lower()
-        if "codesitter-triage:v1" in body and author == bot_login:
+        if (
+            "fl4write-triage:v1" in body or "codesitter-triage:v1" in body
+        ) and author == bot_login:
             return c["id"], body
     return None
 

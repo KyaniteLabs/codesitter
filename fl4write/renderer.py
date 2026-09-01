@@ -16,7 +16,10 @@ from __future__ import annotations
 from .config import RepoConfig
 from .models import Finding, PullRequest
 
-MARKER = "codesitter:v1:{review_hash}"
+MARKER = "fl4write:v1:{review_hash}"
+# Lookup must ALSO recognize pre-rename comments (posted as codesitter:v1)
+# or every open PR would get a duplicate review at the rename boundary.
+LEGACY_MARKER_PREFIXES = ("fl4write:v1:", "codesitter:v1:")
 
 _SEVERITY_EMOJI = {"Critical": "🔴", "Major": "🟠", "Minor": "🟡", "Nit": "🔵"}
 _URGENCY = {"Critical": "🚨 **Do NOT merge** until this is addressed."}
@@ -83,7 +86,7 @@ def render_review(
     tone = _tone_for(pr, config)
     previous_keys = {(f.path, f.line, f.rule_id) for f in (previous_findings or [])}
 
-    head = "## 🔍 codesitter review\n\n"
+    head = "## 🔍 Fl4wRite review\n\n"
 
     if findings:
         head += _severity_table(findings) + "\n\n"
@@ -100,8 +103,8 @@ def render_review(
 
     footer = (
         f"\n\n---\n"
-        f"*Reviewed by **codesitter** · tone: {tone} · "
-        f"[org law](https://github.com/KyaniteLabs/codesitter/blob/main/codesitter/law.py)*\n"
+        f"*Reviewed by **Fl4wRite** · tone: {tone} · "
+        f"[org law](https://github.com/KyaniteLabs/fl4write/blob/main/fl4write/law.py)*\n"
         f"<!-- {MARKER.format(review_hash=review_hash)} -->\n"
     )
     out = head + body + footer

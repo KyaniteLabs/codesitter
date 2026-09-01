@@ -1,4 +1,4 @@
-"""codesitter — self-hosted multi-forge code review bot.
+"""Fl4wRite — self-hosted multi-forge code review bot.
 
 The org's CodeRabbit replacement: BEHAVIOR.md contract, LLM-brained findings
 behind scrub+grounding gates, persistent-comment law, gated fix lane.

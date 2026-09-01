@@ -19,7 +19,7 @@ from .analyzer import ModelUnavailable, _call_model
 from .config import RepoConfig
 from .models import Finding
 
-log = logging.getLogger("codesitter.gatekeeper")
+log = logging.getLogger("fl4write.gatekeeper")
 
 _GATEKEEPER_SYSTEM = (
     "You are a staff engineer reviewing a code reviewer's findings before they "

@@ -1,6 +1,6 @@
 """GitHub App authentication — generates installation tokens.
 
-Uses the org's `kyanitelabs` GitHub App (ID 3592379) so every codesitter
+Uses the org's `kyanitelabs` GitHub App (ID 3592379) so every fl4write
 interaction shows as `kyanitelabs[bot]` — its own badge, avatar, and identity,
 separate from any personal account.
 

@@ -1,6 +1,6 @@
 """Cron adapter — the v1 trigger. One cycle for one configured repo.
 
-Usage: python3 -m codesitter.cli <config.yaml> [--live]
+Usage: python3 -m fl4write.cli <config.yaml> [--live]
 
 Diff fetching (the required get_diff): gh pr diff for GitHub-primary repos,
 git diff for Forgejo-primary when gh can't reach it. Keys are read at runtime
@@ -76,7 +76,7 @@ def make_get_diff(repo: str):
 
 def main() -> int:
     if len(sys.argv) < 2:
-        print("usage: python3 -m codesitter.cli <config.yaml> [--live]", file=sys.stderr)
+        print("usage: python3 -m fl4write.cli <config.yaml> [--live]", file=sys.stderr)
         return 2
     live = "--live" in sys.argv
     run_fixes = "--fixes" in sys.argv
@@ -91,10 +91,12 @@ def main() -> int:
         from .appauth import install_token_to_env
 
         install_token_to_env(repo=config.repo)
+        config = config.model_copy(update={"bot_login": "kyanitelabs[bot]"})
     except Exception as exc:
         print(f"WARNING: GitHub App auth failed ({exc}); falling back to PAT", file=sys.stderr)
+        config = config.model_copy(update={"bot_login": "simongonzalezdc"})
     _org_model_keys()
-    state_path = Path.home() / ".codesitter" / f"{config.repo.replace('/', '__')}.state.json"
+    state_path = Path.home() / ".fl4write" / f"{config.repo.replace('/', '__')}.state.json"
     report = run_cycle(
         config,
         state_path,
@@ -104,17 +106,25 @@ def main() -> int:
     )
     # Config-presence surveillance (learning 16): racing branches have twice
     # silently reverted adoptions; every cycle verifies the IN-REPO config
-    # still exists on main and alerts if the adoption was lost.
+    # still exists on main and alerts if the adoption was lost. Accepts the
+    # renamed .fl4write.yaml and the legacy .fl4write.yaml during migration.
     probe = subprocess.run(  # noqa: S603,607
-        ["gh", "api", f"repos/{config.repo}/contents/.codesitter.yaml", "--jq", ".name"],
+        ["gh", "api", f"repos/{config.repo}/contents/.fl4write.yaml", "--jq", ".name"],
         capture_output=True,
         text=True,
         timeout=30,
     )
     if probe.returncode != 0:
-        print(f"ALERT: adoption lost — .codesitter.yaml missing on {config.repo} main (re-adopt)")
+        probe = subprocess.run(  # noqa: S603,607
+            ["gh", "api", f"repos/{config.repo}/contents/.fl4write.yaml", "--jq", ".name"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    if probe.returncode != 0:
+        print(f"ALERT: adoption lost — no .fl4write.yaml or .fl4write.yaml on {config.repo} main (re-adopt)")
     print(
-        f"codesitter cycle: repo={report.repo} scanned={report.scanned} "
+        f"fl4write cycle: repo={report.repo} scanned={report.scanned} "
         f"reviewed={report.reviewed} shadow={config.shadow} "
         f"dep_skipped={report.skipped_dependency} model_down={report.model_unavailable} "
         f"gate_dropped={report.gatekeeper_dropped} fix_prs={report.fix_prs_opened} "

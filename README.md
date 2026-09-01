@@ -1,4 +1,6 @@
-# codesitter
+# Fl4wRite (`fl4write`)
+
+*Formerly `Fl4wRite` — renamed 2026-09-01. Brand: Fl4wRite (FL4W + RITE, from fluorite); package/repo: `fl4write`.*
 
 Self-hosted, multi-forge code review bot — the org's CodeRabbit replacement.
 Chartered by the CEO 2026-08-31; built under wayfinder map
@@ -38,7 +40,7 @@ wiring lands with the first live deployment (#69), not before.
 
 ## Adding a repo
 
-Drop a `.codesitter.yaml` in the repo (see `kinocut.codesitter.yaml` for the
+Drop a `.fl4write.yaml` in the repo (see `kinocut.fl4write.yaml` for the
 reference instance): forge bindings (exactly one `primary`, others `mirror`),
 model routes, repo law as `review:` rules, severity vocab, tone, fix-lane
 autonomy, known-env failures. Config validates fail-loud at startup.
@@ -55,19 +57,19 @@ host OR explicitly accepted sleep gap) → PAT scopes enumerated + rotation set.
 ## Status — v0.2.0 ALL COMPONENTS BUILT (pilot live on 31 repos)
 
 **v0.2.0 adds the four remaining planned components:**
-- **Fix-lane executor** (`executor.py`): real worktree → model patch → test → PR → CI-gated merge of OWN PRs (authorship asserted in code). Closes the loop: codesitter can now FIX what it finds, not just report it.
+- **Fix-lane executor** (`executor.py`): real worktree → model patch → test → PR → CI-gated merge of OWN PRs (authorship asserted in code). Closes the loop: Fl4wRite can now FIX what it finds, not just report it.
 - **Gatekeeper nit-filter** (`gatekeeper.py`): staff-engineer second pass that kills nits before posting (fail-open on model down). The Greptile 79%-nits lesson, implemented.
 - **Issues lane** (`issues.py`): GitHub + Forgejo issue triage — duplicate detection, label routing, answer drafting, regression flags. Comment-only (never closes or reassigns). Enable via `--issues` flag.
 - **Acceptance metrics** (`metrics.py`): address-rate tracking per cycle (`acceptance=42%` in the runner report). The quality signal that tells us if findings are being acted on.
 
-**Usage:** `python3 -m codesitter.cli <config> [--live] [--fixes] [--issues]`
+**Usage:** `python3 -m fl4write.cli <config> [--live] [--fixes] [--issues]`
 
 v0.1.2 runs in production on five repos (see PILOT.md): kinocut, Epoch,
 devarch-framework, Innerscape, Elixis — live posting, review-only. 49 tests
 green including the adversarial subset; the build passed an adversarial
 review gate (8 blockers found and fixed — see LEARNINGS.md). The runner is a
-harness automation (hourly, :20) driving `python3 -m codesitter.cli`. PM: the
-kino PM (first codesitter PM, CEO-appointed 2026-08-31). Roadmap on map #63:
+harness automation (hourly, :20) driving `python3 -m fl4write.cli`. PM: the
+kino PM (first Fl4wRite PM, CEO-appointed 2026-08-31). Roadmap on map #63:
 gatekeeper filter stage, scoped learnings, dependency-dashboard state,
 acceptance-metrics surfacing, GitHub-App trigger adapter (v2), fix-lane
 executor wiring.

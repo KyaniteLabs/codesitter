@@ -9,12 +9,12 @@ from pathlib import Path
 
 import pytest
 
-from codesitter import config as cfg
-from codesitter import fixlane, renderer, scrub, state
-from codesitter.analyzer import ModelUnavailable, analyze
-from codesitter.engine import run_cycle
-from codesitter.forges import ForgeAdapter
-from codesitter.models import Finding, PullRequest
+from fl4write import config as cfg
+from fl4write import fixlane, renderer, scrub, state
+from fl4write.analyzer import ModelUnavailable, analyze
+from fl4write.engine import run_cycle
+from fl4write.forges import ForgeAdapter
+from fl4write.models import Finding, PullRequest
 
 
 # ---------------------------------------------------------------- helpers
@@ -78,7 +78,7 @@ class TestConfig:
             make_config(tone="savage")
 
     def test_reference_instance_loads(self, tmp_path):
-        src = Path(__file__).parent.parent / "kinocut.codesitter.yaml"
+        src = Path(__file__).parent.parent / "kinocut.fl4write.yaml"
         c = cfg.load_config(src)
         assert c.repo == "KyaniteLabs/kinocut"
         assert c.fix.max_fix_depth == 2
@@ -160,7 +160,7 @@ class TestScrub:
 class TestGrounding:
     def _analyze_with(self, monkeypatch, findings_json, diff="--- a/x.py\n+++ b/x.py\n+pass"):
         monkeypatch.setattr(
-            "codesitter.analyzer._call_model",
+            "fl4write.analyzer._call_model",
             lambda route, prompt: json.dumps({"findings": findings_json}),
         )
         pr = make_pr()
@@ -206,7 +206,7 @@ class TestGrounding:
 
     def test_adv_model_unavailable_never_silent(self, monkeypatch):
         monkeypatch.setattr(
-            "codesitter.analyzer._call_model",
+            "fl4write.analyzer._call_model",
             lambda route, prompt: (_ for _ in ()).throw(RuntimeError("endpoint down")),
         )
         with pytest.raises(ModelUnavailable):
@@ -221,7 +221,7 @@ class TestGrounding:
 class TestRenderer:
     def test_persistent_comment_marker(self):
         body = renderer.render_review(make_pr(), [], make_config(), "abc123")
-        assert "codesitter:v1:abc123" in body
+        assert "fl4write:v1:abc123" in body
 
     def test_new_findings_get_delta_marker(self):
         f = Finding(rule_id="general", severity="Major", path="x.py", line=3, category="C", message="m")
@@ -316,9 +316,9 @@ class FakeForge(ForgeAdapter):
 class TestEngine:
     def _run(self, tmp_path, forge, monkeypatch, **cfg_over):
         c = make_config(**cfg_over)
-        monkeypatch.setattr("codesitter.engine.adapter_for", lambda b: forge)
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr(
-            "codesitter.analyzer._call_model",
+            "fl4write.analyzer._call_model",
             lambda route, prompt: json.dumps({"findings": []}),
         )
         return run_cycle(
@@ -362,9 +362,9 @@ class TestEngine:
         forge = FakeForge()
         forge.prs = [make_pr()]
         c = make_config()
-        monkeypatch.setattr("codesitter.engine.adapter_for", lambda b: forge)
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr(
-            "codesitter.analyzer._call_model",
+            "fl4write.analyzer._call_model",
             lambda route, prompt: (_ for _ in ()).throw(RuntimeError("down")),
         )
         r = run_cycle(c, tmp_path / "s.json", get_diff=lambda pr: ({"x.py"}, "d"))
@@ -378,9 +378,9 @@ class TestEngine:
         forge.prs = [make_pr()]
         self._run(tmp_path, forge, monkeypatch, shadow=False)
         c = make_config()
-        monkeypatch.setattr("codesitter.engine.adapter_for", lambda b: forge)
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr(
-            "codesitter.analyzer._call_model",
+            "fl4write.analyzer._call_model",
             lambda route, prompt: json.dumps({"findings": []}),
         )
         r = run_cycle(c, tmp_path / "state.json", get_diff=lambda pr: ({"x.py"}, "d"), trigger_reason="force")
@@ -393,7 +393,7 @@ class TestReviewGateRegressions:
         """get_diff is required — vacuous grounding aborts loudly."""
         import inspect
 
-        from codesitter.engine import run_cycle
+        from fl4write.engine import run_cycle
 
         sig = inspect.signature(run_cycle)
         assert sig.parameters["get_diff"].default is inspect.Parameter.empty
@@ -413,7 +413,7 @@ class TestReviewGateRegressions:
 
     def test_f4_model_prose_not_json_is_model_unavailable(self, monkeypatch):
         monkeypatch.setattr(
-            "codesitter.analyzer._call_model", lambda route, prompt: "I cannot comply with that request."
+            "fl4write.analyzer._call_model", lambda route, prompt: "I cannot comply with that request."
         )
         with pytest.raises(ModelUnavailable):
             analyze(make_pr(), {"x.py"}, "d", make_config())
@@ -427,7 +427,7 @@ class TestReviewGateRegressions:
 
     def test_f7_category_scrubbed(self, monkeypatch):
         monkeypatch.setattr(
-            "codesitter.analyzer._call_model",
+            "fl4write.analyzer._call_model",
             lambda route, prompt: json.dumps(
                 {
                     "findings": [
@@ -455,7 +455,7 @@ class TestReviewGateRegressions:
 # ---------------------------------------------------------------- misleading success (ULTRAQA)
 class TestMisleadingSuccess:
     def test_report_never_claims_reviewed_when_nothing_ran(self):
-        from codesitter.engine import CycleReport
+        from fl4write.engine import CycleReport
 
         r = CycleReport(repo="x")
         assert r.reviewed == 0 and r.scanned == 0  # zeros are zeros, not success prose

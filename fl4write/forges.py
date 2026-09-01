@@ -18,9 +18,10 @@ import urllib.request
 from typing import Any
 
 from .config import ForgeBinding
+from . import renderer
 from .models import PullRequest
 
-USER_AGENT = "codesitter/0.1"
+USER_AGENT = "fl4write/0.1"
 
 
 class ForgeError(RuntimeError):
@@ -65,7 +66,7 @@ class ForgeAdapter:
     ) -> list[PullRequest]:  # pragma: no cover - interface
         raise NotImplementedError
 
-    bot_login: str = "codesitter-bot"
+    bot_login: str = "kyanitelabs[bot]"
 
     def _paginated(self, path: str, page_size: int, max_pages: int = 10) -> list[dict]:
         """Page through until a short page (finding 6: PRs/comments past
@@ -119,7 +120,7 @@ class GitHubAdapter(ForgeAdapter):
             author = ((c.get("user") or {}).get("login") or "").lower()
             # Marker substring alone is hijackable by any commenter (review
             # finding 2): require BOTH marker and our own authorship.
-            if "codesitter:v1:" in body and author == self.bot_login:
+            if any(prefix in body for prefix in renderer.LEGACY_MARKER_PREFIXES) and author == self.bot_login:
                 return c["id"], body
         return None
 
@@ -160,7 +161,7 @@ class ForgejoAdapter(ForgeAdapter):
         for c in self._paginated(f"/repos/{repo}/issues/{number}/comments", page_size=50):
             body = c.get("body") or ""
             author = ((c.get("user") or {}).get("login") or "").lower()
-            if "codesitter:v1:" in body and author == self.bot_login:
+            if any(prefix in body for prefix in renderer.LEGACY_MARKER_PREFIXES) and author == self.bot_login:
                 return c["id"], body
         return None
 

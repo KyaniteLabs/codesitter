@@ -17,10 +17,10 @@ from typing import Any
 from .config import RepoConfig
 from .forges import ForgeAdapter
 
-log = logging.getLogger("codesitter.metrics")
+log = logging.getLogger("fl4write.metrics")
 
 
-def count_addressed_findings(forge: ForgeAdapter, repo: str, pr_number: int, marker: str = "codesitter:v1:") -> int:
+def count_addressed_findings(forge: ForgeAdapter, repo: str, pr_number: int, marker: str = "fl4write:v1:") -> int:
     """Check how many findings in our persistent comment were addressed.
 
     A finding is 'addressed' if:

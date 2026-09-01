@@ -7,7 +7,7 @@ or is echoed into output. Defense classes, from the Lane E research:
 - control/invisible characters (RLM/LRM/ZWSP, bidi overrides, ANSI escapes)
 - markdown/link exfiltration vectors (data: URLs, base64 img/src in any form)
 - hidden HTML (details/summary collapses hiding instructions), HTML comments
-- our own marker protocol (codesitter-sitter must never be spoofable)
+- our own marker protocol (fl4write-sitter must never be spoofable)
 
 This is deliberately allow-list-flavored: strip by category, then assert the
 result contains none of the categories. Injection payloads become inert text
@@ -29,7 +29,7 @@ _REMOTE_SRC_RE = re.compile(r"<\s*(img|source|script|iframe)[^>]*src\s*=", re.IG
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _HIDDEN_TAG_RE = re.compile(r"</?\s*(details|summary|script|style|iframe)\b[^>]*>", re.IGNORECASE)
 # Our persistent-comment marker must be minted only by the renderer.
-_MARKER_RE = re.compile(r"codesitter:v\d+:[0-9a-fA-F]+")
+_MARKER_RE = re.compile(r"(?:fl4write|codesitter):v\d+:[0-9a-fA-F]+")
 
 
 def scrub(text: str) -> str:

@@ -1,4 +1,4 @@
-"""Per-repo config schema (.codesitter.yaml) — repo law as data.
+"""Per-repo config schema (.fl4write.yaml) — repo law as data.
 
 The AGENTS.md pattern made machine-readable: review constraints, severity
 mapping, fix-lane autonomy, model routing, per-forge bindings. Adding a repo
@@ -59,7 +59,7 @@ class RepoConfig(BaseModel):
     shadow: bool = False  # True = log findings, post nothing
     gatekeeper: bool = True  # nit-filter second pass (fail-open)
     issues_enabled: bool = False  # issues-lane triage (comment-only)
-    bot_login: str = "simongonzalezdc"  # the account comments post AS; the
+    bot_login: str = "kyanitelabs[bot]"  # the account comments post AS; the
     # hijack-defense author check must match this or we reject our own
     # persistent comment and double-post (inaugural finding)
 

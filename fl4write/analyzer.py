@@ -37,7 +37,7 @@ _SYSTEM = (
 
 def _call_model(route: ModelRoute, prompt: str) -> str:
     key = os.environ.get(route.key_env, "") if route.key_env else ""
-    headers = {"Content-Type": "application/json", "User-Agent": "codesitter/0.1"}
+    headers = {"Content-Type": "application/json", "User-Agent": "fl4write/0.1"}
     if key:
         headers["Authorization"] = f"Bearer {key}"
     body = json.dumps(

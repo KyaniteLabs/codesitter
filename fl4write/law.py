@@ -1,9 +1,9 @@
-"""The org's accumulated operating wisdom, baked into codesitter.
+"""The org's accumulated operating wisdom, baked into fl4write.
 
 Mined from: the CEO's repeated patterns, LEARNINGS.md files across the org,
 the empower-orchestrator constitution, AGENTS.md files, and every bug/smell
 the org has paid for. These are not per-repo rules (those live in config) —
-these are the DEFAULTS that make codesitter behave like a member of this
+these are the DEFAULTS that make fl4write behave like a member of this
 organization, not a generic bot.
 """
 
