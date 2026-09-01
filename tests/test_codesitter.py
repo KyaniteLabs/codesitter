@@ -333,9 +333,6 @@ class FakeForge(ForgeAdapter):
     def _paginated(self, path, page_size=50):
         return self._call("GET", path)
 
-    def create_comment(self, repo, number, body):  # issues posts reuse this
-        self.posts.append((number, body))
-
 
 class TestEngine:
     def _run(self, tmp_path, forge, monkeypatch, **cfg_over):
