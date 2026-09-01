@@ -71,5 +71,7 @@ review, and the 2026-09-01 six-lane audit — ~60 findings fixed; see
 LEARNINGS.md #25). The runner is a nucbox crontab (`0 * * * *`) executing
 `run-cycle.sh`; the zcode-hosted laptop automation was retired 2026-09-01
 (single-host law — see LEARNINGS #17). PM seat: see fl4write issue #3 (the
-PM-2 handoff charter). Roadmap on map #63: acceptance-metrics surfacing,
-post-merge review mode, GitHub-App event trigger (v2).
+PM-2 handoff charter). Roadmap on map #63: post-merge review mode (top priority), GitHub-App event
+trigger (v2), and **model-routing transition: a local multi-model inference
+floor with a consensus system is being built by the CEO** — configs will
+migrate off single-route deepseek when it lands.

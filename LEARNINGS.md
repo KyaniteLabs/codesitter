@@ -111,3 +111,16 @@ source of truth for any serialized format, with a round-trip test; (c)
 is worse than no knob (extra=forbid + dead-knob wiring). Also: set -u
 demands ${VAR:-} — the hardened runner was itself killed by an unbound
 variable on its first deploy. 102 tests (was 50), one per critical class.
+
+
+## 26. "Did you fix EVERYTHING?" is itself a test (2026-09-01)
+After the six-lane audit's fix pass (102 tests green, deployed), the CEO asked
+whether every single finding was fixed. Re-auditing the claim against the six
+lane reports found EIGHT more fixable residuals (merge-gate rejecting legacy
+identities, metrics reactions calling a method that didn't exist, the README
+still saying "Formerly Fl4wRite", dead params, missing module tests...). The
+fix pass had closed the criticals so cleanly that the long tail felt done.
+**Law: a completeness claim is only as good as a line-by-line recheck against
+the source list — 'all tests green' verifies the fixes you MADE, not the
+findings you MISSED. Remaining opens must be an explicit, documented decision
+list, never silence.**

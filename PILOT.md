@@ -5,8 +5,12 @@ Innerscape, Elixis) + 26 wave-2 repos (org + owner's personal; originally-ours
 only, no forks/collabs; `voice-to-sculpture-app` removed — repo never existed
 under that spelling; **liminal held** — Sinter's repo, #999 conversation, not
 unilateral). Full product live: review + gatekeeper + metrics + **fix lane** +
-**issues lane** (all four enabled 2026-09-01, CEO order). Brain:
-DeepSeek-V4-Flash-0731 via deepinfra (the $40-budget ledger route). Identity:
+**issues lane** (all four enabled 2026-09-01, CEO order). Brain (TRANSITION):
+today DeepSeek-V4-Flash-0731 via deepinfra (the $40-budget ledger route) —
+**the CEO is building a local-inference floor with multiple models + a
+consensus system** (2026-09-01); when it lands, the model routes in these
+configs change and the fallback==primary warning becomes moot. Coordinate
+with that lane before touching model routing. Identity:
 `fl4write[bot]` (GitHub App "Fl4wRite", ID 3592379; per-repo installation
 resolution across the org AND user-account installations).
 
