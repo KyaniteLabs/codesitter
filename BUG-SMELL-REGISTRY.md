@@ -11,3 +11,5 @@ no triage. Curated outcomes live in LEARNINGS.md.
 - 2026-09-01 assumptions — "app not installed on user account" was false; observable via /app/installations → LEARNINGS #23
 - 2026-08-31 racing branches — five silent adoption losses to date (Innerscape, Elixis ×2, devarch, tastecheck, content-production-system); surveillance every cycle is the mitigation
 - 2026-08-31 runner-log — per-repo ALERT lines invisible inside ok-status output; now logged explicitly
+- 2026-09-01 six-lane audit batch — ~60 findings, 13 Critical: vacuous diff fallback, dead+dangerous fix lane clone, lethal-trifecta env, symlink write-through, gatekeeper false-clean, format drift (renderer/engine/metrics), dead config knobs, silent-state corruption handling, runner timeout arithmetic, pid-reuse lock wedges, README status lies → LEARNINGS #25; fixes in 1f20586
+- 2026-09-01 meta — the hardened run-cycle.sh died on its own first deploy (set -u unbound var): new hardening needs the same verification bar as the code it guards

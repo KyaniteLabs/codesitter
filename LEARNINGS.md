@@ -89,3 +89,25 @@ fixes ride follow-up PRs); (b) the chartered v2 event trigger (webhook via the
 app — permissions already granted). Also: 8 repos lost configs to the same
 sweep (stale-based merges landing on main — LEARNINGS class #16/#18): sweep
 tooling MUST rebase onto fresh main before landing.
+
+## 25. The six-lane audit: error paths downgrade to success-shaped data (2026-09-01)
+CEO-ordered MECE adversarial audit (state/security/API/LLM/config/ops lanes,
+~60 findings, 13 Critical). The dominant systemic pattern: FAILURE PATHS
+SILENTLY PRODUCE THE SAME SHAPE AS SUCCESS — a failed diff fetch returned
+the empty set (posted a celebration over real findings, marked reviewed
+forever); a >1MB file fetched as "" let the model fabricate a whole file;
+an empty gatekeeper keep-list dropped every finding and posted "clean";
+git clone -b HEAD failed so the fix lane had never once worked (and had it
+worked, would have silently reverted main — default-branch tree + PR-head
+content). Second pattern: THREE MODULES DISAGREED ABOUT THE COMMENT FORMAT
+(renderer emitted one shape, engine and metrics parsed a legacy one) — which
+alone killed delta markers, resolution tracking, AND the acceptance metric.
+Third: the fail-open/containment contracts were honored only in the analyzer
+— the gatekeeper's narrow except tuple crashed whole cycles on routine 429s.
+Laws: (a) every error path must return a shape that CANNOT be mistaken for
+success (None, an exception, a sentinel the caller must handle); (b) one
+source of truth for any serialized format, with a round-trip test; (c)
+"fail-open" means except Exception or it isn't; (d) a knob wired to nothing
+is worse than no knob (extra=forbid + dead-knob wiring). Also: set -u
+demands ${VAR:-} — the hardened runner was itself killed by an unbound
+variable on its first deploy. 102 tests (was 50), one per critical class.
