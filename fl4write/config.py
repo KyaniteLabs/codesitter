@@ -70,6 +70,21 @@ class PostMergeConfig(_StrictModel):
     max_per_cycle: int = Field(default=10, ge=1, le=50)  # model-spend + cycle-time bound
 
 
+class CIWatchConfig(_StrictModel):
+    """CI-failure trigger (CEO directive 2026-09-01): a CI failure on an OWN
+    repo summons review + fix. Red default-branch HEAD (SHA-keyed — no
+    timestamp watermark) yields findings from the failing checks' annotations
+    (deterministic signal, no model in the finding itself); the fix lane
+    attempts the patch; no-fix escalates to an issue. Forks/upstream
+    submissions are structurally out: the fleet is originally-ours-only and
+    the fix lane's fork rail stays hard."""
+
+    enabled: bool = False
+    escalate_issues: bool = True  # open an issue when no fix lands for a red head
+    max_checks: int = Field(default=5, ge=1, le=20)  # failing checks considered per head
+    max_annotations: int = Field(default=10, ge=1, le=50)  # findings per check
+
+
 class RepoConfig(_StrictModel):
     """The full per-repo config. Validated fail-loud at startup."""
 
@@ -86,6 +101,7 @@ class RepoConfig(_StrictModel):
     path_filters: dict[str, list[str]] = Field(default_factory=dict)  # minimatch-lite
     fix: FixLaneConfig = Field(default_factory=FixLaneConfig)
     post_merge: PostMergeConfig = Field(default_factory=PostMergeConfig)
+    ci_watch: CIWatchConfig = Field(default_factory=CIWatchConfig)
     known_env_failures: list[str] = Field(default_factory=list)  # test ids to ignore
     shadow: bool = False  # True = log findings, post nothing
     gatekeeper: bool = True  # nit-filter second pass (fail-open)

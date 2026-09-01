@@ -145,6 +145,29 @@ class ForgeAdapter:
                 out.setdefault(content, {})[login] = 1
         return out
 
+    # CI-watch surface. None everywhere = "cannot query" (the step degrades,
+    # never crashes the cycle). check-runs (Actions/GHA) only in v1; commit
+    # statuses API not polled.
+    def head_check_runs(self, repo: str) -> tuple[str, list[dict]] | None:  # pragma: no cover - interface
+        """(default-branch HEAD sha, check-run dicts) or None unqueryable."""
+        raise NotImplementedError
+
+    def check_annotations(self, repo: str, check_run_id: int) -> list[dict] | None:
+        """Annotations for one check-run: [{path, start_line, message, level}]."""
+        try:
+            rows = self._paginated(f"/repos/{repo}/check-runs/{check_run_id}/annotations", page_size=50)
+        except ForgeError:
+            return None
+        out = []
+        for a in rows if isinstance(rows, list) else []:
+            out.append({
+                "path": a.get("path") or "",
+                "start_line": a.get("start_line") or a.get("line") or 0,
+                "message": a.get("message") or "",
+                "level": a.get("annotation_level") or "",
+            })
+        return out
+
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:  # id, body  # pragma: no cover
         raise NotImplementedError
 
@@ -194,7 +217,11 @@ class GitHubAdapter(ForgeAdapter):
             if not merged_raw:
                 continue
             merged = _parse_iso(merged_raw)
-            if since is not None and merged is not None and merged <= since:
+            # STRICT less-than: PRs merged in the SAME second as the watermark
+            # stay visible. Bulk waves merge same-second; if the per-cycle cap
+            # splits such a pair, the deferred sibling must remain listable —
+            # already-terminal ones are skipped free by the head-SHA guard.
+            if since is not None and merged is not None and merged < since:
                 continue
             prs.append(
                 PullRequest(
@@ -230,6 +257,18 @@ class GitHubAdapter(ForgeAdapter):
 
     def update_comment(self, repo: str, number: int, comment_id: int, body: str) -> None:
         self._call("PATCH", f"/repos/{repo}/issues/comments/{comment_id}", {"body": body})
+
+    def head_check_runs(self, repo: str) -> tuple[str, list[dict]] | None:
+        try:
+            branch = self._call("GET", f"/repos/{repo}").get("default_branch") or "main"
+            head = self._call("GET", f"/repos/{repo}/commits/{branch}")
+            sha = head.get("sha") or ""
+            if not sha:
+                return None
+            runs = self._call("GET", f"/repos/{repo}/commits/{sha}/check-runs")
+            return sha, list(runs.get("check_runs") or [])
+        except ForgeError:
+            return None
 
 
 class ForgejoAdapter(ForgeAdapter):
@@ -270,7 +309,11 @@ class ForgejoAdapter(ForgeAdapter):
             if not merged_raw or not p.get("merged"):
                 continue
             merged = _parse_iso(merged_raw)
-            if since is not None and merged is not None and merged <= since:
+            # STRICT less-than: PRs merged in the SAME second as the watermark
+            # stay visible. Bulk waves merge same-second; if the per-cycle cap
+            # splits such a pair, the deferred sibling must remain listable —
+            # already-terminal ones are skipped free by the head-SHA guard.
+            if since is not None and merged is not None and merged < since:
                 continue
             head_repo = ((p.get("head") or {}).get("repo") or {}).get("full_name")
             prs.append(
@@ -305,6 +348,9 @@ class ForgejoAdapter(ForgeAdapter):
 
     def update_comment(self, repo: str, number: int, comment_id: int, body: str) -> None:
         self._call("PATCH", f"/repos/{repo}/issues/comments/{comment_id}", {"body": body})
+
+    def head_check_runs(self, repo: str) -> tuple[str, list[dict]] | None:
+        return None  # v1: check-runs (GHA) only; Forgejo commit statuses unsupported
 
 
 def adapter_for(binding: ForgeBinding) -> ForgeAdapter:

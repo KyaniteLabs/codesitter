@@ -253,6 +253,13 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def open_issue(repo: str, title: str, body: str) -> int:
+    """Open an issue as the bot (CI-watch escalation surface). The issues LANE
+    stays comment-only; this is the one bounded exception, config-gated by
+    ci_watch.escalate_issues."""
+    return _gh_api("POST", f"/repos/{repo}/issues", {"title": title, "body": body})["number"]
+
+
 def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]:
     """Check our own open fix PRs; merge those with ALL checks completed green.
 

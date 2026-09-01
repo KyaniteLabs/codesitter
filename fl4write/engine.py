@@ -61,6 +61,9 @@ class CycleReport:
     acceptance: dict[str, Any] = field(default_factory=dict)
     skipped_diff_unavailable: int = 0
     postmerge_reviewed: int = 0
+    ci_red_heads: int = 0
+    ci_fix_prs_opened: int = 0
+    ci_escalations: int = 0
     alerts: list[str] = field(default_factory=list)
 
 
@@ -239,15 +242,15 @@ def _post_merge_sweep(
         log.warning("merged-PR listing failed for %s: %s", config.repo, exc)
         return set()
 
-    capped = merged_prs[: config.post_merge.max_per_cycle]
-    if len(merged_prs) > config.post_merge.max_per_cycle:
-        report.alerts.append(
-            f"post-merge backlog: {len(merged_prs)} merged PRs pending, "
-            f"processing {len(capped)} this cycle"
-        )
-
-    terminal = 0
-    for pr in capped:
+    # The cap bounds MODEL WORK (reviews), not list position: PRs already
+    # terminal at this SHA (reviewed while open, dependency-skipped) pass
+    # through free — otherwise a free-to-skip PR could starve a same-second
+    # sibling behind it (caught by the same-second cap-split regression).
+    terminal = 0  # watermark position: PRs terminally processed, oldest first
+    reviewed_budget = 0
+    considered: set[int] = set()
+    for pr in merged_prs:
+        considered.add(pr.number)
         if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
             report.alerts.append("post-merge sweep deferred — cycle deadline reached")
             break
@@ -260,6 +263,12 @@ def _post_merge_sweep(
         if not state.needs_review(st, pr.number, pr.head_sha):
             terminal += 1  # already reviewed at this SHA (e.g. while open)
             continue
+        if reviewed_budget >= config.post_merge.max_per_cycle:
+            report.alerts.append(
+                f"post-merge backlog: merged PRs pending beyond this cycle's cap "
+                f"({config.post_merge.max_per_cycle}) — resuming next cycle"
+            )
+            break  # watermark stops BEFORE this unprocessed PR
         try:
             outcome = _review_pr(
                 pr, config, primary, get_diff, shadow_sink, st, report, run_fixes,
@@ -269,6 +278,7 @@ def _post_merge_sweep(
             report.alerts.append(f"#{pr.number}: forge error contained: {exc}")
             break  # do not advance the watermark past unprocessed PRs
         state.save_state(state_path, st)  # checkpoint after each merged PR
+        reviewed_budget += 1
         if outcome in ("reviewed", "shadow", "model-failed-cap"):
             if outcome in ("reviewed", "shadow"):
                 report.postmerge_reviewed += 1
@@ -277,8 +287,109 @@ def _post_merge_sweep(
             break  # deferred (diff/model): watermark stops before this PR
 
     if terminal:
-        state.advance_merged_watermark(st, capped[terminal - 1].merged_at)
-    return {pr.number for pr in capped}
+        terminal_prs = [p for p in merged_prs[:terminal]]
+        state.advance_merged_watermark(st, terminal_prs[-1].merged_at)
+    return considered
+
+
+# CI-watch conclusions that mean RED (everything not in the benign set).
+_CI_BENIGN = {"success", "skipped", "neutral", "canceled"}
+
+
+def _ci_watch_step(
+    config: RepoConfig,
+    primary: ForgeAdapter,
+    st: dict[str, Any],
+    report: CycleReport,
+    run_fixes: bool,
+) -> None:
+    """CEO directive 2026-09-01: a red default-branch HEAD on an OWN repo
+    summons review + fix. SHA-keyed (state['ci_acted:{sha}']) — no timestamp
+    watermark, self-healing on the next commit, same law as the head-SHA
+    predicate. Findings come from the failing checks' annotations (a
+    deterministic signal — the model is never asked to invent them); the fix
+    lane attempts one patch per finding; no fix landing escalates to an issue.
+    Contained: any failure logs and returns."""
+    from . import executor
+    from .models import Finding
+
+    queried = primary.head_check_runs(config.repo)
+    if queried is None:
+        log.info("ci_watch: head check-runs unqueryable for %s (degraded this cycle)", config.repo)
+        return
+    head, runs = queried
+    failing = [
+        r for r in runs
+        if r.get("status") == "completed" and r.get("conclusion") not in _CI_BENIGN
+    ][: config.ci_watch.max_checks]
+    if not failing:
+        st.pop("ci_red_sha", None)
+        return
+    report.ci_red_heads += 1
+    if st.get(f"ci_acted:{head}"):
+        return  # already acted at this SHA — a new commit re-arms the watch
+    st[f"ci_acted:{head}"] = True
+
+    findings: list[Finding] = []
+    summaries: list[str] = []
+    for run in failing:
+        name = run.get("name") or "unnamed check"
+        conclusion = run.get("conclusion") or "?"
+        summary = ((run.get("output") or {}).get("summary") or "").strip()
+        summaries.append(f"- **{name}** — {conclusion}" + (f": {summary[:300]}" if summary else ""))
+        anns = primary.check_annotations(config.repo, run.get("id")) or []
+        for a in anns[: config.ci_watch.max_annotations]:
+            if not a.get("path") or not a.get("message"):
+                continue
+            findings.append(
+                Finding(
+                    rule_id="ci",
+                    severity="Major",
+                    path=a["path"],
+                    line=int(a.get("start_line") or 0) or 1,
+                    category="CI",
+                    message=f"[{name}] {a['message'][:400]}",
+                )
+            )
+
+    if findings and run_fixes and config.fix.enabled and not config.shadow:
+        # Synthetic PR anchored at the red head: the fix lane fetches the file
+        # at this SHA, patches, tests sandboxed, opens a follow-up PR. A
+        # sha-derived number keeps branch names unique per red head.
+        synth = PullRequest(
+            forge=primary.name,
+            number=int(head[:6], 16),
+            repo=config.repo,
+            title=f"CI fix @ {head[:8]}",
+            head_sha=head,
+        )
+        for f in findings[: config.ci_watch.max_annotations]:
+            result = executor.attempt_fix(synth, f, config)
+            if result.get("status") == "pr_opened":
+                report.ci_fix_prs_opened += 1
+            elif result.get("status") == "error":
+                log.warning("ci fix failed for %s@%s: %s", config.repo, head[:8], result.get("reason"))
+                break  # environmental failure: stop burning attempts this cycle
+        opened = report.ci_fix_prs_opened
+    else:
+        opened = 0
+
+    if not opened and config.ci_watch.escalate_issues and not config.shadow:
+        try:
+            executor.open_issue(
+                config.repo,
+                title=f"CI red on main @ {head[:8]} — {', '.join(r.get('name') or '?' for r in failing)}",
+                body=(
+                    "## Fl4wRite CI watch — human action required\n\n"
+                    f"Default-branch HEAD `{head}` is red; no automated fix landed.\n\n"
+                    f"Failing checks:\n" + "\n".join(summaries) +
+                    "\n\n_Findings from annotations:_\n"
+                    + ("\n".join(f"- `{f.path}:{f.line}` — {f.message[:120]}" for f in findings) or "(none — failing checks produced no annotations)")
+                ),
+            )
+            report.ci_escalations += 1
+        except Exception as exc:  # noqa: BLE001 — escalation must not kill the cycle
+            report.alerts.append(f"ci_watch escalation failed for {config.repo}: {exc}")
 
 
 def run_cycle(
@@ -348,6 +459,9 @@ def run_cycle(
                     config, primary, state_path, get_diff, shadow_sink, st,
                     report, run_fixes, deadline,
                 )
+
+            if config.ci_watch.enabled:
+                _ci_watch_step(config, primary, st, report, run_fixes)
 
             state.prune_closed(st, open_numbers | merged_keep)
 

@@ -85,7 +85,8 @@ class FakeForge(ForgeAdapter):
         out = []
         for pr in self.merged_prs:
             merged = _parse_iso(pr.merged_at)
-            if since is not None and merged is not None and merged <= since:
+            # strict < — mirrors the adapter contract (same-second merges stay visible)
+            if since is not None and merged is not None and merged < since:
                 continue
             out.append(pr)
         out.sort(key=lambda p: p.merged_at)
@@ -179,6 +180,36 @@ class TestPostMergeSweep:
         r2 = _run(tmp_path, forge, monkeypatch, post_merge={"enabled": True, "max_per_cycle": 3})
         assert r2.postmerge_reviewed == 2  # the backlog, not a re-review
         assert len(forge.posts) == 5
+
+    def test_same_second_merge_split_by_cap_not_lost(self, tmp_path, monkeypatch):
+        """Agent waves merge in bursts: two PRs in the SAME second, the cap
+        defers the second — it must remain listable next cycle (strict <
+        watermark exclusion), while the already-terminal one is skipped free
+        by the head-SHA guard (no model call, no post)."""
+        forge = FakeForge()
+        forge.merged_prs = [
+            make_pr(number=1, head_sha="a" * 40, merged_at="2026-09-01T12:00:00Z"),
+            make_pr(number=2, head_sha="b" * 40, merged_at="2026-09-01T12:00:00Z"),
+        ]
+        r1 = _run(tmp_path, forge, monkeypatch, post_merge={"enabled": True, "max_per_cycle": 1})
+        assert r1.postmerge_reviewed == 1 and forge.posts[0][0] == 1
+        from fl4write.analyzer import _call_model as orig
+        from fl4write.engine import run_cycle as _rc
+
+        model_calls = []
+
+        def counting(route, prompt):
+            model_calls.append(prompt)
+            return orig(route, prompt)
+
+        monkeypatch.setattr("fl4write.analyzer._call_model", counting)
+        c2 = make_config(post_merge={"enabled": True, "max_per_cycle": 1})
+        r2 = _rc(c2, tmp_path / "state.json", get_diff=lambda pr: ({"x.py"}, "d"))
+        assert r2.postmerge_reviewed == 1  # PR 2 processed
+        assert len(forge.posts) == 2 and forge.posts[1][0] == 2
+        # PR 1 was re-LISTED but skipped by the head-SHA guard — one model
+        # call total this cycle (for PR 2 only), not two.
+        assert len(model_calls) == 1
 
     def test_diff_unavailable_defers_not_skipped(self, tmp_path, monkeypatch):
         """Deferred PRs must NOT advance the watermark past them (LEARNINGS #3
