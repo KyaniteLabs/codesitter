@@ -138,3 +138,14 @@ install; `pip install` on macOS refuses via PEP 668 and silently leaves the
 old binary in place, which once made a 'verified under CI's version' check a
 no-op).** Corollary: "green locally" is a claim about YOUR versions; CI is
 the only authority on CI's versions.
+
+## 28. Stale implicit contracts strike on every new forge surface (2026-09-01)
+Three same-day repeats of old laws on Forgejo: the CF-fronted forge showed
+GET-passes/POST-fails (error-shapes-must-differ, #25's class), master-default
+repos rejected implicit-branch contents writes (#21's twin), and the "no
+admin token" conclusion dissolved once the ssh config's full host list was
+read — the origin was the VPS, with a container CLI that creates users
+without any API token. **Law: porting a working system to a new surface
+re-runs its whole incident history — before building, enumerate the new
+surface's own versions of every law already learned; before declaring an
+action blocked, enumerate every host AND CLI you can already reach.**
