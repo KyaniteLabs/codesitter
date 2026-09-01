@@ -312,6 +312,30 @@ class FakeForge(ForgeAdapter):
     def update_comment(self, repo, number, comment_id, body):
         self.updates.append((number, body))
 
+    # issues-lane primitives
+    issue_comments: list = None  # set per-test: [(issue_num, [(id, author, body)])]
+
+    def _call(self, method, path):
+        if "/issues/" in path and path.endswith("/comments"):
+            num = int(path.split("/issues/")[1].split("/comments")[0])
+            return [
+                {"id": cid, "user": {"login": a}, "body": b}
+                for (n, cid, a, b) in self.issue_comments
+                if n == num
+            ]
+        if path.startswith("/repos/") and "/issues?" in path:
+            return [
+                {"number": n, "title": f"issue {n}", "body": "b", "state": "open"}
+                for n in self.issue_numbers
+            ]
+        return []
+
+    def _paginated(self, path, page_size=50):
+        return self._call("GET", path)
+
+    def create_comment(self, repo, number, body):  # issues posts reuse this
+        self.posts.append((number, body))
+
 
 class TestEngine:
     def _run(self, tmp_path, forge, monkeypatch, **cfg_over):
@@ -327,6 +351,41 @@ class TestEngine:
             get_diff=lambda pr: ({"x.py"}, "diff"),
             shadow_sink=lambda r, n, b: forge.posts.append((n, b)),
         )
+
+    def test_issues_not_retriaged_next_cycle(self, tmp_path, monkeypatch):
+        """Regression: the engine's end-of-cycle save once wiped the issues
+        lane's last_triaged_number (lost update), re-triaging every open issue
+        every cycle and email-storming maintainers with duplicate comments."""
+        forge = FakeForge()
+        forge.issue_numbers = [101, 102]
+        forge.issue_comments = []
+        posted = []
+
+        def fake_create(repo, number, body):
+            posted.append(number)
+            forge.issue_comments.append((number, 1, "kyanitelabs[bot]", body))
+            forge.posts.append((number, body))
+            return 1
+
+        forge.create_comment = fake_create
+        c = make_config(shadow=False)
+        c = c.model_copy(update={"bot_login": "kyanitelabs[bot]"})
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        monkeypatch.setattr(
+            "fl4write.issues._call_model",
+            lambda route, prompt: json.dumps(
+                {"labels": ["bug"], "is_duplicate": False, "duplicate_hint": None,
+                 "draft_reply": "r", "urgency": "low", "is_regression": False,
+                 "regression_version": None}
+            ),
+        )
+        r1 = run_cycle(c, tmp_path / "s.json", get_diff=lambda pr: (set(), ""),
+                       run_issues=True)
+        r2 = run_cycle(c, tmp_path / "s.json", get_diff=lambda pr: (set(), ""),
+                       run_issues=True)
+        assert r1.issues_triaged == 2
+        assert r2.issues_triaged == 0, "second cycle re-triaged: lost update regression"
+        assert sorted(posted) == [101, 102]
 
     def test_review_then_no_repost_same_sha(self, tmp_path, monkeypatch):
         forge = FakeForge()

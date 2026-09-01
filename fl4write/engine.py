@@ -173,11 +173,11 @@ def run_cycle(
 
                 report.acceptance = metrics.acceptance_snapshot(primary, config, reviewed_records)
 
-            # Issues lane
+            # Issues lane — mutates the engine-owned st dict; ONE save below.
             if run_issues:
                 from . import issues as issues_lane
 
-                issue_summary = issues_lane.run_issues_cycle(config, state_path, primary)
+                issue_summary = issues_lane.run_issues_cycle(config, st, primary)
                 report.issues_triaged = issue_summary.get("triaged", 0)
 
             state.save_state(state_path, st)

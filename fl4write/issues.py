@@ -20,7 +20,7 @@ from . import scrub
 from .analyzer import ModelUnavailable, _call_model
 from .config import RepoConfig
 from .forges import ForgeAdapter, ForgeError
-from .state import load_state, save_state
+
 
 log = logging.getLogger("fl4write.issues")
 
@@ -101,9 +101,28 @@ def find_existing_triage(forge: ForgeAdapter, repo: str, number: int, bot_login:
     return None
 
 
-def run_issues_cycle(config: RepoConfig, state_path, forge: ForgeAdapter) -> dict[str, int]:
-    """One issues-triage cycle for one repo. Returns a summary dict."""
-    st = load_state(state_path)
+def _foreign_triage_exists(forge: ForgeAdapter, repo: str, number: int) -> bool:
+    """True if ANY comment carries the triage marker, whatever the author.
+
+    Defense-in-depth against duplicate posts across identity/host confusion:
+    a marker-bearing comment we cannot claim still means this issue was
+    triaged — skip rather than spam a second copy.
+    """
+    for c in forge._paginated(f"/repos/{repo}/issues/{number}/comments", page_size=50):
+        body = c.get("body") or ""
+        if "fl4write-triage:v1" in body or "codesitter-triage:v1" in body:
+            return True
+    return False
+
+
+def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter) -> dict[str, int]:
+    """One issues-triage cycle for one repo. Returns a summary dict.
+
+    Mutates the ENGINE-OWNED state dict (single owner per cycle: the engine
+    loads once and saves once — a lane doing its own load+save here caused a
+    lost update that wiped last_triaged_number every cycle, re-triaging all
+    open issues and email-storming maintainers).
+    """
     last_num = st.get("last_triaged_number", 0)
     summary = {"triaged": 0, "skipped": 0, "errors": 0}
 
@@ -127,11 +146,20 @@ def run_issues_cycle(config: RepoConfig, state_path, forge: ForgeAdapter) -> dic
             existing = find_existing_triage(forge, config.repo, num, config.bot_login)
             if existing:
                 forge.update_comment(config.repo, num, existing[0], body)
+            elif _foreign_triage_exists(forge, config.repo, num):
+                # Marker present but not ours (identity change, cross-host run):
+                # NEVER post a second copy — that is the email-storm failure.
+                log.warning(
+                    "issue #%s: marker comment exists under another identity; skipping (no duplicate)",
+                    num,
+                )
+                summary["skipped"] += 1
+                st["last_triaged_number"] = max(st.get("last_triaged_number", 0), num)
+                continue
             else:
                 forge.create_comment(config.repo, num, body)
             summary["triaged"] += 1
 
         st["last_triaged_number"] = max(st.get("last_triaged_number", 0), num)
 
-    save_state(state_path, st)
     return summary
