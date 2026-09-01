@@ -68,6 +68,10 @@ class CycleReport:
     ci_escalations: int = 0
     omni_scanned: int = 0
     omni_findings: int = 0
+    gatekeeper_failed: int = 0
+    fix_attempts: int = 0
+    fix_failures: int = 0
+    _fix_failure_notes: list = field(default_factory=list)
     alerts: list[str] = field(default_factory=list)
 
 
@@ -139,8 +143,10 @@ def _review_pr(
 
     findings = doc.findings
     if findings and config.gatekeeper:
-        findings, dropped = gatekeeper.filter_findings(findings, config)
+        findings, dropped, failed_open = gatekeeper.filter_findings(findings, config)
         report.gatekeeper_dropped += dropped
+        if failed_open:
+            report.gatekeeper_failed += 1
 
     rh = f"{pr.head_sha[:12]}{len(findings):04x}"
     previous: list[Finding] = []
@@ -205,12 +211,21 @@ def _fix_lane(
             primary.create_comment(config.repo, pr.number, body)
             report.fix_escalations += 1
             continue
+        if not _fix_freshness_gate(primary, config, f):
+            continue
+        report.fix_attempts += 1
         result = executor.attempt_fix(pr, f, config)
-        if result.get("status") == "pr_opened":
+        status = result.get("status")
+        if status == "pr_opened":
             report.fix_prs_opened += 1
             pr_state["fix_depth"] = depth + 1
-        elif result.get("status") == "error":
-            log.warning("fix attempt failed for %s#%s: %s", config.repo, pr.number, result.get("reason"))
+        elif status in ("error", "testfail", "nofix"):
+            # enumerated failure classes (the Architect's V2): every outcome
+            # is COUNTED; the summarizing alert fires once at cycle end
+            report.fix_failures += 1
+            report._fix_failure_notes.append(f"#{pr.number} {status}: {str(result.get('reason'))[:80]}")
+        elif status == "blocked":
+            report.fix_escalations += 1
     try:
         # bot_identity REQUIRED (post-merge build): the merge gate re-verifies
         # authorship against it — a missing identity fails every merge closed.
@@ -310,6 +325,18 @@ def _post_merge_sweep(
 # CI-watch conclusions that mean RED (everything not in the benign set).
 _CI_BENIGN = {"success", "skipped", "neutral", "canceled"}
 
+
+def _fix_freshness_gate(primary: ForgeAdapter, config: RepoConfig, finding) -> bool:
+    """True = fresh enough to attempt a fix. The #503 class: a finding on a
+    file deleted/moved after review made every attempt fail at fetch,
+    invisibly. False = skip the fix (finding stays posted); None-probe =
+    fail-open (proceed)."""
+    exists = primary.path_exists(config.repo, finding.path)
+    if exists is False:
+        log.info("fix freshness gate: %s gone from HEAD — skipping fix", finding.path)
+        return False
+    return True
+
 # Omnisweep bounds (consensus-gated): files above this are skipped (the
 # contents API refuses >1MB; anything near it is generated/vendored).
 _OMNI_MAX_FILE_BYTES = 200_000
@@ -371,10 +398,18 @@ def _omni_fix_phase(
     for f in st.get("omni_findings", []):
         if attempts >= _OMNI_FIX_ATTEMPTS_PER_CYCLE:
             break
-        if f.get("fix_attempted") or config.severity_vocab.index(f["sev"]) > sev_floor:
+        if f.get("fix_attempted") or f.get("fix_stale") or config.severity_vocab.index(f["sev"]) > sev_floor:
+            continue
+        from .models import Finding as _Finding
+
+        if not _fix_freshness_gate(primary, config, _Finding(
+                rule_id=f["rule"], severity=f["sev"], path=f["path"], line=f["line"],
+                category="omnisweep", message=f["msg"])):
+            f["fix_stale"] = True  # short-circuits eligibility forever (V3)
             continue
         f["fix_attempted"] = True
         attempts += 1
+        report.fix_attempts += 1
         synth = PullRequest(
             forge=primary.name,
             number=int(hashlib.blake2b(f"{head}:{f['id']}".encode(), digest_size=8).hexdigest()[:12], 16),
@@ -493,13 +528,16 @@ def _omnisweep_step(
             break  # one retry next cycle, cursor holds
         findings = doc.findings
         if findings:
-            findings, dropped = gatekeeper.filter_findings(findings, config)
+            findings, dropped, failed_open = gatekeeper.filter_findings(findings, config)
             report.gatekeeper_dropped += dropped
+            if failed_open:
+                report.gatekeeper_failed += 1
         next_id = int(st.get("omni_next_id", 1))
         for f in findings:
             st.setdefault("omni_findings", []).append({
                 "id": next_id, "path": f.path, "line": f.line, "rule": f.rule_id,
                 "sev": f.severity, "msg": f.message[:200],  # compact: no proposals in state
+                "via": config.model.model,  # route attribution: per-model quality becomes measurable
             })
             next_id += 1
         st["omni_next_id"] = next_id
@@ -659,7 +697,7 @@ def _retro_review_pr(
 
     findings = doc.findings
     if findings and config.gatekeeper:
-        findings, dropped = gatekeeper.filter_findings(findings, config)
+        findings, dropped, _fo = gatekeeper.filter_findings(findings, config)
         report.gatekeeper_dropped += dropped
 
     if findings and config.retro_audit.freshness_gate:
@@ -779,12 +817,18 @@ def _ci_watch_step(
             head_sha=head,
         )
         for f in findings[: config.ci_watch.max_annotations]:
+            if not _fix_freshness_gate(primary, config, f):
+                continue
+            report.fix_attempts += 1
             result = executor.attempt_fix(synth, f, config)
-            if result.get("status") == "pr_opened":
+            status = result.get("status")
+            if status == "pr_opened":
                 report.ci_fix_prs_opened += 1
-            elif result.get("status") == "error":
-                log.warning("ci fix failed for %s@%s: %s", config.repo, head[:8], result.get("reason"))
-                break  # environmental failure: stop burning attempts this cycle
+            elif status in ("error", "testfail", "nofix"):
+                report.fix_failures += 1
+                report._fix_failure_notes.append(f"ci@{head[:8]} {status}: {str(result.get('reason'))[:80]}")
+                if status == "error":
+                    break  # environmental failure: stop burning attempts this cycle
         opened = report.ci_fix_prs_opened
     else:
         opened = 0
@@ -902,6 +946,12 @@ def run_cycle(
 
                 report.acceptance = metrics.acceptance_snapshot(primary, config)
 
+            if report.fix_failures:
+                # ONE summarizing alert per cycle (V2) — alert fatigue is a
+                # named org incident class; never one line per finding
+                report.alerts.append(
+                    f"fix failures: {report.fix_failures} — " + "; ".join(getattr(report, "_fix_failure_notes", [])[:5])
+                )
             state.save_state(state_path, st)
     except CycleLockHeld as exc:
         log.warning("cycle lock held — skipping this cycle (never double-post): %s", exc)

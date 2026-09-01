@@ -62,24 +62,34 @@ def _keep_set(parsed: object) -> set[tuple[str, int]] | None:
     return out
 
 
-def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[Finding], int]:
-    """Gatekeeper pass: returns (kept_findings, dropped_count).
+def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[Finding], int, bool]:
+    """Gatekeeper pass: returns (kept_findings, dropped_count, failed_open).
 
-    On ANY model/parse failure, returns all findings unfiltered (fail-open:
-    never block posting because the filter is down — but log it). An empty
-    keep-set against a non-empty findings list is treated as a parse failure,
-    not as "drop everything".
+    On ANY model/parse failure, returns all findings unfiltered with
+    failed_open=True (never block posting because the filter is down — but
+    the caller COUNTS it: an always-failing filter is a silent no-op, the
+    850x/sweep lesson). An empty keep-set against a non-empty findings list
+    is treated as a parse failure, not as "drop everything".
     """
     if not findings:
-        return findings, 0
+        return findings, 0, False
 
     finding_list = "\n".join(
         f"- [{f.severity}] {f.path}:{f.line} ({f.rule_id}): {f.message[:120]}" for f in findings
     )
     prompt = f"REPO SEVERITY VOCAB: {config.severity_vocab}\nFINDINGS TO FILTER:\n{finding_list}\nJSON keep list:"
 
+    from .law import SYSTEM_PROMPT_ADDENDUM
+
     try:
-        response = _call_model(config.model, prompt)
+        # The gatekeeper MUST send ITS OWN contract — routing through the
+        # analyzer's default system prompt made the model reply {"findings":
+        # [...]} to a keep-list ask, unusable, fail-open, 850x/sweep: the nit
+        # filter had never filtered anything (live-caught 2026-09-01).
+        response = _call_model(
+            config.model, prompt,
+            system=_GATEKEEPER_SYSTEM + "\n\n" + SYSTEM_PROMPT_ADDENDUM,
+        )
         parsed = json.loads(response[response.index("{") : response.rindex("}") + 1])
         keep_set = _keep_set(parsed)
         if keep_set is None:
@@ -95,8 +105,8 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
         dropped = len(findings) - len(kept)
         if dropped:
             log.info("gatekeeper dropped %d/%d findings (nit filter)", dropped, len(findings))
-        return kept, dropped
+        return kept, dropped, False
     except Exception as exc:  # fail-open is the contract, for ALL failure classes
 
         log.warning("gatekeeper unavailable (fail-open, posting all): %s", exc)
-        return findings, 0
+        return findings, 0, True

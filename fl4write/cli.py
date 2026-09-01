@@ -192,7 +192,8 @@ def main() -> int:
         f"ci_esc={report.ci_escalations} "
         f"dep_skipped={report.skipped_dependency} model_down={report.model_unavailable} "
         f"mirror_degraded={report.mirror_degraded} "
-        f"gate_dropped={report.gatekeeper_dropped} fix_prs={report.fix_prs_opened} "
+        f"gate_dropped={report.gatekeeper_dropped} gate_fail={report.gatekeeper_failed} "
+        f"fix_attempts={report.fix_attempts} fix_fail={report.fix_failures} fix_prs={report.fix_prs_opened} "
         f"fix_merged={report.fix_prs_merged} issues_triaged={report.issues_triaged} "
         f"acceptance={report.acceptance.get('rate', 'n/a')}"
     )

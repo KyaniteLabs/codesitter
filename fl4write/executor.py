@@ -180,7 +180,12 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         f"FILE CONTENT ({finding.path}):\n```\n{scrub.scrub(content)}\n```"
     )
     try:
-        response = _call_model(config.model, prompt)
+        from .law import SYSTEM_PROMPT_ADDENDUM
+
+        response = _call_model(
+            config.model, prompt,
+            system=PATCH_SYSTEM + "\n\n" + SYSTEM_PROMPT_ADDENDUM,
+        )
         parsed = json.loads(response[response.index("{") : response.rindex("}") + 1])
         fixed = parsed.get("fixed_content")
     except (ModelUnavailable, ValueError, json.JSONDecodeError) as exc:

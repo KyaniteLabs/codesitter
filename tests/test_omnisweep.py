@@ -64,6 +64,9 @@ class OmniForge(ForgeAdapter):
     def list_open_prs(self, repo):
         return []
 
+    def path_exists(self, repo, path):
+        return True  # freshness-gate double: files exist
+
     def list_merged_prs(self, repo, since_iso):
         return []
 

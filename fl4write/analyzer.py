@@ -72,7 +72,7 @@ def _system_prompt(mode: str = "pr") -> str:
     return base + "\n\n" + SYSTEM_PROMPT_ADDENDUM
 
 
-def _call_model(route: ModelRoute, prompt: str, mode: str = "pr") -> str:
+def _call_model(route: ModelRoute, prompt: str, mode: str = "pr", system: str | None = None) -> str:
     key = os.environ.get(route.key_env, "") if route.key_env else ""
     if route.key_env and not key:
         raise RuntimeError(
@@ -85,7 +85,7 @@ def _call_model(route: ModelRoute, prompt: str, mode: str = "pr") -> str:
     payload: dict = {
         "model": route.model,
         "messages": [
-            {"role": "system", "content": _system_prompt(mode)},
+            {"role": "system", "content": system if system is not None else _system_prompt(mode)},
             {"role": "user", "content": scrub.scrub(prompt)},
         ],
         "temperature": route.temperature,
@@ -177,6 +177,16 @@ def analyze(
             continue
         if f.path not in diff_files:
             dropped.append(f"path not in diff {f.path}:{f.line}")
+            continue
+        if f.line <= 0:
+            # unanchored (15% of live sweep findings were line-0): a finding
+            # the model could not anchor to a real line is not reviewable
+            dropped.append(f"unanchored line={f.line} {f.path} ({f.rule_id})")
+            continue
+        msg_head = f.message[:120].lower()
+        if any(w in msg_head for w in ("no issue", "is consistent", "no problems")):
+            # self-contradicting: the message refutes its own finding
+            dropped.append(f"self-contradicting {f.path}:{f.line} ({f.rule_id})")
             continue
         if _path_ignored(f.path, config):
             dropped.append(f"path filtered by config {f.path}:{f.line}")

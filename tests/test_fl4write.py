@@ -551,7 +551,7 @@ class TestAuditRegressions:
         orig = gk._call_model
         gk._call_model = boom
         try:
-            kept, dropped = gk.filter_findings([f], c)
+            kept, dropped, failed_open = gk.filter_findings([f], c)
         finally:
             gk._call_model = orig
         assert kept == [f] and dropped == 0
@@ -564,7 +564,7 @@ class TestAuditRegressions:
         orig = gk._call_model
         gk._call_model = lambda route, prompt, mode="pr": '{"keep": [{"path": "OTHER.py", "line": "9"}]}'
         try:
-            kept, dropped = gk.filter_findings([f], c)
+            kept, dropped, failed_open = gk.filter_findings([f], c)
         finally:
             gk._call_model = orig
         assert kept == [f], "garbage keep-list must fail open, not drop all"
