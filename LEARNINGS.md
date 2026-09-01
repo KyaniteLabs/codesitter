@@ -124,3 +124,17 @@ fix pass had closed the criticals so cleanly that the long tail felt done.
 the source list — 'all tests green' verifies the fixes you MADE, not the
 findings you MISSED. Remaining opens must be an explicit, documented decision
 list, never silence.**
+
+## 27. Lint/tool contracts must be explicit — defaults drift with versions (2026-09-01)
+PM-1's final commit passed "ruff clean" locally (0.15.8) and FAILED CI
+(0.16.5): ruff widened its default rule set between minor versions, so the
+same code was clean under one implicit contract and 38-errors dirty under
+another. The failure sat red on main because local runs could not see it.
+Same class as the dead-knob law: an implicit contract is a contract nobody
+signed. **Law: any tool whose config selects nothing has selected
+"whatever this version defaults to" — pin the rule set (or equivalent
+contract) explicitly, and verify with the EXACT version CI runs (a venv
+install; `pip install` on macOS refuses via PEP 668 and silently leaves the
+old binary in place, which once made a 'verified under CI's version' check a
+no-op).** Corollary: "green locally" is a claim about YOUR versions; CI is
+the only authority on CI's versions.
