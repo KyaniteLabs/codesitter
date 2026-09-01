@@ -24,3 +24,9 @@ one line in the runner prompt. Criteria for admitting repo #6+: the pilot
 shows (a) no double-post/marker incidents, (b) model route stability, (c) at
 least one addressed finding per active repo. Pilot window: 2 weeks or first
 incident-free 100 reviews, whichever first.
+
+## Wave 2 (2026-08-31, CEO order "deploy all")
+
+28 repos added (all originally-ours, no forks, no collabs, ≥14d quiet): chance, reverse-engineering, research-scout, cerafica-api, cerafica-client, kyanite-landing, tradesflow, vocal-layer-studio, handoff-cms, Achiote, unstuck-coach-protocol, voice-to-sculpture-app, research-pipeline-prod, Creator-kit, dev-learning-archaeologist, content-production-system, small-business-skills, unstuck-coach, achiote-food-memory-researcher, codex-small-business-skills, web-typography-skill, personal-llm, unstuck-coach-live, checkyourself, tastecheck, complyos, evo-x2-ec. **liminal held** (Sinter team repo — #999 conversation, not unilateral).
+
+Pilot total: **32 repos** (5 wave-1 + 27 wave-2). All configs verified on main (32/32 ok, 0 alerts). Runner auto-discovers via glob — no prompt edit needed (which would re-pause the automation).
