@@ -139,7 +139,8 @@ class TestFixTelemetryAndFreshness:
         def fake_analyze(pr, files, text, config, mode="pr"):
             from fl4write.models import ReviewDoc
 
-            return ReviewDoc(pr=pr, findings=[GOOD])
+            return ReviewDoc(pr=pr, findings=[GOOD, Finding(
+                rule_id="secrets", severity="Major", path="x.py", line=7, message="second finding")])
 
         calls = {"n": 0}
 
@@ -147,13 +148,17 @@ class TestFixTelemetryAndFreshness:
             calls["n"] += 1
             return {"status": "testfail", "reason": "tests failed"} if calls["n"] == 1 else {"status": "nofix", "reason": "no fix"}
 
+        # two Major+ findings so BOTH failure branches run in ONE cycle
+
         monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr("fl4write.analyzer.analyze", fake_analyze)
         monkeypatch.setattr("fl4write.executor.attempt_fix", flaky)
         monkeypatch.setattr("fl4write.executor.check_and_merge_own_prs", lambda cc, b, **kw: 0)
         r = run_cycle(c, tmp_path / "s.json", get_diff=lambda pr: ({"x.py"}, "d"), run_fixes=True)
-        assert r.fix_attempts == 1 and r.fix_failures == 1  # GOOD is Critical -> one attempt
+        assert r.fix_attempts == 2  # Critical + Major both attempted
+        assert r.fix_failures == 2  # one testfail AND one nofix — both branches
         assert sum(1 for a in r.alerts if a.startswith("fix failures:")) == 1  # ONE summary line
+        assert any("testfail" in n for n in r._fix_failure_notes) and any("nofix" in n for n in r._fix_failure_notes)
 
     def test_stale_file_never_attempted(self, tmp_path, monkeypatch):
         """The #503 class: finding's file deleted from HEAD after review —
@@ -336,3 +341,56 @@ class TestTelemetryAssertions:
         rc(c, tmp_path / "s.json", get_diff=lambda pr: (set(), ""))
         st = state.load_state(tmp_path / "s.json")
         assert all("via" in f for f in st["omni_findings"]) and st["omni_findings"][0]["via"] == "t"
+
+
+class TestOmniFixStale:
+    def test_stale_omni_finding_short_circuits_forever(self, tmp_path, monkeypatch):
+        """fix_stale must short-circuit eligibility permanently (the gate's
+        missing test): a stale finding is never re-gated, never attempted."""
+        from fl4write import state
+        from fl4write.engine import run_cycle as rc
+
+        c = make_config(
+            shadow=False,
+            omnisweep={"enabled": True, "fix": True, "fix_min_severity": "Major", "max_files_per_cycle": 5},
+            fix={"enabled": True, "merge_own_prs": False},
+        )
+        sp = tmp_path / "s.json"
+        st = {"version": 1, "prs": {}, "omni_complete": True, "omni_head": "d" * 40,
+              "omni_findings": [{"id": 1, "path": "gone.py", "line": 1, "rule": "secrets",
+                                  "sev": "Major", "msg": "m", "via": "t", "fix_stale": True}]}
+        state.save_state(sp, st)
+
+        def must_not_attempt(pr, f, config):
+            raise AssertionError("fix_stale must short-circuit before any attempt")
+
+        class FakeForge(ForgeAdapter):
+            name = "github"
+
+            def __init__(self):
+                super().__init__(cfg.ForgeBinding(role="primary", api_base="https://api.github.com", token_env="GHT"))
+
+            def list_open_prs(self, repo):
+                return []
+
+            def list_merged_prs(self, repo, since_iso):
+                return []
+
+            def get_persistent_comment(self, repo, number):
+                return None
+
+            def create_comment(self, repo, number, body):
+                return 1
+
+            def update_comment(self, repo, number, cid, body):
+                pass
+
+            def path_exists(self, repo, path):
+                return False  # the file is gone — would gate anyway
+
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: FakeForge())
+        monkeypatch.setattr("fl4write.executor.attempt_fix", must_not_attempt)
+        r = rc(c, sp, get_diff=lambda pr: (set(), ""))
+        assert r.fix_attempts == 0
+        st2 = state.load_state(sp)
+        assert st2["omni_findings"][0].get("fix_stale") is True  # unchanged, not re-gated
