@@ -58,6 +58,18 @@ class FixLaneConfig(_StrictModel):
     )
 
 
+class PostMergeConfig(_StrictModel):
+    """Post-merge review mode (LEARNINGS #24): this org's PRs open and merge
+    in ~60s, so an open-PR poller structurally never sees them. When enabled,
+    each cycle additionally reviews PRs merged since the per-repo watermark;
+    findings land as post-merge comments, fixes ride follow-up PRs."""
+
+    enabled: bool = False  # opt-in per repo (central config only; in-repo
+    # configs are adoption artifacts, the runner reads central configs)
+    initial_lookback_h: int = Field(default=24, ge=1, le=168)  # bounded first-cycle catch-up
+    max_per_cycle: int = Field(default=10, ge=1, le=50)  # model-spend + cycle-time bound
+
+
 class RepoConfig(_StrictModel):
     """The full per-repo config. Validated fail-loud at startup."""
 
@@ -73,6 +85,7 @@ class RepoConfig(_StrictModel):
     tone_fork_override: str = Field(default="balanced", pattern=_TONE_PATTERN)
     path_filters: dict[str, list[str]] = Field(default_factory=dict)  # minimatch-lite
     fix: FixLaneConfig = Field(default_factory=FixLaneConfig)
+    post_merge: PostMergeConfig = Field(default_factory=PostMergeConfig)
     known_env_failures: list[str] = Field(default_factory=list)  # test ids to ignore
     shadow: bool = False  # True = log findings, post nothing
     gatekeeper: bool = True  # nit-filter second pass (fail-open)

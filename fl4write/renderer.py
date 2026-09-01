@@ -32,6 +32,7 @@ LEGACY_MARKER_PREFIXES = ("fl4write:v1:", "codesitter:v1:")
 
 _SEVERITY_EMOJI = {"Critical": "🔴", "Major": "🟠", "Minor": "🟡", "Nit": "🔵"}
 _URGENCY = {"Critical": "🚨 **Do NOT merge** until this is addressed."}
+_URGENCY_POST_MERGE = {"Critical": "🚨 **Landed on main** — fix-forward strongly recommended."}
 
 # The finding-line contract: rendered heading and parsed-back identity are the
 # SAME format, defined once. Groups: sev, path, line, rule.
@@ -73,10 +74,10 @@ def parse_finding_lines(body: str) -> list[tuple[str, str, int, str]]:
     ]
 
 
-def render_finding(f: Finding, tone: str) -> str:
+def render_finding(f: Finding, tone: str, post_merge: bool = False) -> str:
     """One finding as a section with emoji badge + collapsible fix proposal."""
     emoji = _SEVERITY_EMOJI.get(f.severity, "⚪")
-    urgency = _URGENCY.get(f.severity, "")
+    urgency = (_URGENCY_POST_MERGE if post_merge else _URGENCY).get(f.severity, "")
     parts: list[str] = [
         FINDING_LINE_FMT.format(emoji=emoji, sev=f.severity, path=f.path, line=f.line, rule=f.rule_id),
         "",
@@ -118,6 +119,7 @@ def render_review(
     previous_findings: list[Finding] | None = None,
     gatekeeper_dropped: int = 0,
     diff_truncated: bool = False,
+    post_merge: bool = False,
 ) -> str:
     """Full persistent-comment body with the design system applied."""
     tone = _tone_for(pr, config)
@@ -125,7 +127,7 @@ def render_review(
     current_keys = {(f.path, f.line, f.rule_id) for f in findings}
     resolved = [f for f in (previous_findings or []) if (f.path, f.line, f.rule_id) not in current_keys]
 
-    head = "## 🔍 Fl4wRite review\n\n"
+    head = "## 🔍 Fl4wRite review (post-merge)\n\n" if post_merge else "## 🔍 Fl4wRite review\n\n"
 
     if findings or resolved:
         head += _severity_table(findings) + "\n\n"
@@ -140,7 +142,7 @@ def render_review(
             sections.append(
                 _TONES[tone]
                 + "\n---\n\n".join(
-                    ("🆕 " if (f.path, f.line, f.rule_id) not in previous_keys else "") + render_finding(f, tone)
+                    ("🆕 " if (f.path, f.line, f.rule_id) not in previous_keys else "") + render_finding(f, tone, post_merge)
                     for f in findings
                 )
             )
@@ -148,6 +150,8 @@ def render_review(
             lines = "\n".join(f"- ✅ `~{f.path}:{f.line}` ({f.rule_id})" for f in resolved)
             sections.append(f"### ✅ Resolved since last review\n\n{lines}")
         body = "\n\n---\n\n".join(sections)
+    elif post_merge:
+        body = _TONES[tone] + "## ✨ Clean review — nothing to fix.\n\nMerged in good shape. ✅"
     else:
         body = _TONES[tone] + "## ✨ Clean review — nothing to fix.\n\nGo merge it. 🎉"
 

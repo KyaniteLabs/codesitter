@@ -33,4 +33,8 @@ fix:
   max_fix_depth: 2
   fork_policy: comment-only
   dependency_policy: skip-patch
+post_merge:
+  enabled: true
+  initial_lookback_h: 24
+  max_per_cycle: 10
 shadow: false

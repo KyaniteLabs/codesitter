@@ -161,6 +161,7 @@ def main() -> int:
     print(
         f"fl4write cycle: repo={report.repo} scanned={report.scanned} "
         f"reviewed={report.reviewed} shadow={config.shadow} "
+        f"postmerge={report.postmerge_reviewed} "
         f"dep_skipped={report.skipped_dependency} model_down={report.model_unavailable} "
         f"gate_dropped={report.gatekeeper_dropped} fix_prs={report.fix_prs_opened} "
         f"fix_merged={report.fix_prs_merged} issues_triaged={report.issues_triaged} "

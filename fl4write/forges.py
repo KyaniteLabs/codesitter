@@ -42,6 +42,17 @@ def is_own_identity(author: str, bot_login: str) -> bool:
     return author == bot_login or author in LEGACY_BOT_LOGINS
 
 
+def _parse_iso(raw: str):
+    """ISO timestamps from forges (trailing Z) and from our own state file
+    (+00:00) into one comparable datetime; None when unparseable."""
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
 class ForgeError(RuntimeError):
     pass
 
@@ -95,6 +106,11 @@ class ForgeAdapter:
 
     # Subclass responsibilities -------------------------------------------
     def list_open_prs(self, repo: str) -> list[PullRequest]:  # pragma: no cover - interface
+        raise NotImplementedError
+
+    def list_merged_prs(self, repo: str, since_iso: str) -> list[PullRequest]:  # pragma: no cover - interface
+        """PRs merged AFTER since_iso (exclusive), oldest first. The post-merge
+        sweep's discovery mechanism — a merged PR is invisible to list_open_prs."""
         raise NotImplementedError
 
     bot_login: str = "fl4write[bot]"
@@ -158,8 +174,43 @@ class GitHubAdapter(ForgeAdapter):
                     is_fork=bool(p["head"].get("repo") and p["head"]["repo"]["full_name"] != repo),
                     author=(p.get("user") or {}).get("login", ""),
                     is_bot_author=str((p.get("user") or {}).get("type", "")).lower() == "bot",
+                    merged_at=p.get("merged_at") or "",
                 )
             )
+        return prs
+
+    def list_merged_prs(self, repo: str, since_iso: str) -> list[PullRequest]:
+        # state=closed includes unmerged (closed-without-merge) PRs: filter on
+        # merged_at. sort=updated keeps freshly-touched PRs first, so recent
+        # merges arrive in the first pages; the pagination cap (10x50) is the
+        # documented discovery bound for very high-volume repos.
+        data = self._paginated(
+            f"/repos/{repo}/pulls?state=closed&sort=updated&direction=desc", page_size=50
+        )
+        since = _parse_iso(since_iso)
+        prs = []
+        for p in data:
+            merged_raw = p.get("merged_at") or ""
+            if not merged_raw:
+                continue
+            merged = _parse_iso(merged_raw)
+            if since is not None and merged is not None and merged <= since:
+                continue
+            prs.append(
+                PullRequest(
+                    forge=self.name,
+                    number=p["number"],
+                    repo=repo,
+                    title=p.get("title") or "",
+                    body=p.get("body") or "",
+                    head_sha=p["head"]["sha"],
+                    is_fork=bool(p["head"].get("repo") and p["head"]["repo"]["full_name"] != repo),
+                    author=(p.get("user") or {}).get("login", ""),
+                    is_bot_author=str((p.get("user") or {}).get("type", "")).lower() == "bot",
+                    merged_at=merged_raw,
+                )
+            )
+        prs.sort(key=lambda pr: pr.merged_at)  # oldest first: catch-up order
         return prs
 
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:
@@ -203,8 +254,40 @@ class ForgejoAdapter(ForgeAdapter):
                     is_fork=bool(head_repo and head_repo != repo),
                     author=(p.get("user") or {}).get("login", ""),
                     is_bot_author=str((p.get("user") or {}).get("type", "")).lower() == "bot",
+                    merged_at=p.get("merged_at") or "",
                 )
             )
+        return prs
+
+    def list_merged_prs(self, repo: str, since_iso: str) -> list[PullRequest]:
+        # Forgejo/Gitea: closed pulls carry `merged` + `merged_at`; same
+        # filtered-paginate shape as GitHub.
+        data = self._paginated(f"/repos/{repo}/pulls?state=closed", page_size=50)
+        since = _parse_iso(since_iso)
+        prs = []
+        for p in data:
+            merged_raw = p.get("merged_at") or ""
+            if not merged_raw or not p.get("merged"):
+                continue
+            merged = _parse_iso(merged_raw)
+            if since is not None and merged is not None and merged <= since:
+                continue
+            head_repo = ((p.get("head") or {}).get("repo") or {}).get("full_name")
+            prs.append(
+                PullRequest(
+                    forge=self.name,
+                    number=p["number"],
+                    repo=repo,
+                    title=p.get("title") or "",
+                    body=p.get("body") or "",
+                    head_sha=(p.get("head") or {}).get("sha", ""),
+                    is_fork=bool(head_repo and head_repo != repo),
+                    author=(p.get("user") or {}).get("login", ""),
+                    is_bot_author=str((p.get("user") or {}).get("type", "")).lower() == "bot",
+                    merged_at=merged_raw,
+                )
+            )
+        prs.sort(key=lambda pr: pr.merged_at)
         return prs
 
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:

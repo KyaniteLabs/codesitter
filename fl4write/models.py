@@ -16,6 +16,7 @@ class PullRequest(BaseModel):
     author: str = ""
     is_bot_author: bool = False
     state: str = "open"
+    merged_at: str = ""  # ISO timestamp; "" = not merged (post-merge sweep key)
 
 
 class Finding(BaseModel):

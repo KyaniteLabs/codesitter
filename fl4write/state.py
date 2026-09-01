@@ -170,3 +170,22 @@ def prune_closed(state: dict[str, Any], open_numbers: set[int]) -> None:
         for n, rec in state["prs"].items()
         if int(n) in open_numbers or "fix_depth" in rec or "model_failures" in rec
     }
+
+
+# Post-merge sweep watermark. Unlike the open-PR path (where correctness NEVER
+# depends on a timestamp — the head-SHA predicate self-heals), discovery of
+# MERGED PRs needs a watermark: they are invisible to list_open_prs. At-most-
+# once posting stays protected by the head-SHA predicate + persistent-comment
+# marker even if the watermark rewinds.
+MERGED_SINCE_KEY = "merged_since"
+
+
+def merged_watermark(state: dict[str, Any]) -> str | None:
+    return state.get(MERGED_SINCE_KEY)
+
+
+def advance_merged_watermark(state: dict[str, Any], iso: str) -> None:
+    """Only ever advances — a rewind would re-list already-swept merges."""
+    current = merged_watermark(state)
+    if current is None or iso > current:
+        state[MERGED_SINCE_KEY] = iso

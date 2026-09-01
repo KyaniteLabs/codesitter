@@ -45,6 +45,12 @@ for f in *.fl4write.yaml; do
     echo "$OUT" | grep "ALERT" | while read -r line; do
         echo "$(date -Iseconds) $line" >> "$LOG"
     done
+    # Durable per-repo telemetry (checklist: acceptance metrics surfaced) — the
+    # per-repo cycle line carries acceptance=/postmerge=; without this it was
+    # computed then discarded, leaving only the OK/ERR aggregate.
+    echo "$OUT" | grep "^fl4write cycle:" | while read -r line; do
+        echo "$(date -Iseconds) $line" >> "$LOG"
+    done
 done
 echo "$(date -Iseconds) cycle: $OK ok / $ERR errors" >> "$LOG"
 
