@@ -107,7 +107,7 @@ def main() -> int:
     # Config-presence surveillance (learning 16): racing branches have twice
     # silently reverted adoptions; every cycle verifies the IN-REPO config
     # still exists on main and alerts if the adoption was lost. Accepts the
-    # renamed .fl4write.yaml and the legacy .fl4write.yaml during migration.
+    # renamed .fl4write.yaml and the legacy .codesitter.yaml during migration.
     probe = subprocess.run(  # noqa: S603,607
         ["gh", "api", f"repos/{config.repo}/contents/.fl4write.yaml", "--jq", ".name"],
         capture_output=True,
@@ -116,13 +116,13 @@ def main() -> int:
     )
     if probe.returncode != 0:
         probe = subprocess.run(  # noqa: S603,607
-            ["gh", "api", f"repos/{config.repo}/contents/.fl4write.yaml", "--jq", ".name"],
+            ["gh", "api", f"repos/{config.repo}/contents/.codesitter.yaml", "--jq", ".name"],
             capture_output=True,
             text=True,
             timeout=30,
         )
     if probe.returncode != 0:
-        print(f"ALERT: adoption lost — no .fl4write.yaml or .fl4write.yaml on {config.repo} main (re-adopt)")
+        print(f"ALERT: adoption lost — no .fl4write.yaml or .codesitter.yaml on {config.repo} main (re-adopt)")
     print(
         f"fl4write cycle: repo={report.repo} scanned={report.scanned} "
         f"reviewed={report.reviewed} shadow={config.shadow} "
