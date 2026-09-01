@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import os
+import time
+import urllib.error
 import urllib.request
 from typing import Any
 
@@ -21,12 +23,15 @@ from .config import ForgeBinding
 from . import renderer
 from .models import PullRequest
 
-USER_AGENT = "fl4write/0.1"
+USER_AGENT = "fl4write/0.4"
 
 # The app was renamed kyanitelabs -> fl4write (2026-09-01), which changed the
 # bot login. Comments authored under EITHER slug are ours; both are accepted
 # so pre-rename comments still edit-in-place instead of duplicating.
-LEGACY_BOT_LOGINS = ("kyanitelabs[bot]",)
+# fl4write[bot] is in the LEGACY set too: under PAT-fallback auth the
+# expected login is the personal account, but our app-authored comments
+# must still be recognized as ours (audit F8 — storm reborn via dep gap).
+LEGACY_BOT_LOGINS = ("kyanitelabs[bot]", "fl4write[bot]")
 
 
 def is_own_identity(author: str, bot_login: str) -> bool:
@@ -39,8 +44,7 @@ class ForgeError(RuntimeError):
 
 class ForgeAdapter:
     name = "base"
-    supports_fork_ci_approval = False
-    supports_inline_threads = True
+    page_size_param = "per_page"  # Gitea/Forgejo uses `limit`
 
     def __init__(self, binding: ForgeBinding):
         self.binding = binding
@@ -53,7 +57,11 @@ class ForgeAdapter:
             h["Authorization"] = f"token {token}"
         return h
 
-    def _call(self, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+    def _call(self, method: str, path: str, payload: dict[str, Any] | None = None,
+              _retry: bool = True) -> Any:
+        """One API call. GETs retry ONCE on throttle/transient (403/429/5xx),
+        honoring Retry-After up to 30s; POSTs never blind-retry (double-post
+        risk). Every failure names the forge, method, and path."""
         req = urllib.request.Request(
             f"{self.base}{path}",
             data=json.dumps(payload).encode() if payload is not None else None,
@@ -65,8 +73,20 @@ class ForgeAdapter:
                 body = resp.read().decode()
                 return json.loads(body) if body else {}
         except urllib.error.HTTPError as exc:
+            if method == "GET" and _retry and exc.code in (403, 429, 500, 502, 503, 504):
+                wait = 0.0
+                if exc.headers and exc.headers.get("Retry-After"):
+                    try:
+                        wait = min(float(exc.headers["Retry-After"]), 30.0)
+                    except ValueError:
+                        pass
+                time.sleep(wait)
+                return self._call(method, path, payload, _retry=False)
             raise ForgeError(f"{self.name} {method} {path}: HTTP {exc.code}") from exc
         except (urllib.error.URLError, TimeoutError) as exc:
+            if method == "GET" and _retry:
+                time.sleep(1)
+                return self._call(method, path, payload, _retry=False)
             raise ForgeError(f"{self.name} {method} {path}: {exc}") from exc
 
     # Subclass responsibilities -------------------------------------------
@@ -82,7 +102,9 @@ class ForgeAdapter:
         page one must not be invisible)."""
         out: list[dict] = []
         for page in range(1, max_pages + 1):
-            batch = self._call("GET", f"{path}{'&' if '?' in path else '?'}page={page}&per_page={page_size}")
+            batch = self._call(
+                "GET", f"{path}{'&' if '?' in path else '?'}page={page}&{self.page_size_param}={page_size}"
+            )
             if not isinstance(batch, list):
                 raise ForgeError(f"paginated {path}: unexpected shape")
             out.extend(batch)

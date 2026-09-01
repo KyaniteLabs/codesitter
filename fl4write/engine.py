@@ -1,34 +1,47 @@
-"""Engine core: the cycle. Trigger seam + collect → dedupe → analyze →
-gatekeep → post → fix-lane handoff → issues triage → metrics.
+"""Engine: one poll-invariant cycle per repo — collect, dedupe, review, fix, triage.
 
-The trigger seam (ralplan): `run_cycle(config, trigger)` takes a NORMALIZED
-trigger (repo, pr, reason) — cron is merely v1's trigger adapter; no `reason`
-value bypasses the head-SHA predicate (state correctness is reason-blind).
+Design laws (ralplan-approved):
+- The head-SHA predicate decides re-review; trigger reason is annotation only.
+- get_diff is REQUIRED: grounding without a real diff file-set is vacuous.
+- ONE state owner per cycle: this module loads once and saves once; lanes
+  mutate the dict (a lane doing its own load+save caused the email-storm
+  lost update — LEARNINGS #17). Checkpoint saves after each PR keep a
+  mid-cycle kill from losing the whole cycle's memory.
+- Per-PR containment: one PR's forge/model failure never aborts the others
+  and never loses the cycle's state (the mirror degrade law, extended to
+  primaries).
 
-Shadow mode: config.shadow=True logs the would-be post and touches nothing.
-Mirror dedupe: PRs seen on a mirror forge with a head SHA already reviewed on
-the primary are skipped without a second review.
+Audit 2026-09-01:
+- previous_findings now parses the RENDERER's actual format via
+  renderer.parse_finding_lines (the old regex matched a format nothing
+  emitted — every finding was 🆕 forever and ✅ resolution never existed).
+- config.gatekeeper and config.issues_enabled are honored (dead knobs).
+- A model-failure retry cap per (PR, SHA) stops the infinite retry loop on
+  permanently unparseable generations.
+- Deadline awareness: start no new PR when the remaining budget can't fit a
+  review, so a runner kill can't livelock the repo (LEARNINGS #24 class).
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable
 
 from . import fixlane, gatekeeper, renderer, state
-from .analyzer import ModelUnavailable, analyze
 from .config import RepoConfig
 from .forges import ForgeAdapter, ForgeError, adapter_for
 from .models import Finding, PullRequest
 from .state import CycleLock, CycleLockHeld
 
-log = logging.getLogger("fl4write")
+log = logging.getLogger("fl4write.engine")
 
+ShadowSink = Callable[[str, int, str], None]
 
-class ShadowSink(Protocol):
-    def __call__(self, repo: str, pr_number: int, body: str) -> None: ...
+REVIEW_BUDGET_S = 90  # worst-case model time for one review (2 routes x ~45s + slack)
+MODEL_FAILURE_CAP = 3  # per (PR, head SHA); exceed = alert-and-stop retrying
 
 
 @dataclass
@@ -36,7 +49,6 @@ class CycleReport:
     repo: str
     scanned: int = 0
     reviewed: int = 0
-    skipped_mirror: int = 0
     mirror_degraded: int = 0
     skipped_dependency: int = 0
     fix_escalations: int = 0
@@ -47,21 +59,147 @@ class CycleReport:
     fix_prs_merged: int = 0
     issues_triaged: int = 0
     acceptance: dict[str, Any] = field(default_factory=dict)
+    skipped_diff_unavailable: int = 0
+    alerts: list[str] = field(default_factory=list)
+
+
+def _mirror_shas(mirrors: list[ForgeAdapter], repo: str, report: CycleReport) -> set[str]:
+    """Mirror completeness set — degradation law: unreachable mirror logs+skips."""
+    shas: set[str] = set()
+    for m in mirrors:
+        try:
+            shas |= {pr.head_sha for pr in m.list_open_prs(repo)}
+        except Exception as exc:  # noqa: BLE001 - mirror degrade law
+            report.mirror_degraded += 1
+            log.warning("mirror %s degraded (log+skip, never abort): %s", m.name, exc)
+    return shas
+
+
+def _prior_findings(prev_body: str) -> list[Finding]:
+    """Reconstruct prior findings from our own comment via the renderer's
+    parse contract (single source of truth with the emitter)."""
+    return [
+        Finding(rule_id=rule, severity=sev, path=path, line=line, category="prior", message="")
+        for sev, path, line, rule in renderer.parse_finding_lines(prev_body)
+    ]
+
+
+def _review_pr(
+    pr: PullRequest,
+    config: RepoConfig,
+    primary: ForgeAdapter,
+    get_diff: Callable[[PullRequest], tuple[set[str], str] | None],
+    shadow_sink: ShadowSink | None,
+    st: dict[str, Any],
+    report: CycleReport,
+    run_fixes: bool,
+) -> None:
+    """Review one PR. Contained: any failure logs and returns — the cycle and
+    its state survive."""
+    from .analyzer import ModelUnavailable, analyze
+
+    diff = get_diff(pr)
+    if diff is None:
+        # Diff fetch failed: DO NOT review (vacuous grounding posts 🎉 over
+        # real findings — LEARNINGS #3) and DO NOT mark reviewed.
+        report.skipped_diff_unavailable += 1
+        report.alerts.append(f"diff unavailable for #{pr.number} — not reviewed, will retry")
+        return
+    diff_files, diff_text = diff
+
+    try:
+        doc = analyze(pr, diff_files, diff_text, config)
+    except ModelUnavailable as exc:
+        report.model_unavailable += 1
+        key = f"{pr.number}:{pr.head_sha[:10]}"
+        fails = int(st.get("model_failures", {}).get(key, 0)) + 1
+        st.setdefault("model_failures", {})[key] = fails
+        if fails >= MODEL_FAILURE_CAP:
+            report.alerts.append(f"#{pr.number}: model failed {fails}x at this SHA — needs human look")
+        log.warning("model unavailable for %s#%s: %s", config.repo, pr.number, exc)
+        return
+    st.get("model_failures", {}).pop(f"{pr.number}:{pr.head_sha[:10]}", None)
+
+    findings = doc.findings
+    if findings and config.gatekeeper:
+        findings, dropped = gatekeeper.filter_findings(findings, config)
+        report.gatekeeper_dropped += dropped
+
+    rh = f"{pr.head_sha[:12]}{len(findings):04x}"
+    previous: list[Finding] = []
+    existing = primary.get_persistent_comment(config.repo, pr.number)
+    if existing:
+        previous = _prior_findings(existing[1])
+    body = renderer.render_review(
+        pr, findings, config, rh, previous,
+        gatekeeper_dropped=report.gatekeeper_dropped or 0,
+        diff_truncated=bool(doc.digest.get("_diff_truncated")),
+    )
+    if config.shadow:
+        if shadow_sink:
+            shadow_sink(config.repo, pr.number, body)
+        report.shadow_only = True
+    elif existing:
+        primary.update_comment(config.repo, pr.number, existing[0], body)
+    else:
+        primary.create_comment(config.repo, pr.number, body)
+    outcome = f"shadow:{len(findings)}" if config.shadow else f"reviewed:{len(findings)}"
+    state.mark_reviewed(st, pr.number, pr.head_sha, outcome)
+    report.reviewed += 1
+
+    if run_fixes and config.fix.enabled and not config.shadow:
+        _fix_lane(pr, findings, config, primary, st, report)
+
+
+def _fix_lane(
+    pr: PullRequest,
+    findings: list[Finding],
+    config: RepoConfig,
+    primary: ForgeAdapter,
+    st: dict[str, Any],
+    report: CycleReport,
+) -> None:
+    """Attempt fixes for Critical/Major findings; capped by fix_depth in state
+    (which now PERSISTS across pushes — mark_reviewed merges, not replaces)."""
+    from . import executor
+
+    for f in findings:
+        if f.severity not in ("Critical", "Major"):
+            continue
+        pr_state = st["prs"].setdefault(str(pr.number), {})
+        depth = int(pr_state.get("fix_depth", 0))
+        blocked = fixlane.fix_allowed(pr, config, depth)
+        if blocked is not None:
+            body = fixlane.escalate(pr, [f], blocked)
+            primary.create_comment(config.repo, pr.number, body)
+            report.fix_escalations += 1
+            continue
+        result = executor.attempt_fix(pr, f, config)
+        if result.get("status") == "pr_opened":
+            report.fix_prs_opened += 1
+            pr_state["fix_depth"] = depth + 1
+        elif result.get("status") == "error":
+            log.warning("fix attempt failed for %s#%s: %s", config.repo, pr.number, result.get("reason"))
+    try:
+        merged = executor.check_and_merge_own_prs(config)
+        report.fix_prs_merged += merged
+    except Exception as exc:  # noqa: BLE001 - merge scan must not kill the cycle
+        log.warning("merge scan failed for %s: %s", config.repo, exc)
 
 
 def run_cycle(
     config: RepoConfig,
     state_path: Path,
-    get_diff: Callable[[PullRequest], tuple[set[str], str]],
+    get_diff: Callable[[PullRequest], tuple[set[str], str] | None],
     trigger_reason: str = "cron",
     shadow_sink: ShadowSink | None = None,
     run_issues: bool = False,
     run_fixes: bool = False,
+    deadline: float | None = None,
 ) -> CycleReport:
     """One poll-invariant cycle. `reason` is annotation only — the predicate
     in state.needs_review decides; nothing bypasses it. `get_diff` is
-    REQUIRED: grounding without a real diff file-set is vacuous (review
-    finding 1) — a missing fetcher is a config error that aborts loudly."""
+    REQUIRED and may return None on fetch failure (skip, don't fake)."""
     report = CycleReport(repo=config.repo, shadow_only=config.shadow)
     primary_name = next(k for k, b in config.forges.items() if b.role == "primary")
     primary: ForgeAdapter = adapter_for(config.forges[primary_name])
@@ -73,115 +211,59 @@ def run_cycle(
     try:
         with CycleLock(state_path.with_suffix(".lock")):
             st = state.load_state(state_path)
-            prs = primary.list_open_prs(config.repo, st.get("watermark"))
-            seen_shas: dict[str, str] = {}
-            for pr in prs:
-                seen_shas.setdefault(pr.head_sha, f"{pr.forge}:{pr.number}")
-            for m in mirrors:
-                try:
-                    for mpr in m.list_open_prs(config.repo):
-                        if mpr.head_sha in seen_shas:
-                            report.skipped_mirror += 1
-                except ForgeError as exc:
-                    log.warning("mirror %s unavailable (degraded, continuing): %s", m.name, exc)
-                    report.mirror_degraded += 1
-            report.scanned = len(prs)
+            mirror_shas = _mirror_shas(mirrors, config.repo, report)
 
-            reviewed_records: list[dict[str, Any]] = []
+            try:
+                prs = primary.list_open_prs(config.repo)
+            except ForgeError as exc:
+                report.alerts.append(f"primary unreachable: {exc}")
+                log.warning("primary unreachable for %s: %s", config.repo, exc)
+                prs = []
 
+            open_numbers = set()
             for pr in prs:
+                open_numbers.add(pr.number)
+                report.scanned += 1
+                if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
+                    report.alerts.append("cycle deadline reached — remaining PRs deferred to next cycle")
+                    break
+                mirror_seen = pr.head_sha in mirror_shas
+                if mirror_seen and trigger_reason == "mirror":
+                    continue  # mirrored PRs are never reviewed twice
+                bot_authored = bool(pr.is_bot_author)
+                if bot_authored and fixlane.dependency_depth(pr, pr.title, config) in ("skip",):
+                    state.mark_reviewed(st, pr.number, pr.head_sha, "dependency-skip")
+                    report.skipped_dependency += 1
+                    continue
                 if not state.needs_review(st, pr.number, pr.head_sha):
                     continue
-                dep = fixlane.dependency_depth(pr, pr.title, config)
-                if dep == "skip":
-                    report.skipped_dependency += 1
-                    state.mark_reviewed(st, pr.number, pr.head_sha, "dependency-skip")
-                    continue
                 try:
-                    diff_files, diff_text = get_diff(pr)
-                    doc = analyze(pr, diff_files, diff_text, config)
-                except ModelUnavailable as exc:
-                    log.warning("model unavailable for %s#%s: %s", config.repo, pr.number, exc)
-                    report.model_unavailable += 1
-                    continue
+                    _review_pr(pr, config, primary, get_diff, shadow_sink, st, report, run_fixes)
+                except ForgeError as exc:
+                    # Per-PR containment (audit C7): a throttled/broken call
+                    # must not abort the cycle or lose already-reviewed state.
+                    report.alerts.append(f"#{pr.number}: forge error contained: {exc}")
+                    log.warning("forge error on %s#%s (contained): %s", config.repo, pr.number, exc)
+                state.save_state(state_path, st)  # checkpoint after each PR
 
-                # Gatekeeper nit-filter (fail-open on model down)
-                findings = doc.findings
-                if findings:
-                    findings, dropped = gatekeeper.filter_findings(findings, config)
-                    report.gatekeeper_dropped += dropped
+            state.prune_closed(st, open_numbers)
 
-                rh = f"{pr.head_sha[:12]}{len(findings):04x}"
-                previous: list[Finding] = []
-                existing = primary.get_persistent_comment(config.repo, pr.number)
-                if existing:
-                    import re
-
-                    prev_block = existing[1]
-                    previous = [
-                        Finding(
-                            rule_id=m.group("rule") if "rule" in m.groupdict() else "general",
-                            severity="Minor",
-                            path=m.group("path"),
-                            line=int(m.group("line")),
-                            category="prior",
-                            message=m.group("msg"),
-                        )
-                        for m in re.finditer(
-                            r"\*\*\[(?P<sev>\w+)\] (?P<path>.+):(?P<line>\d+)\*\*"
-                            r" \([^)]*rule `(?P<rule>[^`]+)`\) — (?P<msg>.+)",
-                            prev_block,
-                        )
-                    ]
-                body = renderer.render_review(pr, findings, config, rh, previous)
-                if config.shadow:
-                    if shadow_sink:
-                        shadow_sink(config.repo, pr.number, body)
-                    report.shadow_only = True
-                elif existing:
-                    primary.update_comment(config.repo, pr.number, existing[0], body)
-                else:
-                    primary.create_comment(config.repo, pr.number, body)
-                outcome = f"shadow:{len(findings)}" if config.shadow else f"reviewed:{len(findings)}"
-                state.mark_reviewed(st, pr.number, pr.head_sha, outcome)
-                report.reviewed += 1
-                reviewed_records.append({"pr": pr.number, "findings": len(findings)})
-
-                # Fix-lane executor: attempt fixes for Critical/Major findings
-                if run_fixes and config.fix.enabled and findings and not config.shadow:
-                    from . import executor
-
-                    for finding in findings:
-                        if finding.severity in ("Critical", "Major"):
-                            depth = st.get("prs", {}).get(str(pr.number), {}).get("fix_depth", 0)
-                            result = executor.attempt_fix(pr, finding, config, depth)
-                            if result["status"] == "pr_opened":
-                                report.fix_prs_opened += 1
-                            elif result["status"] == "blocked":
-                                report.fix_escalations += 1
-                            # Update depth
-                            pr_state = st["prs"].setdefault(str(pr.number), {})
-                            pr_state["fix_depth"] = depth + 1
-
-                    # Check and merge our own PRs that have green CI
-                    merged = executor.check_and_merge_own_prs(config, config.bot_login)
-                    report.fix_prs_merged += len(merged)
-
-            # Acceptance metrics snapshot
-            if reviewed_records:
-                from . import metrics
-
-                report.acceptance = metrics.acceptance_snapshot(primary, config, reviewed_records)
-
-            # Issues lane — mutates the engine-owned st dict; ONE save below.
-            if run_issues:
+            if run_issues and config.issues_enabled:
                 from . import issues as issues_lane
 
                 issue_summary = issues_lane.run_issues_cycle(config, st, primary)
                 report.issues_triaged = issue_summary.get("triaged", 0)
 
+            if not config.shadow:
+                from . import metrics
+
+                report.acceptance = metrics.acceptance_snapshot(primary, config)
+
             state.save_state(state_path, st)
-    except CycleLockHeld:
-        log.info("cycle lock held — skipping this cycle (never double-post)")
+    except CycleLockHeld as exc:
+        log.warning("cycle lock held — skipping this cycle (never double-post): %s", exc)
+        report.alerts.append(f"LOCK HELD: {exc}")
         report.scanned = 0
+    except state.StateIOError as exc:
+        report.alerts.append(str(exc))
     return report

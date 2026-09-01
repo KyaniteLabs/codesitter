@@ -11,8 +11,10 @@ from the environment, falling back to the org config store for model routes
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
+import time
 import subprocess
 import sys
 from pathlib import Path
@@ -21,11 +23,16 @@ from .config import load_config
 from .engine import run_cycle
 from .models import PullRequest
 
+log = logging.getLogger("fl4write.cli")
+
 
 def _gh(*args: str) -> str:
-    out = subprocess.run(  # noqa: S603,607 - fixed argv, gh-managed auth
-        ["gh", *args], capture_output=True, text=True, timeout=120
-    )
+    try:
+        out = subprocess.run(  # noqa: S603,607 - fixed argv, gh-managed auth
+            ["gh", *args], capture_output=True, text=True, timeout=120
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"gh {' '.join(args[:2])} timed out after 120s") from exc
     if out.returncode != 0:
         raise RuntimeError(f"gh {' '.join(args[:2])} failed: {out.stderr[-200:]}")
     return out.stdout
@@ -35,10 +42,6 @@ def _org_model_keys() -> None:
     """Populate model key envs from the org config store if unset (runtime
     key reading — keys are never inlined into prompts or configs)."""
     store = Path.home() / ".sinter/config.json"
-    mapping = {
-        "CODESITTER_QWEN_KEY": ("fallbacks", "harness", 0, "apiKey"),
-        "CODESITTER_DEEPSEEK_KEY": None,  # filled below via providers.deepinfra
-    }
     try:
         cfg = json.loads(store.read_text())
     except (OSError, json.JSONDecodeError):
@@ -52,22 +55,37 @@ def _org_model_keys() -> None:
         m = re.search(r'"deepinfra"[^}]*?"apiKey":\s*"([^"]+)"', json.dumps(cfg))
         if m:
             os.environ["CODESITTER_DEEPSEEK_KEY"] = m.group(1)
-    del mapping
 
 
 def make_get_diff(repo: str):
-    def get_diff(pr: PullRequest) -> tuple[set[str], str]:
+    def get_diff(pr: PullRequest) -> tuple[set[str], str] | None:
+        """None = the diff could NOT be fetched. The engine then skips the PR
+        WITHOUT marking it reviewed — an empty set here used to ground NOTHING,
+        post "🎉 clean" over real findings, and record the SHA as reviewed
+        forever (LEARNINGS #3, reborn on the error path — audit C1)."""
         try:
             text = _gh("pr", "diff", str(pr.number), "--repo", repo)
         except RuntimeError:
-            # Oversized diffs (GitHub 406 >20k lines) — fall back to the file
-            # list via the API and a truncated diff from the first file only.
+            # Oversized diffs (GitHub 406 >20k lines) — fall back to the FULL
+            # file list via the API (paginated, not just page one).
             try:
-                files_json = _gh("api", f"repos/{repo}/pulls/{pr.number}/files?per_page=100")
-                names = {f["filename"] for f in json.loads(files_json) if isinstance(files_json, list) and f}
+                names: set[str] = set()
+                page = 1
+                while True:
+                    files_json = _gh("api", f"repos/{repo}/pulls/{pr.number}/files?per_page=100&page={page}")
+                    batch = json.loads(files_json)
+                    if not isinstance(batch, list) or not batch:
+                        break
+                    names |= {f["filename"] for f in batch if isinstance(f, dict) and f.get("filename")}
+                    if len(batch) < 100:
+                        break
+                    page += 1
+                if not names:
+                    return None
                 return names, "(diff too large for API; reviewed from file list only)"
-            except Exception:
-                return set(), ""
+            except (RuntimeError, json.JSONDecodeError) as exc:
+                log.warning("diff unavailable for %s#%s: %s", repo, pr.number, exc)
+                return None
         files = set(re.findall(r"^\+\+\+ b/(.+)$", text, re.MULTILINE))
         return files, text
 
@@ -75,6 +93,7 @@ def make_get_diff(repo: str):
 
 
 def main() -> int:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     if len(sys.argv) < 2:
         print("usage: python3 -m fl4write.cli <config.yaml> [--live]", file=sys.stderr)
         return 2
@@ -97,32 +116,35 @@ def main() -> int:
         config = config.model_copy(update={"bot_login": "simongonzalezdc"})
     _org_model_keys()
     state_path = Path.home() / ".fl4write" / f"{config.repo.replace('/', '__')}.state.json"
+    budget_s = int(os.environ.get("FL4WRITE_CYCLE_BUDGET_S", "840"))
     report = run_cycle(
         config,
         state_path,
         get_diff=make_get_diff(config.repo),
         run_fixes=run_fixes,
         run_issues=run_issues,
+        deadline=time.monotonic() + budget_s,
     )
     # Config-presence surveillance (learning 16): racing branches have twice
     # silently reverted adoptions; every cycle verifies the IN-REPO config
     # still exists on main and alerts if the adoption was lost. Accepts the
     # renamed .fl4write.yaml and the legacy .codesitter.yaml during migration.
-    probe = subprocess.run(  # noqa: S603,607
-        ["gh", "api", f"repos/{config.repo}/contents/.fl4write.yaml", "--jq", ".name"],
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    if probe.returncode != 0:
+    try:
         probe = subprocess.run(  # noqa: S603,607
-            ["gh", "api", f"repos/{config.repo}/contents/.codesitter.yaml", "--jq", ".name"],
-            capture_output=True,
-            text=True,
-            timeout=30,
+            ["gh", "api", f"repos/{config.repo}/contents/.fl4write.yaml", "--jq", ".name"],
+            capture_output=True, text=True, timeout=30,
         )
-    if probe.returncode != 0:
-        print(f"ALERT: adoption lost — no .fl4write.yaml or .codesitter.yaml on {config.repo} main (re-adopt)")
+        if probe.returncode != 0:
+            probe = subprocess.run(  # noqa: S603,607
+                ["gh", "api", f"repos/{config.repo}/contents/.codesitter.yaml", "--jq", ".name"],
+                capture_output=True, text=True, timeout=30,
+            )
+        if probe.returncode != 0:
+            print(f"ALERT: adoption lost — no .fl4write.yaml or .codesitter.yaml on {config.repo} main (re-adopt)")
+    except subprocess.TimeoutExpired:
+        print(f"ALERT: config probe timed out for {config.repo} (inconclusive — not an adoption-loss claim)")
+    for a in report.alerts:
+        print(f"ALERT: {a}")
     print(
         f"fl4write cycle: repo={report.repo} scanned={report.scanned} "
         f"reviewed={report.reviewed} shadow={config.shadow} "

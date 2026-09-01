@@ -54,22 +54,22 @@ Run in shadow mode (`shadow: true`) first — findings log, nothing posts.
 Cutover checklist: 48h shadow diff reviewed → host decision recorded (always-on
 host OR explicitly accepted sleep gap) → PAT scopes enumerated + rotation set.
 
-## Status — v0.2.0 ALL COMPONENTS BUILT (pilot live on 31 repos)
+## Status — v0.4.0 ALL COMPONENTS BUILT (pilot live on 31 repos)
 
 **v0.2.0 adds the four remaining planned components:**
 - **Fix-lane executor** (`executor.py`): real worktree → model patch → test → PR → CI-gated merge of OWN PRs (authorship asserted in code). Closes the loop: Fl4wRite can now FIX what it finds, not just report it.
 - **Gatekeeper nit-filter** (`gatekeeper.py`): staff-engineer second pass that kills nits before posting (fail-open on model down). The Greptile 79%-nits lesson, implemented.
 - **Issues lane** (`issues.py`): GitHub + Forgejo issue triage — duplicate detection, label routing, answer drafting, regression flags. Comment-only (never closes or reassigns). Enable via `--issues` flag.
-- **Acceptance metrics** (`metrics.py`): address-rate tracking per cycle (`acceptance=42%` in the runner report). The quality signal that tells us if findings are being acted on.
+- **Acceptance metrics** (`metrics.py`): address-rate tracking per cycle (surfaced as `acceptance=NN%` in the runner report once findings accumulate). The quality signal that tells us if findings are being acted on.
 
 **Usage:** `python3 -m fl4write.cli <config> [--live] [--fixes] [--issues]`
 
-v0.1.2 runs in production on five repos (see PILOT.md): kinocut, Epoch,
-devarch-framework, Innerscape, Elixis — live posting, review-only. 49 tests
-green including the adversarial subset; the build passed an adversarial
-review gate (8 blockers found and fixed — see LEARNINGS.md). The runner is a
-harness automation (hourly, :20) driving `python3 -m fl4write.cli`. PM: the
-kino PM (first Fl4wRite PM, CEO-appointed 2026-08-31). Roadmap on map #63:
-gatekeeper filter stage, scoped learnings, dependency-dashboard state,
-acceptance-metrics surfacing, GitHub-App trigger adapter (v2), fix-lane
-executor wiring.
+v0.4.0 runs in production on **31 repos** (see PILOT.md) — all four lanes
+live (review, gatekeeper, fix, issues), posting as `fl4write[bot]`. 60+
+tests green; the build has passed two adversarial gates (the original 8-blocker
+review, and the 2026-09-01 six-lane audit — ~60 findings fixed; see
+LEARNINGS.md #25). The runner is a nucbox crontab (`0 * * * *`) executing
+`run-cycle.sh`; the zcode-hosted laptop automation was retired 2026-09-01
+(single-host law — see LEARNINGS #17). PM seat: see fl4write issue #3 (the
+PM-2 handoff charter). Roadmap on map #63: acceptance-metrics surfacing,
+post-merge review mode, GitHub-App event trigger (v2).

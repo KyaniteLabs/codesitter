@@ -26,6 +26,7 @@ _WHITELIST_CODEPOINTS = {0x09, 0x0A}
 _DATA_URL_RE = re.compile(r"data:[^\s\"')]+", re.IGNORECASE)
 _BASE64_IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]*base64[^)]*\)", re.IGNORECASE)
 _REMOTE_SRC_RE = re.compile(r"<\s*(img|source|script|iframe)[^>]*src\s*=", re.IGNORECASE)
+_REMOTE_IMG_RE = re.compile(r"!\[[^\]]*\]\(\s*https?://[^)]*\)", re.IGNORECASE)  # exfil beacon
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _HIDDEN_TAG_RE = re.compile(r"</?\s*(details|summary|script|style|iframe)\b[^>]*>", re.IGNORECASE)
 # Our persistent-comment marker must be minted only by the renderer.
@@ -48,6 +49,7 @@ def scrub(text: str) -> str:
     s = "".join(out)
     s = _DATA_URL_RE.sub("[scrubbed-data-url]", s)
     s = _BASE64_IMG_RE.sub("[scrubbed-image]", s)
+    s = _REMOTE_IMG_RE.sub("[image removed]", s)
     s = _REMOTE_SRC_RE.sub("&lt;remote-src ", s)
     s = _HTML_COMMENT_RE.sub("", s)
     s = _HIDDEN_TAG_RE.sub("", s)
@@ -63,6 +65,6 @@ def assert_clean(text: str) -> None:
             continue
         if unicodedata.category(ch) in _CONTROL_CATEGORIES:
             raise ValueError(f"unscrubbed control char U+{cp:04X} in output")
-    for pattern in (_DATA_URL_RE, _BASE64_IMG_RE, _REMOTE_SRC_RE, _MARKER_RE):
+    for pattern in (_DATA_URL_RE, _BASE64_IMG_RE, _REMOTE_IMG_RE, _REMOTE_SRC_RE, _MARKER_RE):
         if pattern.search(text):
             raise ValueError(f"unscrubbed pattern {pattern.pattern[:30]} in output")

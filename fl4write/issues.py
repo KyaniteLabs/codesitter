@@ -19,7 +19,7 @@ from typing import Any
 from . import scrub
 from .analyzer import ModelUnavailable, _call_model
 from .config import RepoConfig
-from .forges import ForgeAdapter, ForgeError
+from .forges import ForgeAdapter, ForgeError, is_own_identity
 
 
 log = logging.getLogger("fl4write.issues")
@@ -37,11 +37,20 @@ _URGENCY_MARKER = {"critical": "🚨", "high": "⚠️", "medium": "", "low": ""
 
 
 def collect_new_issues(forge: ForgeAdapter, repo: str, last_number: int) -> list[dict[str, Any]]:
-    """Fetch open issues with number > last_number."""
-    issues = forge._call("GET", f"/repos/{repo}/issues?state=open&per_page=30")
-    if not isinstance(issues, list):
-        return []
-    return [i for i in issues if i.get("number", 0) > last_number and "pull_request" not in i]
+    """Fetch open issues with number > last_number, PAGINATED and ascending.
+
+    Single-page-30 was a silent permanent-skip: GitHub sorts newest-first,
+    so with >30 untriaged issues the watermark jumped past unseen older ones.
+    We page through everything, then process in ascending order so the
+    watermark only ever advances over issues actually handled."""
+    all_issues: list[dict[str, Any]] = []
+    try:
+        all_issues = list(forge._paginated(f"/repos/{repo}/issues?state=open", page_size=50))
+    except ForgeError:
+        all_issues = forge._call("GET", f"/repos/{repo}/issues?state=open&per_page=100")
+        all_issues = all_issues if isinstance(all_issues, list) else []
+    fresh = [i for i in all_issues if i.get("number", 0) > last_number and "pull_request" not in i]
+    return sorted(fresh, key=lambda i: i.get("number", 0))
 
 
 def triage_issue(issue: dict[str, Any], config: RepoConfig) -> dict[str, Any] | None:
@@ -96,7 +105,7 @@ def find_existing_triage(forge: ForgeAdapter, repo: str, number: int, bot_login:
         author = ((c.get("user") or {}).get("login") or "").lower()
         if (
             "fl4write-triage:v1" in body or "codesitter-triage:v1" in body
-        ) and (author == bot_login or author in ("kyanitelabs[bot]",)):
+        ) and is_own_identity(author, bot_login):
             return c["id"], body
     return None
 
@@ -141,6 +150,9 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
 
         if config.shadow:
             summary["triaged"] += 1
+            # SHADOW NEVER ADVANCES THE WATERMARK (LEARNINGS #2 class): a
+            # shadow-triaged issue must still get its live triage later.
+            continue
         else:
             body = render_triage_comment(num, triage, config)
             existing = find_existing_triage(forge, config.repo, num, config.bot_login)

