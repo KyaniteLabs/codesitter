@@ -14,7 +14,10 @@ the answer to this org's ~60s merges the open-PR poller never sees, LEARNINGS
 #24) + **CI watch** (CEO directive 2026-09-01: red default-branch HEAD on an
 own repo → findings from failing checks' annotations → fix-lane PR; no-fix →
 escalation issue; SHA-keyed, never re-acts on the same head; own-repos only —
-forks/upstream structurally out). Brain (TRANSITION):
+forks/upstream structurally out) + **retro audit** (CEO-approved live
+2026-09-01: merged PRs BELOW the forward watermark, newest-first,
+freshness-gated against zombie findings, cursor-resumable — kinocut first,
+fleet after verification). Brain (TRANSITION):
 today DeepSeek-V4-Flash-0731 via deepinfra (the $40-budget ledger route) —
 **the CEO is building a local-inference floor with multiple models + a
 consensus system** (2026-09-01); when it lands, the model routes in these
@@ -58,6 +61,20 @@ days OR 100 incident-free reviews** — zero double-posts, zero email storms,
 model-route stability, surveillance proven. Incidents so far (all fixed with
 regression tests, see LEARNINGS.md): the email storm (#17), the rename-sweep
 URL bug (#18), the app-slug identity change (#20). Soak counts post-fix days.
+
+## Forgejo-only repos (approved 2026-09-01, awaiting the bot identity)
+
+Four repos exist ONLY on git.kyanitelabs.tech: `KyaniteLabs/achiote-icm`,
+`simon/CNCL`, `simon/puenteworks-os`, `simon/rlenvs` (all originally-ours,
+no forks/mirrors). Pipeline is built + live-proven in shadow (Gitea-native
+PR listing, `.diff` endpoint, Forgejo-primary CLI path). BLOCKED on one CEO
+click: a `fl4write` user on the host + token (site-admin; PM tokens are all
+non-admin — probed). Configs staged in the PM clone (`*.forgejo.fl4write.yaml`),
+HELD from main until the token exists (an authless config alerts every
+cycle; posting under any interim identity violates the bot_login law).
+v1 limits: fix lane + ci_watch are GitHub-only on Forgejo repos
+(escalation-comment rail fires loudly); dual-homed repos' Forgejo-side PRs
+uncovered (mirror machinery is the follow-up).
 
 ## Expansion beyond the pilot
 

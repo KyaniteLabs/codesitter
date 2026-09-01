@@ -37,3 +37,7 @@ ci_watch:
   enabled: true
   escalate_issues: true
 shadow: false
+retro_audit:
+  enabled: true
+  lookback_days: 90
+  max_per_cycle: 5

@@ -34,3 +34,7 @@ post_merge:
   enabled: true
   initial_lookback_h: 24
   max_per_cycle: 10
+retro_audit:
+  enabled: true
+  lookback_days: 90
+  max_per_cycle: 5

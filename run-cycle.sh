@@ -31,6 +31,12 @@ fi
 if [ -z "${CODESITTER_DEEPSEEK_KEY:-}" ]; then
     export CODESITTER_DEEPSEEK_KEY=$(grep "^export CODESITTER_DEEPSEEK_KEY=" ~/.bashrc 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
 fi
+# Forgejo fleet (2026-09-01, CEO-approved): same .bashrc-invisible-to-cron
+# extraction for the Forgejo bot token — inert until the key exists (empty
+# export + zero active forgejo configs = never called).
+if [ -z "${CODESITTER_FORGEJO_TOKEN:-}" ]; then
+    export CODESITTER_FORGEJO_TOKEN=$(grep "^export CODESITTER_FORGEJO_TOKEN=" ~/.bashrc 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+fi
 
 OK=0; ERR=0
 for f in *.fl4write.yaml; do

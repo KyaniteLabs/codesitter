@@ -30,3 +30,7 @@ fix:
   merge_own_prs: false
   max_fix_depth: 2
   fork_policy: comment-only
+retro_audit:
+  enabled: true
+  lookback_days: 90
+  max_per_cycle: 5
