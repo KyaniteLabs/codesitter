@@ -76,3 +76,16 @@ since May — the real bug was a hardcoded org installation ID. GitHub App
 state is fully observable via GET /app/installations with the app JWT.
 **Law: a click request is a last resort; every checkable claim gets checked
 first.**
+
+## 24. The hourly poller structurally misses fast-merged PRs (2026-09-01)
+Evidence from the first real PR flow (the CEO's Wave-2/2b docs sweep): PRs open
+and merge in ~60 seconds (tastecheck #19: created 00:24, merged 00:25); some
+wave merges never appear as GitHub PRs at all (Forgel-side/agent merges pushed
+to main). An hourly poll that only sees OPEN PRs reviews none of them. In this
+org, agent-driven fast-merge IS the normal PR flow — so the v1 polling trigger
+reviews almost nothing real. Mitigations: (a) post-merge review mode (review
+PRs merged since the last watermark; findings land as post-merge comments,
+fixes ride follow-up PRs); (b) the chartered v2 event trigger (webhook via the
+app — permissions already granted). Also: 8 repos lost configs to the same
+sweep (stale-based merges landing on main — LEARNINGS class #16/#18): sweep
+tooling MUST rebase onto fresh main before landing.
