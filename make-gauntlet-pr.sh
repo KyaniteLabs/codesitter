@@ -35,3 +35,12 @@ fi
 gh pr view 1 -R "$R" >/dev/null 2>&1 && { echo "gauntlet PR already open"; exit 0; }
 gh pr create -R "$R" --base gauntlet/full-review --head gauntlet/target \
   --title "FL4WRITE retroactive gauntlet: full-tree review of published HEAD" --body "$BODY"
+# Self-verify: the diff MUST be the full tree, not a delta from a shared root
+sleep 3
+PRN=$(gh pr list -R "$R" --state open --json number --jq '[.[] | select(.headRefName == "gauntlet/target")] | .[0].number // empty')
+if [ -n "$PRN" ]; then
+  CF=$(gh pr view "$PRN" -R "$R" --json changedFiles --jq .changedFiles)
+  TOTAL=$(gh api "repos/$R/git/trees/$(git rev-parse origin/$DEFAULT)" --jq '.tree | length' 2>/dev/null || echo "?")
+  echo "gauntlet PR #$PRN: changed_files=$CF (tree has ~$TOTAL files)"
+  [ "$CF" -lt 5 ] && echo "WARNING: changed_files < 5 — possible delta-only diff (epoch void class). Check head is gauntlet/target, not main."
+fi
