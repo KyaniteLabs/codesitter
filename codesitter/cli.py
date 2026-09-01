@@ -57,7 +57,17 @@ def _org_model_keys() -> None:
 
 def make_get_diff(repo: str):
     def get_diff(pr: PullRequest) -> tuple[set[str], str]:
-        text = _gh("pr", "diff", str(pr.number), "--repo", repo)
+        try:
+            text = _gh("pr", "diff", str(pr.number), "--repo", repo)
+        except RuntimeError:
+            # Oversized diffs (GitHub 406 >20k lines) — fall back to the file
+            # list via the API and a truncated diff from the first file only.
+            try:
+                files_json = _gh("api", f"repos/{repo}/pulls/{pr.number}/files?per_page=100")
+                names = {f["filename"] for f in json.loads(files_json) if isinstance(files_json, list) and f}
+                return names, "(diff too large for API; reviewed from file list only)"
+            except Exception:
+                return set(), ""
         files = set(re.findall(r"^\+\+\+ b/(.+)$", text, re.MULTILINE))
         return files, text
 
