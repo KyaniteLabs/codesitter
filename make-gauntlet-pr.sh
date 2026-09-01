@@ -32,7 +32,11 @@ if [ "$REFRESH" = "1" ]; then
   echo "target refreshed to $(git rev-parse --short origin/$DEFAULT); fl4write re-reviews on next cycle"
   exit 0
 fi
-gh pr view 1 -R "$R" >/dev/null 2>&1 && { echo "gauntlet PR already open"; exit 0; }
+# Guard: only skip if an OPEN gauntlet PR (head=gauntlet/target) exists —
+# PR #1 may be a foreign PR or closed (both caused false "already open" on 09-01)
+if gh pr list -R "$R" --state open --json headRefName --jq '.[].headRefName' | grep -qx 'gauntlet/target'; then
+  echo "gauntlet PR already open"; exit 0
+fi
 gh pr create -R "$R" --base gauntlet/full-review --head gauntlet/target \
   --title "FL4WRITE retroactive gauntlet: full-tree review of published HEAD" --body "$BODY"
 # Self-verify: the diff MUST be the full tree, not a delta from a shared root
