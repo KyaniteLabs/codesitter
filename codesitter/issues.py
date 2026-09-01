@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Any
 
 from . import scrub
@@ -27,9 +26,9 @@ log = logging.getLogger("codesitter.issues")
 
 _TRIAGE_SYSTEM = (
     "You are an issue triager. You receive an issue (title + body) and the "
-    "repo's context. Reply ONLY with JSON: {\"labels\": [str], \"is_duplicate\": bool, "
-    "\"duplicate_hint\": str|null, \"draft_reply\": str, \"urgency\": \"low|medium|high|critical\", "
-    "\"is_regression\": bool, \"regression_version\": str|null}. "
+    'repo\'s context. Reply ONLY with JSON: {"labels": [str], "is_duplicate": bool, '
+    '"duplicate_hint": str|null, "draft_reply": str, "urgency": "low|medium|high|critical", '
+    '"is_regression": bool, "regression_version": str|null}. '
     "The draft_reply should be helpful, grounded in the repo's law/docs, and "
     "under 100 words. Never claim a fix exists unless the law mentions it."
 )
@@ -51,8 +50,7 @@ def triage_issue(issue: dict[str, Any], config: RepoConfig) -> dict[str, Any] | 
     body = scrub.scrub((issue.get("body") or "")[:4000])
 
     prompt = (
-        f"REPO LAW:\n{json.dumps(config.review, indent=1)}\n"
-        f"ISSUE TITLE: {title}\nISSUE BODY:\n{body}\nJSON triage:"
+        f"REPO LAW:\n{json.dumps(config.review, indent=1)}\nISSUE TITLE: {title}\nISSUE BODY:\n{body}\nJSON triage:"
     )
     try:
         response = _call_model(config.model, prompt)
@@ -85,8 +83,7 @@ def render_triage_comment(issue_num: int, triage: dict[str, Any], config: RepoCo
     if draft:
         parts.append(f"\n> {draft}")
 
-    parts.append("\n---
-<!-- codesitter-triage:v1 -->")
+    parts.append("\n---\n<!-- codesitter-triage:v1 -->")
     result = "\n".join(parts)
     scrub.assert_clean(result.replace("<!-- codesitter-triage:v1 -->", ""))
     return result
