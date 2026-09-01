@@ -269,3 +269,41 @@ class TestRetroConfigKnobs:
             make_config(retro_audit={"enabled": True, "max_per_cycle": 99})
         with pytest.raises(Exception):
             make_config(retro_audit={"enbled": True})
+
+
+class TestForgejoTreeDescent:
+    def test_full_descent_past_recursive_truncation(self, monkeypatch):
+        """Gitea ?recursive=true truncates at 1000 entries; the adapter must
+        walk manually (root non-recursive + per-subtree) and assemble full
+        paths. Live-caught on KyaniteLabs/liminal: 862 of 5042 blobs."""
+        g = _gitea()
+        trees = {
+            "main": {"tree": [
+                {"path": "src", "type": "tree", "sha": "T1"},
+                {"path": "README.md", "type": "blob", "sha": "b0", "size": 10},
+                {"path": "pkg", "type": "tree", "sha": "T2"},
+            ]},
+            "T1": {"tree": [
+                {"path": "a.ts", "type": "blob", "sha": "b1", "size": 20},
+                {"path": "sub", "type": "tree", "sha": "T3"},
+            ]},
+            "T2": {"tree": [{"path": "x.js", "type": "blob", "sha": "b2", "size": 5}]},
+            "T3": {"tree": [{"path": "deep.rs", "type": "blob", "sha": "b3", "size": 7}]},
+        }
+
+        def fake_call(method, path, payload=None, _retry=True):
+            for sha, body in trees.items():
+                if path.endswith(f"/git/trees/{sha}"):
+                    return body
+            if path.endswith("/repos/o/r") and method == "GET":
+                return {"default_branch": "main"}
+            raise AssertionError(f"unexpected call {method} {path}")
+
+        g._call = fake_call
+        out = g.list_tree_files("o/r")
+        assert out is not None
+        files, truncated = out
+        assert dict(files) == {
+            "README.md": 10, "src/a.ts": 20, "src/sub/deep.rs": 7, "pkg/x.js": 5,
+        }
+        assert truncated is False
