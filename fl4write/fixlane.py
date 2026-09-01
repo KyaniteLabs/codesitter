@@ -16,6 +16,7 @@ call sites, not only in config:
 from __future__ import annotations
 
 from .config import RepoConfig
+from .forges import is_own_identity
 from .models import Finding, PullRequest
 
 
@@ -60,7 +61,7 @@ def merge_own_pr(
     """THE merge gate. Config cannot open this: authorship is re-verified here."""
     if not config.fix.merge_own_prs:
         raise FixLaneBlocked("merge_own_prs disabled")
-    if author != bot_identity:
+    if not is_own_identity(author, bot_identity):  # current + legacy bot slugs
         raise FixLaneBlocked(f"refusing to merge PR authored by {author!r}, not {bot_identity!r}")
     if not ci_green:
         raise FixLaneBlocked("CI not green — merge refused")

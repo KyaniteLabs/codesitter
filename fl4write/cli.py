@@ -92,7 +92,20 @@ def make_get_diff(repo: str):
     return get_diff
 
 
+def _install_sigterm_handler() -> None:
+    import signal
+
+    def _handler(signum: int, frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    try:
+        signal.signal(signal.SIGTERM, _handler)
+    except (ValueError, OSError):
+        pass
+
+
 def main() -> int:
+    _install_sigterm_handler()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     if len(sys.argv) < 2:
         print("usage: python3 -m fl4write.cli <config.yaml> [--live]", file=sys.stderr)

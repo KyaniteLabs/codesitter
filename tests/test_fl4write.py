@@ -296,7 +296,7 @@ class FakeForge(ForgeAdapter):
         self.updates: list[tuple[int, str]] = []
         self.hostile_comments: list[tuple[int, str]] = []
 
-    def list_open_prs(self, repo, since_iso=None):
+    def list_open_prs(self, repo):
         return self.prs
 
     def get_persistent_comment(self, repo, number):
@@ -723,3 +723,36 @@ def test_all_fleet_configs_load(cfg_path):
     os.environ.setdefault("CODESITTER_FORGEJO_TOKEN", "test")
     c = cfg.load_config(cfg_path)
     assert c.repo and "/" in c.repo
+
+
+class TestModuleGaps:
+    """Audit F14: appauth/metrics/cli had zero direct tests."""
+
+    def test_appauth_defaults_and_resolver_signature(self):
+        from fl4write import appauth
+        assert appauth.APP_ID == 3592379
+        assert callable(appauth.resolve_installation_id)
+        assert appauth._TOKEN_TTL < 3600  # refresh margin inside the 1h expiry
+
+    def test_metrics_resolution_signals(self):
+        from fl4write import metrics
+        forge = FakeForge()
+        # one current finding + one resolved marker in "our" comment
+        forge.posts = [(1, renderer.render_review(
+            make_pr(), [], make_config(), "h1",
+            previous_findings=[Finding(rule_id="secrets", severity="Major", path="g.py", line=2,
+                                       category="C", message="m")]))]
+        sig = metrics.comment_signals(forge, "KyaniteLabs/kinocut", 1)
+        assert sig is not None and sig["resolved"] == 1
+
+    def test_cli_module_exposes_usage(self):
+        from fl4write import cli
+        assert callable(cli.main)
+
+    def test_fixlane_merge_accepts_legacy_identity(self):
+        from fl4write import fixlane
+        c = make_config()
+        c = c.model_copy(update={"fix": c.fix.model_copy(update={"merge_own_prs": True})})
+        # legacy-slug-authored PR is OURS — must not raise
+        fixlane.merge_own_pr(author="kyanitelabs[bot]", bot_identity="fl4write[bot]",
+                             ci_green=True, config=c)

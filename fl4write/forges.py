@@ -23,7 +23,11 @@ from .config import ForgeBinding
 from . import renderer
 from .models import PullRequest
 
-USER_AGENT = "fl4write/0.4"
+try:
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+    USER_AGENT = f"fl4write/{_pkg_version('fl4write')}"
+except PackageNotFoundError:  # running from a clone without install
+    USER_AGENT = "fl4write/dev"
 
 # The app was renamed kyanitelabs -> fl4write (2026-09-01), which changed the
 # bot login. Comments authored under EITHER slug are ours; both are accepted
@@ -90,9 +94,7 @@ class ForgeAdapter:
             raise ForgeError(f"{self.name} {method} {path}: {exc}") from exc
 
     # Subclass responsibilities -------------------------------------------
-    def list_open_prs(
-        self, repo: str, since_iso: str | None = None
-    ) -> list[PullRequest]:  # pragma: no cover - interface
+    def list_open_prs(self, repo: str) -> list[PullRequest]:  # pragma: no cover - interface
         raise NotImplementedError
 
     bot_login: str = "fl4write[bot]"
@@ -112,6 +114,21 @@ class ForgeAdapter:
                 break
         return out
 
+    def reaction_summary(self, repo: str, comment_id: int) -> dict[str, dict[str, int]] | None:
+        """Reactions on one of OUR comments: {content: {login: 1}} — best-effort,
+        returns None when the forge/repo has the endpoint disabled."""
+        try:
+            rows = self._paginated(f"/repos/{repo}/issues/comments/{comment_id}/reactions", page_size=100)
+        except ForgeError:
+            return None
+        out: dict[str, dict[str, int]] = {}
+        for r in rows if isinstance(rows, list) else []:
+            content = r.get("content")
+            login = ((r.get("user") or {}).get("login") or "?")
+            if content:
+                out.setdefault(content, {})[login] = 1
+        return out
+
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:  # id, body  # pragma: no cover
         raise NotImplementedError
 
@@ -126,7 +143,7 @@ class GitHubAdapter(ForgeAdapter):
     name = "github"
     supports_fork_ci_approval = True
 
-    def list_open_prs(self, repo: str, since_iso: str | None = None) -> list[PullRequest]:
+    def list_open_prs(self, repo: str) -> list[PullRequest]:
         data = self._paginated(f"/repos/{repo}/pulls?state=open", page_size=50)
         prs = []
         for p in data:
@@ -170,7 +187,7 @@ class ForgejoAdapter(ForgeAdapter):
     name = "forgejo"
     supports_fork_ci_approval = False
 
-    def list_open_prs(self, repo: str, since_iso: str | None = None) -> list[PullRequest]:
+    def list_open_prs(self, repo: str) -> list[PullRequest]:
         data = self._paginated(f"/repos/{repo}/pulls?state=open", page_size=50)
         prs = []
         for p in data:

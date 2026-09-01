@@ -1,6 +1,6 @@
 # Fl4wRite (`fl4write`)
 
-*Formerly `Fl4wRite` — renamed 2026-09-01. Brand: Fl4wRite (FL4W + RITE, from fluorite); package/repo: `fl4write`.*
+*Formerly `codesitter` — renamed 2026-09-01. Brand: Fl4wRite (FL4W + RITE, from fluorite); package/repo: `fl4write`.*
 
 Self-hosted, multi-forge code review bot — the org's CodeRabbit replacement.
 Chartered by the CEO 2026-08-31; built under wayfinder map

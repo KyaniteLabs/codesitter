@@ -5,7 +5,8 @@ answer drafting from repo law), posts a single triage comment. Comment-only:
 never closes, never reassigns, never edits labels via API (the comment
 SUGGESTS labels; a human applies them).
 
-Config surface: `issues: enabled` in the repo config. When absent, disabled.
+Config surface: `issues_enabled: true` in the repo config AND the runner passes
+`--issues`; either missing disables the lane.
 State: tracks `last_triaged_number` per repo (issues are numbered; we
 triage everything with a number > last_triaged).
 """
