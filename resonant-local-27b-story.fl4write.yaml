@@ -20,7 +20,7 @@ review:
   secrets: "Never commit or echo secrets, tokens, or credentials."
   tests: "Changes to logic ship with tests; tests stay green."
   security: "Flag injection, path traversal, unsafe deserialization, unbounded subprocess."
-  privacy: "No home paths, personal data, or internal org names in tree, output, or docs."
+  privacy: "No home paths, personal data, or UNDISCLOSED org/agent names. Kyanite Labs is the public brand (GitHub org, blog, all MIT licenses) and is permitted."
   hardening: "Service boundary must keep strict per-method params, bounded bodies, timeout+close hygiene."
 severity_vocab: [Critical, Major, Minor, Nit]
 tone: assertive
