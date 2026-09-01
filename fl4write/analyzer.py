@@ -124,7 +124,8 @@ def analyze(
         try:
             content = _call_model(route, prompt)
             break
-        except Exception as exc:  # noqa: BLE001 - both-route failure is the contract
+        except Exception as exc:  # both-route failure is the contract
+
             log.warning("route %s failed for %s#%s: %s", route.model, pr.repo, pr.number, exc)
             last_err = exc
     if not content:
@@ -148,7 +149,8 @@ def analyze(
     for item in items:
         try:
             f = Finding.model_validate(item)
-        except Exception:  # noqa: BLE001 - malformed findings are dropped, logged
+        except Exception:  # malformed findings are dropped, logged
+
             dropped.append(f"malformed: {str(item)[:80]}")
             continue
         if f.rule_id != "general" and f.rule_id not in config.review:

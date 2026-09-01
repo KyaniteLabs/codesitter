@@ -28,7 +28,8 @@ log = logging.getLogger("fl4write.cli")
 
 def _gh(*args: str) -> str:
     try:
-        out = subprocess.run(  # noqa: S603,607 - fixed argv, gh-managed auth
+        out = subprocess.run(  # fixed argv, gh-managed auth
+
             ["gh", *args], capture_output=True, text=True, timeout=120
         )
     except subprocess.TimeoutExpired as exc:
@@ -143,12 +144,14 @@ def main() -> int:
     # still exists on main and alerts if the adoption was lost. Accepts the
     # renamed .fl4write.yaml and the legacy .codesitter.yaml during migration.
     try:
-        probe = subprocess.run(  # noqa: S603,607
+        probe = subprocess.run(
+
             ["gh", "api", f"repos/{config.repo}/contents/.fl4write.yaml", "--jq", ".name"],
             capture_output=True, text=True, timeout=30,
         )
         if probe.returncode != 0:
-            probe = subprocess.run(  # noqa: S603,607
+            probe = subprocess.run(
+
                 ["gh", "api", f"repos/{config.repo}/contents/.codesitter.yaml", "--jq", ".name"],
                 capture_output=True, text=True, timeout=30,
             )

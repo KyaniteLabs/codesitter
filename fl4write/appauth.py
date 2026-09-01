@@ -47,7 +47,8 @@ def _make_jwt() -> str:
 
 def _api(url: str, method: str = "GET") -> dict:
     jwt_token = _make_jwt()
-    req = urllib.request.Request(  # noqa: S310
+    req = urllib.request.Request(
+
         url,
         method=method,
         headers={
@@ -55,7 +56,8 @@ def _api(url: str, method: str = "GET") -> dict:
             "Accept": "application/vnd.github+json",
         },
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=15) as resp:
+
         return json.loads(resp.read().decode())
 
 
@@ -83,7 +85,8 @@ def get_installation_token(repo: str | None = None) -> str:
     if cached and time.time() - cached[1] < _TOKEN_TTL:
         return cached[0]
     jwt_token = _make_jwt()
-    req = urllib.request.Request(  # noqa: S310
+    req = urllib.request.Request(
+
         f"https://api.github.com/app/installations/{installation_id}/access_tokens",
         method="POST",
         headers={
@@ -91,7 +94,8 @@ def get_installation_token(repo: str | None = None) -> str:
             "Accept": "application/vnd.github+json",
         },
     )
-    with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=15) as resp:
+
         data = json.loads(resp.read().decode())
     _TOKEN_CACHE[installation_id] = (data["token"], time.time())
     return data["token"]

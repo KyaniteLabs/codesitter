@@ -70,7 +70,8 @@ def _mirror_shas(mirrors: list[ForgeAdapter], repo: str, report: CycleReport) ->
     for m in mirrors:
         try:
             shas |= {pr.head_sha for pr in m.list_open_prs(repo)}
-        except Exception as exc:  # noqa: BLE001 - mirror degrade law
+        except Exception as exc:  # mirror degrade law
+
             report.mirror_degraded += 1
             log.warning("mirror %s degraded (log+skip, never abort): %s", m.name, exc)
     return shas
@@ -197,7 +198,8 @@ def _fix_lane(
         # authorship against it — a missing identity fails every merge closed.
         merged = executor.check_and_merge_own_prs(config, primary.bot_login)
         report.fix_prs_merged += merged
-    except Exception as exc:  # noqa: BLE001 - merge scan must not kill the cycle
+    except Exception as exc:  # merge scan must not kill the cycle
+
         log.warning("merge scan failed for %s: %s", config.repo, exc)
 
 

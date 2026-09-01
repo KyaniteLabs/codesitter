@@ -68,7 +68,8 @@ _TEST_ENV_ALLOW = ("PATH", "LANG", "LC_ALL", "HOME", "TMPDIR", "PYTHONPATH", "SY
 
 def _run(cmd: list[str], cwd: Path | None = None, timeout: int = 120,
          env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # noqa: S603 - fixed argv, no shell
+    return subprocess.run(  # fixed argv, no shell
+
         cmd,
         cwd=str(cwd) if cwd else None,
         capture_output=True,
@@ -84,13 +85,15 @@ def _sandbox_env() -> dict[str, str]:
 
 def _gh_api(method: str, path: str, data: dict | None = None) -> Any:
     token = os.environ.get("CODESITTER_GITHUB_TOKEN", "")
-    req = urllib.request.Request(  # noqa: S310
+    req = urllib.request.Request(
+
         f"https://api.github.com{path}",
         data=json.dumps(data).encode() if data else None,
         method=method,
         headers={"Authorization": f"token {token}", "Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+    with urllib.request.urlopen(req, timeout=30) as resp:
+
         return json.loads(resp.read().decode())
 
 
@@ -243,7 +246,8 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         })
         return {"status": "pr_opened", "pr_number": new_pr["number"],
                 "pr_url": new_pr["html_url"], "branch": branch}
-    except Exception as exc:  # noqa: BLE001 - contained into a result dict
+    except Exception as exc:  # contained into a result dict
+
         return {"status": "error", "reason": str(exc)[:200]}
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -259,7 +263,8 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
     owner = config.repo.split("/")[0]
     try:
         prs = _gh_api("GET", f"/repos/{config.repo}/pulls?state=open&per_page=100")
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
+
         log.warning("own-PR scan failed for %s: %s", config.repo, exc)
         return merged
     for pr_data in prs:
@@ -283,6 +288,7 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
             log.info("merged own fix PR #%s on %s (owner=%s)", number, config.repo, owner)
         except FixLaneBlocked as exc:
             log.info("PR #%s not mergeable yet: %s", number, exc)  # per-PR skip, scan continues
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
+
             log.warning("merge failed for #%s: %s", number, exc)
     return merged

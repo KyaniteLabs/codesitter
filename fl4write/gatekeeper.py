@@ -96,6 +96,7 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
         if dropped:
             log.info("gatekeeper dropped %d/%d findings (nit filter)", dropped, len(findings))
         return kept, dropped
-    except Exception as exc:  # noqa: BLE001 - fail-open is the contract, for ALL failure classes
+    except Exception as exc:  # fail-open is the contract, for ALL failure classes
+
         log.warning("gatekeeper unavailable (fail-open, posting all): %s", exc)
         return findings, 0
