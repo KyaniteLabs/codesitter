@@ -57,6 +57,8 @@ class RepoConfig(BaseModel):
     fix: FixLaneConfig = Field(default_factory=FixLaneConfig)
     known_env_failures: list[str] = Field(default_factory=list)  # test ids to ignore
     shadow: bool = False  # True = log findings, post nothing
+    gatekeeper: bool = True  # nit-filter second pass (fail-open)
+    issues_enabled: bool = False  # issues-lane triage (comment-only)
     bot_login: str = "simongonzalezdc"  # the account comments post AS; the
     # hijack-defense author check must match this or we reject our own
     # persistent comment and double-post (inaugural finding)

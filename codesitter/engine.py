@@ -1,4 +1,5 @@
-"""Engine core: the cycle. Trigger seam + collect -> dedupe -> analyze -> post.
+"""Engine core: the cycle. Trigger seam + collect → dedupe → analyze →
+gatekeep → post → fix-lane handoff → issues triage → metrics.
 
 The trigger seam (ralplan): `run_cycle(config, trigger)` takes a NORMALIZED
 trigger (repo, pr, reason) — cron is merely v1's trigger adapter; no `reason`
@@ -12,11 +13,11 @@ the primary are skipped without a second review.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
-from . import fixlane, renderer, state
+from . import fixlane, gatekeeper, renderer, state
 from .analyzer import ModelUnavailable, analyze
 from .config import RepoConfig
 from .forges import ForgeAdapter, ForgeError, adapter_for
@@ -41,6 +42,11 @@ class CycleReport:
     fix_escalations: int = 0
     model_unavailable: int = 0
     shadow_only: bool = False
+    gatekeeper_dropped: int = 0
+    fix_prs_opened: int = 0
+    fix_prs_merged: int = 0
+    issues_triaged: int = 0
+    acceptance: dict[str, Any] = field(default_factory=dict)
 
 
 def run_cycle(
@@ -49,6 +55,8 @@ def run_cycle(
     get_diff: Callable[[PullRequest], tuple[set[str], str]],
     trigger_reason: str = "cron",
     shadow_sink: ShadowSink | None = None,
+    run_issues: bool = False,
+    run_fixes: bool = False,
 ) -> CycleReport:
     """One poll-invariant cycle. `reason` is annotation only — the predicate
     in state.needs_review decides; nothing bypasses it. `get_diff` is
@@ -69,10 +77,7 @@ def run_cycle(
             seen_shas: dict[str, str] = {}
             for pr in prs:
                 seen_shas.setdefault(pr.head_sha, f"{pr.forge}:{pr.number}")
-            for m in mirrors:  # mirror dedupe (ralplan): same SHA = same PR.
-                # Degradation law: a mirror is a dedupe optimization, NEVER a
-                # correctness dependency — an unreachable/unauthorized mirror
-                # logs and skips; the primary cycle proceeds regardless.
+            for m in mirrors:
                 try:
                     for mpr in m.list_open_prs(config.repo):
                         if mpr.head_sha in seen_shas:
@@ -81,6 +86,9 @@ def run_cycle(
                     log.warning("mirror %s unavailable (degraded, continuing): %s", m.name, exc)
                     report.mirror_degraded += 1
             report.scanned = len(prs)
+
+            reviewed_records: list[dict[str, Any]] = []
+
             for pr in prs:
                 if not state.needs_review(st, pr.number, pr.head_sha):
                     continue
@@ -95,8 +103,15 @@ def run_cycle(
                 except ModelUnavailable as exc:
                     log.warning("model unavailable for %s#%s: %s", config.repo, pr.number, exc)
                     report.model_unavailable += 1
-                    continue  # unreviewed stays unreviewed — never silent skip
-                rh = f"{pr.head_sha[:12]}{len(doc.findings):04x}"
+                    continue
+
+                # Gatekeeper nit-filter (fail-open on model down)
+                findings = doc.findings
+                if findings:
+                    findings, dropped = gatekeeper.filter_findings(findings, config)
+                    report.gatekeeper_dropped += dropped
+
+                rh = f"{pr.head_sha[:12]}{len(findings):04x}"
                 previous: list[Finding] = []
                 existing = primary.get_persistent_comment(config.repo, pr.number)
                 if existing:
@@ -105,16 +120,20 @@ def run_cycle(
                     prev_block = existing[1]
                     previous = [
                         Finding(
-                            rule_id="general",
+                            rule_id=m.group("rule") if "rule" in m.groupdict() else "general",
                             severity="Minor",
-                            path=m.group(1),
-                            line=int(m.group(2)),
+                            path=m.group("path"),
+                            line=int(m.group("line")),
                             category="prior",
-                            message=m.group(3),
+                            message=m.group("msg"),
                         )
-                        for m in re.finditer(r"\*\*?\[?\w+\]?\*?\*? (\S+):(\d+)\*\*.*?— (.+)", prev_block)
+                        for m in re.finditer(
+                            r"\*\*\[(?P<sev>\w+)\] (?P<path>.+):(?P<line>\d+)\*\*"
+                            r" \([^)]*rule `(?P<rule>[^`]+)`\) — (?P<msg>.+)",
+                            prev_block,
+                        )
                     ]
-                body = renderer.render_review(pr, doc.findings, config, rh, previous)
+                body = renderer.render_review(pr, findings, config, rh, previous)
                 if config.shadow:
                     if shadow_sink:
                         shadow_sink(config.repo, pr.number, body)
@@ -123,9 +142,44 @@ def run_cycle(
                     primary.update_comment(config.repo, pr.number, existing[0], body)
                 else:
                     primary.create_comment(config.repo, pr.number, body)
-                outcome = f"shadow:{len(doc.findings)}" if config.shadow else f"reviewed:{len(doc.findings)}"
+                outcome = f"shadow:{len(findings)}" if config.shadow else f"reviewed:{len(findings)}"
                 state.mark_reviewed(st, pr.number, pr.head_sha, outcome)
                 report.reviewed += 1
+                reviewed_records.append({"pr": pr.number, "findings": len(findings)})
+
+                # Fix-lane executor: attempt fixes for Critical/Major findings
+                if run_fixes and config.fix.enabled and findings and not config.shadow:
+                    from . import executor
+
+                    for finding in findings:
+                        if finding.severity in ("Critical", "Major"):
+                            depth = st.get("prs", {}).get(str(pr.number), {}).get("fix_depth", 0)
+                            result = executor.attempt_fix(pr, finding, config, depth)
+                            if result["status"] == "pr_opened":
+                                report.fix_prs_opened += 1
+                            elif result["status"] == "blocked":
+                                report.fix_escalations += 1
+                            # Update depth
+                            pr_state = st["prs"].setdefault(str(pr.number), {})
+                            pr_state["fix_depth"] = depth + 1
+
+                    # Check and merge our own PRs that have green CI
+                    merged = executor.check_and_merge_own_prs(config, config.bot_login)
+                    report.fix_prs_merged += len(merged)
+
+            # Acceptance metrics snapshot
+            if reviewed_records:
+                from . import metrics
+
+                report.acceptance = metrics.acceptance_snapshot(primary, config, reviewed_records)
+
+            # Issues lane
+            if run_issues:
+                from . import issues as issues_lane
+
+                issue_summary = issues_lane.run_issues_cycle(config, state_path, primary)
+                report.issues_triaged = issue_summary.get("triaged", 0)
+
             state.save_state(state_path, st)
     except CycleLockHeld:
         log.info("cycle lock held — skipping this cycle (never double-post)")

@@ -79,25 +79,38 @@ def main() -> int:
         print("usage: python3 -m codesitter.cli <config.yaml> [--live]", file=sys.stderr)
         return 2
     live = "--live" in sys.argv
+    run_fixes = "--fixes" in sys.argv
+    run_issues = "--issues" in sys.argv
     config = load_config(sys.argv[1])
     if live:
         config = config.model_copy(update={"shadow": False})
     _org_model_keys()
     state_path = Path.home() / ".codesitter" / f"{config.repo.replace('/', '__')}.state.json"
-    report = run_cycle(config, state_path, get_diff=make_get_diff(config.repo))
+    report = run_cycle(
+        config,
+        state_path,
+        get_diff=make_get_diff(config.repo),
+        run_fixes=run_fixes,
+        run_issues=run_issues,
+    )
     # Config-presence surveillance (learning 16): racing branches have twice
     # silently reverted adoptions; every cycle verifies the IN-REPO config
     # still exists on main and alerts if the adoption was lost.
     probe = subprocess.run(  # noqa: S603,607
         ["gh", "api", f"repos/{config.repo}/contents/.codesitter.yaml", "--jq", ".name"],
-        capture_output=True, text=True, timeout=30,
+        capture_output=True,
+        text=True,
+        timeout=30,
     )
     if probe.returncode != 0:
         print(f"ALERT: adoption lost — .codesitter.yaml missing on {config.repo} main (re-adopt)")
     print(
         f"codesitter cycle: repo={report.repo} scanned={report.scanned} "
         f"reviewed={report.reviewed} shadow={config.shadow} "
-        f"dep_skipped={report.skipped_dependency} model_down={report.model_unavailable}"
+        f"dep_skipped={report.skipped_dependency} model_down={report.model_unavailable} "
+        f"gate_dropped={report.gatekeeper_dropped} fix_prs={report.fix_prs_opened} "
+        f"fix_merged={report.fix_prs_merged} issues_triaged={report.issues_triaged} "
+        f"acceptance={report.acceptance.get('rate', 'n/a')}"
     )
     return 0
 
