@@ -1,16 +1,20 @@
 # The pilot program (live 2026-08-31; renamed + consolidated 2026-09-01)
 
-**31 repos** — 5 wave-1 org repos (kinocut, Epoch, devarch-framework,
+**32 repos** — 5 wave-1 org repos (kinocut, Epoch, devarch-framework,
 Innerscape, Elixis) + 26 wave-2 repos (org + owner's personal; originally-ours
 only, no forks/collabs; `voice-to-sculpture-app` removed — repo never existed
 under that spelling; **liminal held** — Sinter's repo, #999 conversation, not
-unilateral). Full product live: review + gatekeeper + metrics + **fix lane** +
+unilateral) + **KyaniteLabs/fl4write itself as #32 (2026-09-01, CEO CI-failure
+directive: own-repo CI red summons review+fix — the bot dogfoods on its own
+repo)**. Full product live: review + gatekeeper + metrics + **fix lane** +
 **issues lane** (all four enabled 2026-09-01, CEO order) + **post-merge
-review mode** (built 2026-09-01, PM-2; opt-in per repo via `post_merge:` in
-the CENTRAL config — inaugural on kinocut; reviews PRs merged since a
-per-repo watermark, findings as post-merge comments, fixes as follow-up
-PRs — the answer to this org's ~60s merges the open-PR poller never sees,
-LEARNINGS #24). Brain (TRANSITION):
+review mode** (PM-2, 2026-09-01; fleet-enabled — reviews PRs merged since a
+per-repo watermark, findings as post-merge comments, fixes as follow-up PRs —
+the answer to this org's ~60s merges the open-PR poller never sees, LEARNINGS
+#24) + **CI watch** (CEO directive 2026-09-01: red default-branch HEAD on an
+own repo → findings from failing checks' annotations → fix-lane PR; no-fix →
+escalation issue; SHA-keyed, never re-acts on the same head; own-repos only —
+forks/upstream structurally out). Brain (TRANSITION):
 today DeepSeek-V4-Flash-0731 via deepinfra (the $40-budget ledger route) —
 **the CEO is building a local-inference floor with multiple models + a
 consensus system** (2026-09-01); when it lands, the model routes in these
