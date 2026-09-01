@@ -7,6 +7,12 @@ if [ -z "$CODESITTER_GITHUB_TOKEN" ]; then
 fi
 
 cd ~/workspaces/fl4write
+# Hosts without ~/.sinter/config.json read the model key from .bashrc.
+# Non-interactive shells never reach .bashrc exports, so pull it here.
+# (.bashrc wraps the value in literal quotes — strip them or auth 401s.)
+if [ -z "$CODESITTER_DEEPSEEK_KEY" ]; then
+    export CODESITTER_DEEPSEEK_KEY=$(grep "^export CODESITTER_DEEPSEEK_KEY=" ~/.bashrc 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')
+fi
 git pull -q origin main 2>/dev/null
 
 OK=0; ERR=0
