@@ -28,7 +28,7 @@ severity_vocab: [Critical, Major, Minor, Nit]
 tone: balanced
 tone_fork_override: balanced
 fix:
-  enabled: false
+  enabled: true
   merge_own_prs: false
   max_fix_depth: 2
   fork_policy: comment-only
