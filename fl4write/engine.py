@@ -164,7 +164,18 @@ def _review_pr(
     report.reviewed += 1
 
     if run_fixes and config.fix.enabled and not config.shadow:
-        _fix_lane(pr, findings, config, primary, st, report)
+        if primary.name != "github":
+            # Comorbidity pass catch: the executor's PR/merge path is
+            # GitHub-hardcoded — attempting anyway burns a model call then
+            # dies as a contained error every cycle (silent feature death).
+            # Fail LOUD as an escalation instead.
+            blocked = "fix lane is GitHub-only in v1 — Forgejo repos are review/comment-only"
+            for f in findings:
+                if f.severity in ("Critical", "Major"):
+                    primary.create_comment(config.repo, pr.number, fixlane.escalate(pr, [f], blocked))
+                    report.fix_escalations += 1
+        else:
+            _fix_lane(pr, findings, config, primary, st, report)
 
     return "shadow" if config.shadow else "reviewed"
 

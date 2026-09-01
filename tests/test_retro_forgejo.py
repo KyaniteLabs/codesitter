@@ -24,6 +24,15 @@ from fl4write.engine import run_cycle
 from fl4write.forges import ForgeAdapter, ForgeError, ForgejoAdapter
 from fl4write.models import Finding, PullRequest
 
+
+def _old_date(day_offset: int, hhmm: str) -> str:
+    """A merged_at safely inside the default 90d lookback for the next ~60
+    days of test runs (fixed calendar dates would silently fall out of the
+    window and rot these tests)."""
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(days=day_offset)).strftime("%Y-%m-%d") + f"T{hhmm}Z"
+
 FRESH = Finding(rule_id="secrets", severity="Major", path="x.py", line=3, message="live finding")
 ZOMBIE = Finding(rule_id="secrets", severity="Major", path="gone/old.py", line=3, message="stale finding")
 
@@ -112,20 +121,20 @@ def _seed_watermark(state_path, iso="2026-08-31T23:18:24Z"):
 class TestRetroSweep:
     def test_walks_below_watermark_newest_first_capped_and_resumes(self, tmp_path, monkeypatch):
         forge = RetroForge()
-        forge.merged = [make_pr(number=n, merged_at=f"2026-08-15T12:0{n}:00Z") for n in range(1, 6)]
+        forge.merged = [make_pr(number=n, merged_at=_old_date(10, f"12:0{n}:00")) for n in range(1, 6)]
         sp = tmp_path / "s.json"
         _seed_watermark(sp)
         r = _run(forge, monkeypatch, sp, [FRESH], retro_audit={"enabled": True, "max_per_cycle": 3})
         assert r.retro_reviewed == 3
         assert [n for n, _ in forge.posts] == [5, 4, 3]  # newest first
-        assert state.load_state(sp)["retro_cursor"] == "2026-08-15T12:03:00Z"
+        assert state.load_state(sp)["retro_cursor"] == _old_date(10, "12:03:00")
         r2 = _run(forge, monkeypatch, sp, [FRESH], retro_audit={"enabled": True, "max_per_cycle": 3})
         assert r2.retro_reviewed == 2  # resumed below the cursor, not restarted
         assert [n for n, _ in forge.posts] == [5, 4, 3, 2, 1]
 
     def test_zombie_and_clean_post_nothing(self, tmp_path, monkeypatch):
         forge = RetroForge()
-        forge.merged = [make_pr(number=1, merged_at="2026-08-15T12:00:00Z")]
+        forge.merged = [make_pr(number=1, merged_at=_old_date(10, "12:00:00"))]
         sp = tmp_path / "s.json"
         _seed_watermark(sp)
         r = _run(forge, monkeypatch, sp, [ZOMBIE])
@@ -136,7 +145,7 @@ class TestRetroSweep:
 
     def test_mixed_findings_drop_only_zombies(self, tmp_path, monkeypatch):
         forge = RetroForge()
-        forge.merged = [make_pr(number=1, merged_at="2026-08-15T12:00:00Z")]
+        forge.merged = [make_pr(number=1, merged_at=_old_date(10, "12:00:00"))]
         sp = tmp_path / "s.json"
         _seed_watermark(sp)
         r = _run(forge, monkeypatch, sp, [FRESH, ZOMBIE])
@@ -145,7 +154,7 @@ class TestRetroSweep:
 
     def test_freshness_gate_fails_open(self, tmp_path, monkeypatch):
         forge = RetroForge()
-        forge.merged = [make_pr(number=1, merged_at="2026-08-15T12:00:00Z")]
+        forge.merged = [make_pr(number=1, merged_at=_old_date(10, "12:00:00"))]
         forge.path_probe_fail = True
         sp = tmp_path / "s.json"
         _seed_watermark(sp)
@@ -156,7 +165,7 @@ class TestRetroSweep:
         """State record pruned (normal) but the comment survives: a re-review
         must EDIT, never post a second comment (the notification law)."""
         forge = RetroForge()
-        forge.merged = [make_pr(number=1, merged_at="2026-08-15T12:00:00Z")]
+        forge.merged = [make_pr(number=1, merged_at=_old_date(10, "12:00:00"))]
         sp = tmp_path / "s.json"
         _seed_watermark(sp)
         _run(forge, monkeypatch, sp, [FRESH])
@@ -173,8 +182,8 @@ class TestRetroSweep:
 
         forge = RetroForge()
         forge.merged = [
-            make_pr(number=1, merged_at="2026-08-15T12:01:00Z"),
-            make_pr(number=2, merged_at="2026-08-15T12:02:00Z"),
+            make_pr(number=1, merged_at=_old_date(10, "12:01:00")),
+            make_pr(number=2, merged_at=_old_date(10, "12:02:00")),
         ]
         sp = tmp_path / "s.json"
         _seed_watermark(sp)
@@ -197,20 +206,20 @@ class TestRetroSweep:
 
     def test_completion_is_terminal(self, tmp_path, monkeypatch):
         forge = RetroForge()
-        forge.merged = [make_pr(number=1, merged_at="2026-08-15T12:00:00Z")]
+        forge.merged = [make_pr(number=1, merged_at=_old_date(10, "12:00:00"))]
         sp = tmp_path / "s.json"
         _seed_watermark(sp)
         _run(forge, monkeypatch, sp, [])
         r = _run(forge, monkeypatch, sp, [])
         assert any("retro audit complete" in a for a in r.alerts)
         assert state.load_state(sp)["retro_complete"]
-        forge.merged.append(make_pr(number=9, merged_at="2026-08-16T00:00:00Z"))
+        forge.merged.append(make_pr(number=9, merged_at=_old_date(9, "00:00:00")))
         r3 = _run(forge, monkeypatch, sp, [FRESH])
         assert r3.retro_reviewed == 0 and forge.posts == []  # never restarts
 
     def test_disabled_default_never_lists(self, tmp_path, monkeypatch):
         forge = RetroForge()
-        forge.merged = [make_pr(number=1, merged_at="2026-08-15T12:00:00Z")]
+        forge.merged = [make_pr(number=1, merged_at=_old_date(10, "12:00:00"))]
         sp = tmp_path / "s.json"
         _seed_watermark(sp)
         _run(forge, monkeypatch, sp, [FRESH], retro_audit={"enabled": False})
