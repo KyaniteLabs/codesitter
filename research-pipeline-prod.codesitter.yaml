@@ -1,4 +1,4 @@
-repo: KyaniteLabs/research-pipeline-prod
+repo: simongonzalezdc/research-pipeline-prod
 forges:
   github:
     role: primary
