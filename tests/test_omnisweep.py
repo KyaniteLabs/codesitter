@@ -26,7 +26,7 @@ import pytest
 from fl4write import config as cfg
 from fl4write import state
 from fl4write.engine import run_cycle
-from fl4write.forges import ForgeAdapter, ForgeError
+from fl4write.forges import ForgeAdapter
 from fl4write.models import Finding, PullRequest
 
 
@@ -162,8 +162,8 @@ class TestSweepLaws:
                 for n in range(10)]
         forge = OmniForge(model_findings=many)
         forge.tree = [(f"f{n:03}.py", 100) for n in range(10)]
-        r = _run(forge, monkeypatch, tmp_path / "s.json",
-                 omnisweep={"enabled": True, "max_files_per_cycle": 50, "max_findings_in_issue": 5})
+        _run(forge, monkeypatch, tmp_path / "s.json",
+             omnisweep={"enabled": True, "max_files_per_cycle": 50, "max_findings_in_issue": 5})
         assert len(forge.issues) == 1
         body = forge.issues[0][1]
         assert "more findings recorded in sweep state" in body
