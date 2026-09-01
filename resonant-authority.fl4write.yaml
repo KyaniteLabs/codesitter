@@ -7,13 +7,13 @@ forges:
 model:
   endpoint: http://192.168.1.72:46410/v1/chat/completions
   model: qwen3.8-27b
-  key_env: CODESITTER_FLOOR_KEY
+  key_env: ""
   temperature: 0.2
   max_tokens: 4000
 fallback_model:
   endpoint: http://192.168.1.72:46410/v1/chat/completions
   model: CRACK-Ornith-Uncensored
-  key_env: CODESITTER_FLOOR_KEY
+  key_env: ""
   temperature: 0.2
   max_tokens: 4000
 review:
