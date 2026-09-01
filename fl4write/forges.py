@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -104,6 +105,27 @@ class ForgeAdapter:
                 return self._call(method, path, payload, _retry=False)
             raise ForgeError(f"{self.name} {method} {path}: {exc}") from exc
 
+    def _call_text(self, method: str, path: str, _retry: bool = True) -> str:
+        """One API call returning RAW TEXT (the Gitea .diff endpoint is
+        text/plain — json.loads would crash on it). Same retry/throttle
+        semantics as _call."""
+        req = urllib.request.Request(
+            f"{self.base}{path}", headers=self._headers(), method=method
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.read().decode()
+        except urllib.error.HTTPError as exc:
+            if method == "GET" and _retry and exc.code in (403, 429, 500, 502, 503, 504):
+                time.sleep(1)
+                return self._call_text(method, path, _retry=False)
+            raise ForgeError(f"{self.name} {method} {path}: HTTP {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if method == "GET" and _retry:
+                time.sleep(1)
+                return self._call_text(method, path, _retry=False)
+            raise ForgeError(f"{self.name} {method} {path}: {exc}") from exc
+
     # Subclass responsibilities -------------------------------------------
     def list_open_prs(self, repo: str) -> list[PullRequest]:  # pragma: no cover - interface
         raise NotImplementedError
@@ -151,6 +173,26 @@ class ForgeAdapter:
     def head_check_runs(self, repo: str) -> tuple[str, list[dict]] | None:  # pragma: no cover - interface
         """(default-branch HEAD sha, check-run dicts) or None unqueryable."""
         raise NotImplementedError
+
+    def get_pr_diff(self, repo: str, number: int) -> tuple[set[str], str] | None:  # pragma: no cover - interface
+        """(changed-file set, unified diff text) or None when unfetchable.
+        GitHub uses the gh-CLI path in cli.make_get_diff; adapters without a
+        native endpoint must return None, never a fake empty diff."""
+        raise NotImplementedError
+
+    def path_exists(self, repo: str, path: str) -> bool | None:
+        """Does `path` exist on the CURRENT default branch? True/False, or
+        None when unqueryable (the retro freshness gate fails OPEN on None —
+        keep the finding, a dropped real finding is worse than a stale one)."""
+        from urllib.parse import quote
+
+        try:
+            self._call("GET", f"/repos/{repo}/contents/{quote(path, safe='')}")
+            return True
+        except ForgeError as exc:
+            if "HTTP 404" in str(exc):
+                return False
+            return None
 
     def check_annotations(self, repo: str, check_run_id: int) -> list[dict] | None:
         """Annotations for one check-run: [{path, start_line, message, level}]."""
@@ -351,6 +393,22 @@ class ForgejoAdapter(ForgeAdapter):
 
     def head_check_runs(self, repo: str) -> tuple[str, list[dict]] | None:
         return None  # v1: check-runs (GHA) only; Forgejo commit statuses unsupported
+
+    def get_pr_diff(self, repo: str, number: int) -> tuple[set[str], str] | None:
+        """(changed-file set, unified diff text) or None when unfetchable.
+        Gitea/Forgejo native: the .diff endpoint (probe-verified live on
+        git.kyanitelabs.tech, 2026-09-01). Non-diff payloads return None —
+        an error page must never masquerade as an empty diff (LEARNINGS #3)."""
+        try:
+            raw = self._call_text("GET", f"/repos/{repo}/pulls/{number}.diff")
+        except ForgeError:
+            return None
+        if not raw or not raw.startswith("diff --git"):
+            return None
+        files = set(re.findall(r"^\+\+\+ b/(.+)$", raw, re.MULTILINE))
+        if not files:
+            return None
+        return files, raw
 
 
 def adapter_for(binding: ForgeBinding) -> ForgeAdapter:

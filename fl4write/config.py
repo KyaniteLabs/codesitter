@@ -85,6 +85,19 @@ class CIWatchConfig(_StrictModel):
     max_annotations: int = Field(default=10, ge=1, le=50)  # findings per check
 
 
+class RetroAuditConfig(_StrictModel):
+    """Retro audit (CEO ask 2026-09-01: "catch any OLD mistakes"): walk merged
+    PRs OLDER than the forward post-merge watermark, newest-first, capped and
+    cursor-resumable across cycles. Freshness gate drops findings whose path
+    no longer exists on HEAD (zombie findings on fixed/moved code post
+    nothing). Direct-push commits with no PR are v2 — not covered here."""
+
+    enabled: bool = False
+    lookback_days: int = Field(default=90, ge=1, le=730)
+    max_per_cycle: int = Field(default=5, ge=1, le=25)  # model-spend bound; drains over days
+    freshness_gate: bool = True  # skip findings whose path is gone from HEAD
+
+
 class RepoConfig(_StrictModel):
     """The full per-repo config. Validated fail-loud at startup."""
 
@@ -102,6 +115,7 @@ class RepoConfig(_StrictModel):
     fix: FixLaneConfig = Field(default_factory=FixLaneConfig)
     post_merge: PostMergeConfig = Field(default_factory=PostMergeConfig)
     ci_watch: CIWatchConfig = Field(default_factory=CIWatchConfig)
+    retro_audit: RetroAuditConfig = Field(default_factory=RetroAuditConfig)
     known_env_failures: list[str] = Field(default_factory=list)  # test ids to ignore
     shadow: bool = False  # True = log findings, post nothing
     gatekeeper: bool = True  # nit-filter second pass (fail-open)

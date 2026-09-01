@@ -61,6 +61,8 @@ class CycleReport:
     acceptance: dict[str, Any] = field(default_factory=dict)
     skipped_diff_unavailable: int = 0
     postmerge_reviewed: int = 0
+    retro_reviewed: int = 0
+    retro_zombies: int = 0
     ci_red_heads: int = 0
     ci_fix_prs_opened: int = 0
     ci_escalations: int = 0
@@ -296,6 +298,162 @@ def _post_merge_sweep(
 _CI_BENIGN = {"success", "skipped", "neutral", "canceled"}
 
 
+def _retro_sweep(
+    config: RepoConfig,
+    primary: ForgeAdapter,
+    state_path: Path,
+    get_diff: Callable[[PullRequest], tuple[set[str], str] | None],
+    shadow_sink: ShadowSink | None,
+    st: dict[str, Any],
+    report: CycleReport,
+    deadline: float | None,
+) -> set[int]:
+    """Retro audit (CEO ask: catch any OLD mistakes): walk merged PRs OLDER
+    than the forward post-merge watermark — newest-first, capped per cycle,
+    cursor-resumable (`retro_cursor` = oldest merged_at processed; everything
+    above it is pending until done). Freshness gate drops findings whose path
+    no longer exists on HEAD (zombies on fixed code); an all-zombie PR posts
+    NOTHING. Guards: cursor (primary), retro_seen set (same-second belt),
+    head-SHA records (suspenders). Returns considered numbers for prune."""
+    from datetime import datetime, timedelta, timezone
+
+    if st.get("retro_complete"):
+        return set()
+    boundary = (
+        datetime.now(timezone.utc) - timedelta(days=config.retro_audit.lookback_days)
+    ).isoformat()
+    upper = state.merged_watermark(st) or datetime.now(timezone.utc).isoformat()
+    cursor = st.get("retro_cursor") or upper
+
+    try:
+        listed = primary.list_merged_prs(config.repo, boundary)
+    except ForgeError as exc:
+        report.alerts.append(f"retro listing failed (skipped this cycle): {exc}")
+        return set()
+
+    seen: set[int] = set(st.get("retro_seen", {}))
+    pending = sorted(
+        (p for p in listed
+         if p.merged_at < cursor and p.number not in seen),
+        key=lambda p: p.merged_at,
+        reverse=True,  # newest unprocessed first: recent mistakes matter most
+    )[: config.retro_audit.max_per_cycle]
+
+    considered: set[int] = set()
+    oldest_processed: str | None = None
+    for pr in pending:
+        considered.add(pr.number)
+        if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
+            report.alerts.append("retro sweep deferred — cycle deadline reached")
+            break
+        seen.add(pr.number)
+        st["retro_seen"] = {n: True for n in seen}
+        if not state.needs_review(st, pr.number, pr.head_sha):
+            oldest_processed = pr.merged_at
+            continue  # already reviewed at this SHA while it was open — nothing to catch
+        outcome = _retro_review_pr(
+            pr, config, primary, get_diff, shadow_sink, st, report,
+        )
+        state.save_state(state_path, st)
+        if outcome == "deferred":
+            seen.discard(pr.number)  # retry next cycle
+            st["retro_seen"] = {n: True for n in seen}
+            break
+        oldest_processed = pr.merged_at
+
+    if oldest_processed:
+        st["retro_cursor"] = oldest_processed
+    if oldest_processed is None and not pending:
+        # window exhausted between boundary and cursor — nothing left to audit
+        # (also fires for repos with no merges in the window: stop re-listing)
+        st["retro_complete"] = True
+        report.alerts.append(
+            f"retro audit complete: {len(seen)} merged PRs within "
+            f"{config.retro_audit.lookback_days}d swept"
+        )
+    return considered
+
+
+def _retro_review_pr(
+    pr: PullRequest,
+    config: RepoConfig,
+    primary: ForgeAdapter,
+    get_diff: Callable[[PullRequest], tuple[set[str], str] | None],
+    shadow_sink: ShadowSink | None,
+    st: dict[str, Any],
+    report: CycleReport,
+) -> str:
+    """One retro review: same pipeline as post-merge, plus the freshness gate.
+    Returns 'reviewed' | 'shadow' | 'deferred' (deferred = retried later)."""
+    from .analyzer import ModelUnavailable, analyze
+    from . import gatekeeper
+
+    diff = get_diff(pr)
+    if diff is None:
+        report.skipped_diff_unavailable += 1
+        return "deferred"
+    diff_files, diff_text = diff
+
+    try:
+        doc = analyze(pr, diff_files, diff_text, config)
+    except ModelUnavailable:
+        report.model_unavailable += 1
+        return "deferred"  # retro never caps: the cursor already passed it; retry is free
+
+    findings = doc.findings
+    if findings and config.gatekeeper:
+        findings, dropped = gatekeeper.filter_findings(findings, config)
+        report.gatekeeper_dropped += dropped
+
+    if findings and config.retro_audit.freshness_gate:
+        fresh: list = []
+        for f in findings:
+            exists = primary.path_exists(config.repo, f.path)
+            if exists is False:
+                report.retro_zombies += 1  # path gone from HEAD: fixed/moved code
+                continue
+            fresh.append(f)  # True or None (unqueryable → fail open, keep)
+        findings = fresh
+
+    if not findings and not _has_prior_findings(primary, config, pr.number):
+        # all-zombie or clean: post NOTHING on the old PR (zero-noise law);
+        # the state record is the audit trail.
+        state.mark_reviewed(st, pr.number, pr.head_sha, "retro:0")
+        return "reviewed"
+
+    rh = f"{pr.head_sha[:12]}{len(findings):04x}"
+    previous: list[Finding] = []
+    existing = primary.get_persistent_comment(config.repo, pr.number)
+    if existing:
+        previous = _prior_findings(existing[1])
+    body = renderer.render_review(
+        pr, findings, config, rh, previous, post_merge=True,
+        gatekeeper_dropped=report.gatekeeper_dropped or 0,
+        diff_truncated=bool(doc.digest.get("_diff_truncated")),
+    )
+    if config.shadow:
+        if shadow_sink:
+            shadow_sink(config.repo, pr.number, body)
+        report.shadow_only = True
+        state.mark_reviewed(st, pr.number, pr.head_sha, f"shadow:{len(findings)}")
+        report.retro_reviewed += 1
+        return "shadow"
+    if existing:
+        primary.update_comment(config.repo, pr.number, existing[0], body)
+    else:
+        primary.create_comment(config.repo, pr.number, body)
+    state.mark_reviewed(st, pr.number, pr.head_sha, f"retro:{len(findings)}")
+    report.retro_reviewed += 1
+    return "reviewed"
+
+
+def _has_prior_findings(primary: ForgeAdapter, config: RepoConfig, number: int) -> bool:
+    """Does our own persistent comment on this PR already carry findings?
+    (Edit-in-place continues the thread; clean/zombie results stay silent.)"""
+    existing = primary.get_persistent_comment(config.repo, number)
+    return bool(existing and renderer.parse_finding_lines(existing[1]))
+
+
 def _ci_watch_step(
     config: RepoConfig,
     primary: ForgeAdapter,
@@ -462,6 +620,12 @@ def run_cycle(
 
             if config.ci_watch.enabled:
                 _ci_watch_step(config, primary, st, report, run_fixes)
+
+            if config.retro_audit.enabled:
+                merged_keep |= _retro_sweep(
+                    config, primary, state_path, get_diff, shadow_sink, st,
+                    report, deadline,
+                )
 
             state.prune_closed(st, open_numbers | merged_keep)
 

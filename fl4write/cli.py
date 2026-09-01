@@ -117,6 +117,19 @@ def main() -> int:
     config = load_config(sys.argv[1])
     if live:
         config = config.model_copy(update={"shadow": False})
+    # Diff getter is FORGE-AWARE: GitHub-primary keeps the gh-CLI path;
+    # Forgejo-primary uses the adapter's native .diff endpoint (the gh path
+    # 404s there — every PR would defer forever, the dead-adapter failure).
+    primary_binding = next(b for b in config.forges.values() if b.role == "primary")
+    if "api.github.com" in primary_binding.api_base:
+        diff_getter = make_get_diff(config.repo)
+    else:
+        from .forges import adapter_for as _af
+
+        native = _af(primary_binding)
+
+        def diff_getter(pr: PullRequest):  # noqa: E731 - closure over adapter
+            return native.get_pr_diff(config.repo, pr.number)
     # GitHub App auth: every interaction signed as fl4write[bot].
     # Installation resolved PER REPO — the app has separate org and user
     # installations and a token from the wrong one 404s.
@@ -134,7 +147,7 @@ def main() -> int:
     report = run_cycle(
         config,
         state_path,
-        get_diff=make_get_diff(config.repo),
+        get_diff=diff_getter,
         run_fixes=run_fixes,
         run_issues=run_issues,
         deadline=time.monotonic() + budget_s,
@@ -165,6 +178,7 @@ def main() -> int:
         f"fl4write cycle: repo={report.repo} scanned={report.scanned} "
         f"reviewed={report.reviewed} shadow={config.shadow} "
         f"postmerge={report.postmerge_reviewed} "
+        f"retro={report.retro_reviewed} retro_zombie={report.retro_zombies} "
         f"ci_red={report.ci_red_heads} ci_fix={report.ci_fix_prs_opened} "
         f"ci_esc={report.ci_escalations} "
         f"dep_skipped={report.skipped_dependency} model_down={report.model_unavailable} "
