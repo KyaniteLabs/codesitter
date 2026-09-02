@@ -127,14 +127,19 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
     cleaned = _re.sub(r"<think>(.*?)</think>", "", content, flags=_re.DOTALL | _re.IGNORECASE).strip()
     candidates = [cleaned, content]
     if envelope_key:
-        # envelope-aware: the LAST '{"key"' occurrence is the payload even
-        # when fenced ```json blocks, unclosed think tags, or prose braces
-        # precede it (Sol-audit reproduced failures; generic brace-slice died)
+        # envelope-aware: raw_decode from the LAST '{"key"' occurrence parses
+        # exactly one JSON value and IGNORES trailing prose/braces — the
+        # brace-slice kept dying on trailing junk (fenced-json case)
         marker = '{"' + envelope_key + '"'
         for c in (cleaned, content):
             idx = c.rfind(marker)
             if idx != -1:
-                candidates.insert(0, c[idx:])
+                try:
+                    parsed, _ = _json.JSONDecoder().raw_decode(c[idx:])
+                    if isinstance(parsed, dict) and envelope_key in parsed:
+                        return parsed
+                except ValueError:
+                    continue
     for candidate in candidates:
         try:
             start, end = candidate.index("{"), candidate.rindex("}") + 1
