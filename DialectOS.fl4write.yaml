@@ -46,6 +46,5 @@ retro_audit:
   enabled: true
   lookback_days: 90
   max_per_cycle: 5
-test_cmd: corepack enable && corepack prepare pnpm@11.25.0 --activate && pnpm install
-  --frozen-lockfile --silent && pnpm test --silent
+test_cmd: corepack pnpm install --frozen-lockfile --silent && corepack pnpm test --silent
 test_timeout: 900
