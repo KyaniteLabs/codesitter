@@ -370,7 +370,7 @@ class TestEngine:
         monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
         monkeypatch.setattr(
             "fl4write.issues._call_model",
-            lambda route, prompt, mode="pr": json.dumps(
+            lambda route, prompt, mode="pr", system=None, **kw: json.dumps(
                 {"labels": ["bug"], "is_duplicate": False, "duplicate_hint": None,
                  "draft_reply": "r", "urgency": "low", "is_regression": False,
                  "regression_version": None}

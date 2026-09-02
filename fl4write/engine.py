@@ -266,6 +266,10 @@ def _fix_lane(
             report._fix_failure_notes.append(f"#{pr.number} {status}: {str(result.get('reason'))[:80]}")
         elif status == "blocked":
             report.fix_escalations += 1
+        else:
+            # Sol audit: unknown statuses had no denominator — count + surface
+            report.fix_failures += 1
+            report._fix_failure_notes.append(f"#{pr.number} unknown-status {status!r}")
     try:
         # bot_identity REQUIRED (post-merge build): the merge gate re-verifies
         # authorship against it — a missing identity fails every merge closed.
@@ -471,7 +475,8 @@ def _omni_fix_phase(
             report.fix_failures += 1
             report._fix_failure_notes.append(f"omni {f['path']}:{f['line']} {status}: {str(result.get('reason'))[:60]}")
         else:
-            log.warning("omni fix %s for %s:%s", status, f["path"], f["line"])
+            report.fix_failures += 1
+            report._fix_failure_notes.append(f"omni {f['path']}:{f['line']} unknown-status {status!r}")
 
 
 def _omnisweep_step(
