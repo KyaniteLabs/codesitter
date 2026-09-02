@@ -104,7 +104,10 @@ def _get_file_content(repo: str, path: str, ref: str) -> str | None:
     qref = urllib.parse.quote(ref, safe="")
     try:
         data = _gh_api("GET", f"/repos/{repo}/contents/{qpath}?ref={qref}")
-        if data.get("encoding") != "base64" or not data.get("content"):
+        if not isinstance(data, dict):
+        log.warning("contents API returned non-dict for %s@%s (dir match?)", path, ref[:8])
+        return None
+    if data.get("encoding") != "base64" or not data.get("content"):
             log.warning("contents API returned no base64 content for %s@%s (encoding=%s)",
                         path, ref[:8], data.get("encoding"))
             return None
