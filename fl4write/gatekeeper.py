@@ -63,15 +63,17 @@ def _keep_set(parsed: object) -> set[tuple[str, int]] | None:
     return out
 
 
-def _demotions(parsed: dict, severity_vocab: list[str]) -> dict[tuple[str, int], str]:
-    """Valid {(path, line): lower_severity} — demotion may only LOWER, and the
-    target must be in the vocab; anything else is discarded (never trusted)."""
-    out: dict[tuple[str, int], str] = {}
+def _demotions(parsed: dict, severity_vocab: list[str]) -> dict[tuple[str, int, str], str]:
+    """Valid {(path, line, rule_id): lower_severity} — demotion may only
+    LOWER, target must be in the vocab, and the key includes rule_id so two
+    findings sharing a line are not both demoted (Sol#3: (path,line) alone
+    mutated the unrequested sibling)."""
+    out: dict[tuple[str, int, str], str] = {}
     for d in parsed.get("demote") or []:
         if not isinstance(d, dict):
             continue
         try:
-            key = (str(d.get("path", "")).strip(), int(d.get("line")))
+            key = (str(d.get("path", "")).strip(), int(d.get("line")), str(d.get("rule_id", "")))
         except (TypeError, ValueError):
             continue
         target = str(d.get("severity", ""))
@@ -123,12 +125,23 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
         # L2: demotions apply ONLY to kept findings and only DOWNWARD
         demote = _demotions(parsed, config.severity_vocab)
         demoted_ids = []
+        applied: set = set()
         for f in kept:
-            target = demote.get((f.path, f.line))
+            target = demote.get((f.path, f.line, f.rule_id))
+            if target is None:
+                # (path,line) match WITHOUT rule match is ambiguous (Sol#3):
+                # only apply when exactly one finding holds that line
+                same_line = [g for g in kept if (g.path, g.line) == (f.path, f.line)]
+                if len(same_line) == 1 and (f.path, f.line) not in applied:
+                    target = next((v for (p, ln, r), v in demote.items()
+                                   if (p, ln) == (f.path, f.line)), None)
+            if (f.path, f.line) in applied:
+                continue
             if target and config.severity_vocab.index(target) > config.severity_vocab.index(f.severity):
-                log.info("gatekeeper demoted %s:%s %s->%s", f.path, f.line, f.severity, target)
-                demoted_ids.append(f"{f.path}:{f.line} {f.severity}->{target}")
+                log.info("gatekeeper demoted %s:%s (%s) %s->%s", f.path, f.line, f.rule_id, f.severity, target)
+                demoted_ids.append(f"{f.path}:{f.line} ({f.rule_id}) {f.severity}->{target}")
                 f.severity = target
+                applied.add((f.path, f.line))
         from . import telemetry as _tel
         _tel.emit("gatekeeper", repo=config.repo, kept=len(kept),
                   dropped=len(findings) - len(kept), demoted=demoted_ids)

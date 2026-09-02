@@ -61,19 +61,30 @@ def route_stats() -> dict[str, dict[str, float]]:
 _ROUTE_STATS: dict[str, dict[str, float]] = {}
 
 
+def _safe_int(v: object) -> int:
+    try:
+        return int(v or 0)  # "unknown"/None/floats never raise (Sol#5)
+    except (TypeError, ValueError):
+        return 0
+
+
 def record_route(model: str, ok: bool, latency_s: float, parse_ok: bool,
                  prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
-    key = model
-    st = _ROUTE_STATS.setdefault(key, {
-        "calls": 0, "ok": 0, "parse_fail": 0, "latency_s": 0.0,
-        "prompt_tokens": 0, "completion_tokens": 0,
-    })
-    st["calls"] += 1
-    st["ok"] += int(ok)
-    st["parse_fail"] += int(not parse_ok)
-    st["latency_s"] += latency_s
-    st["prompt_tokens"] += prompt_tokens
-    st["completion_tokens"] += completion_tokens
+    try:
+        key = str(model)
+        st = _ROUTE_STATS.setdefault(key, {
+            "calls": 0, "ok": 0, "parse_fail": 0, "latency_s": 0.0,
+            "prompt_tokens": 0, "completion_tokens": 0,
+        })
+        latency_s = float(latency_s or 0.0)
+        st["calls"] += 1
+        st["ok"] += int(bool(ok))
+        st["parse_fail"] += int(not parse_ok)
+        st["latency_s"] += latency_s
+        st["prompt_tokens"] += _safe_int(prompt_tokens)
+        st["completion_tokens"] += _safe_int(completion_tokens)
+    except Exception:  # telemetry never raises (Sol#5)
+        pass
 
 
 def calibration_snapshot(recent: int = 500) -> dict[str, Any]:
@@ -88,8 +99,10 @@ def calibration_snapshot(recent: int = 500) -> dict[str, Any]:
     for ln in lines:
         try:
             ev = json.loads(ln)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             continue
+        if not isinstance(ev, dict):
+            continue  # a stray JSON scalar must not break the snapshot (Sol#5)
         if ev.get("kind") == "model_call":
             m = models.setdefault(str(ev.get("model", "?")), {"calls": 0, "fails": 0, "tokens": 0})
             m["calls"] += 1

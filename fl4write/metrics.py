@@ -76,9 +76,11 @@ def acceptance_snapshot(forge: ForgeAdapter, config: RepoConfig) -> dict[str, An
             ]
         except (ForgeError, NotImplementedError):
             pass  # merged sampling is additive, never load-bearing
-    if not prs:
-        return {"total": 0, "addressed": 0, "rate": "n/a"}
+    seen: set[int] = set()
     for pr in prs:
+        if pr.number in seen:  # merged+open overlap or duplicate pages (Sol#7)
+            continue
+        seen.add(pr.number)
         try:
             sig = comment_signals(forge, config.repo, pr.number)
         except ForgeError:
@@ -86,6 +88,8 @@ def acceptance_snapshot(forge: ForgeAdapter, config: RepoConfig) -> dict[str, An
         if sig is None:
             continue
         total += sig["findings"] + sig["resolved"]
-        addressed += sig["resolved"] + sig["reactions"]
+        # sig['addressed'] is already min-capped — recomputing from raw parts
+        # let reactions exceed 100% (Sol#7 repro: 1 finding + 2 reactions = 200%)
+        addressed += sig["addressed"]
     rate = f"{100 * addressed / total:.0f}%" if total else "n/a"
     return {"total": total, "addressed": addressed, "rate": rate}

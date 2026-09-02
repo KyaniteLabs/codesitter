@@ -177,14 +177,20 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
     _t0 = __import__("time").time()
     blocked_reason = fix_allowed(pr, config, 0)
     if blocked_reason:
+        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="blocked",
+                  reason=blocked_reason[:80])
         return {"status": "blocked", "reason": blocked_reason,
                 "escalation": escalate(pr, [finding], blocked_reason)}
 
     if dependency_depth(pr, pr.title, config) == "skip":
+        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="skipped",
+                  reason="dependency PR")
         return {"status": "skipped", "reason": "dependency PR"}
 
     content = _get_file_content(pr.repo, finding.path, pr.head_sha)
     if content is None:
+        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="error",
+                  reason=f"cannot fetch {finding.path}@{pr.head_sha[:8]}")
         return {"status": "error", "reason": f"cannot fetch {finding.path}@{pr.head_sha[:8]}"}
 
     prompt = (
@@ -210,8 +216,12 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         return {"status": "error", "reason": f"model unavailable: {str(exc)[:120]}"}
 
     if fixed is None or not isinstance(fixed, str):
+        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="nofix",
+                  reason="model returned no fix")
         return {"status": "nofix", "reason": "model returned no fix"}
     if fixed.strip() == content.strip():
+        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="nofix",
+                  reason="no-op patch")
         # Live-caught (first real attempt, 2026-09-02): a no-op patch flowed
         # through worktree→commit→push→PR and died as an opaque 422. A patch
         # identical to the original is a nofix, caught BEFORE any writes.
@@ -244,6 +254,8 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             return {"status": "error", "reason": err}
 
         if not _run_tests(workdir, config):
+            _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="testfail",
+                      reason="tests failed with fix applied")
             return {"status": "testfail", "reason": "tests failed with fix applied"}
 
         _run(["git", "add", "--", finding.path], cwd=workdir)
