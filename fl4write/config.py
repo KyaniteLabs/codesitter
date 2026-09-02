@@ -142,6 +142,11 @@ class RepoConfig(_StrictModel):
     retro_audit: RetroAuditConfig = Field(default_factory=RetroAuditConfig)
     omnisweep: OmniSweepConfig = Field(default_factory=OmniSweepConfig)
     known_env_failures: list[str] = Field(default_factory=list)  # test ids to ignore
+    test_cmd: str | None = None  # per-repo test command; the pytest default
+    # misfires on non-Python repos (DialectOS 09-03: Critical "no tests ran"
+    # against a pnpm/vitest monorepo whose CI was green on the same tree)
+    test_timeout: int = Field(default=240, ge=30, le=1800)  # monorepo
+    # install+test chains need more than the 240s single-suite default
     verify_tests: bool = True  # run the diff's own tests sandboxed; a failing
     # diff is a deterministic Critical (prompt-only tracing missed planted bugs)
     shadow: bool = False  # True = log findings, post nothing

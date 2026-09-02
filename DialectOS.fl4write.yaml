@@ -7,7 +7,7 @@ forges:
 model:
   endpoint: http://192.168.1.72:46410/v1/chat/completions
   model: qwen3.8-27b
-  key_env: ""
+  key_env: ''
   temperature: 0.2
   max_tokens: 4000
 fallback_model:
@@ -17,12 +17,24 @@ fallback_model:
   temperature: 0.2
   max_tokens: 8000
 review:
-  secrets: "Never commit or echo secrets, tokens, or credentials. Watch provider API keys, telemetry paths, and test fixtures that embed real infrastructure addresses."
-  tests: "Changes to logic ship with tests; the vitest + node contract suites stay green. Flag any claim of test counts that the suite does not back."
-  security: "Flag injection, path traversal, unsafe deserialization, unbounded subprocess. This is a translation server: check locale-dir confinement, rate limiting, and that MCP tools cannot mutate outside declared scopes."
-  privacy: "No home paths, personal data, private IPs, or UNDISCLOSED org/agent names. Kyanite Labs is the public brand (GitHub org, blog, all licenses) and is permitted. Internal handoff/audit/SEO-plan documents do not belong in the tree."
-  hardening: "Provider layer must fail loudly on missing env config rather than registering silently-empty. Documentation must match executable reality: quickstart commands must work as written on a fresh clone."
-severity_vocab: [Critical, Major, Minor, Nit]
+  secrets: Never commit or echo secrets, tokens, or credentials. Watch provider API
+    keys, telemetry paths, and test fixtures that embed real infrastructure addresses.
+  tests: Changes to logic ship with tests; the vitest + node contract suites stay
+    green. Flag any claim of test counts that the suite does not back.
+  security: 'Flag injection, path traversal, unsafe deserialization, unbounded subprocess.
+    This is a translation server: check locale-dir confinement, rate limiting, and
+    that MCP tools cannot mutate outside declared scopes.'
+  privacy: No home paths, personal data, private IPs, or UNDISCLOSED org/agent names.
+    Kyanite Labs is the public brand (GitHub org, blog, all licenses) and is permitted.
+    Internal handoff/audit/SEO-plan documents do not belong in the tree.
+  hardening: 'Provider layer must fail loudly on missing env config rather than registering
+    silently-empty. Documentation must match executable reality: quickstart commands
+    must work as written on a fresh clone.'
+severity_vocab:
+- Critical
+- Major
+- Minor
+- Nit
 tone: assertive
 tone_fork_override: balanced
 fix:
@@ -34,3 +46,6 @@ retro_audit:
   enabled: true
   lookback_days: 90
   max_per_cycle: 5
+test_cmd: corepack enable && corepack prepare pnpm@11.25.0 --activate && pnpm install
+  --frozen-lockfile --silent && pnpm test --silent
+test_timeout: 900

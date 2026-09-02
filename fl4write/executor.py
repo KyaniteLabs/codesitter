@@ -162,10 +162,20 @@ def _drop_askpass(env: dict[str, str]) -> None:
 
 def _run_tests(cwd: Path, config: RepoConfig) -> bool:
     """Run the repo's test suite in the sandbox env; True if green."""
-    test_cmd = os.environ.get("CODESITTER_TEST_CMD", "python3 -m pytest tests/ -x -q --tb=line")
-    for excl in config.known_env_failures:
-        test_cmd += f" --deselect {excl}"
-    result = _run(test_cmd.split(), cwd=cwd, timeout=240, env=_sandbox_env())
+    default = os.environ.get("CODESITTER_TEST_CMD", "python3 -m pytest tests/ -x -q --tb=line")
+    if config.test_cmd and any(m in config.test_cmd for m in ("&&", ";", "|")):
+        # A committed config may chain setup+test (e.g. corepack/pnpm
+        # install before the suite); bash -lc keeps it one argv. The
+        # string comes from our config repo (reviewed commits), never
+        # from the repo under test.
+        argv = ["bash", "-lc", config.test_cmd]
+    else:
+        cmd = config.test_cmd or default
+        argv = cmd.split()
+        if "pytest" in cmd:
+            for excl in config.known_env_failures:
+                argv += ["--deselect", excl]
+    result = _run(argv, cwd=cwd, timeout=config.test_timeout, env=_sandbox_env())
     return result.returncode == 0
 
 
