@@ -299,7 +299,11 @@ def analyze(
     def _has_credential(text: str) -> bool:
         if any(pref in text for pref in _SECRET_PREFIX):
             return True
-        return any(_entropy(s) >= 4.3 for s in _re2.findall(r"[A-Za-z0-9_\-]{16,}", text))
+        # M3 leg-2 catch: >=4.3 bits is UNSATISFIABLE for 16-char literals
+        # (max Shannon entropy of 16 unique chars is exactly 4.0) — short real
+        # secrets were structurally undetectable. 3.5 separates random-looking
+        # strings (16-char all-unique hex = 4.0) from prose (~3.1-3.4).
+        return any(_entropy(s) >= 3.5 for s in _re2.findall(r"[A-Za-z0-9_\-]{16,}", text))
 
     # Sol#1: verify the ANCHORED SOURCE (the diff), never the model's echo —
     # a real credential the model described without quoting stayed Critical

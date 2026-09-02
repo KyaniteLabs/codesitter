@@ -673,3 +673,23 @@ class TestVerifyWiring:
         assert "tests FAIL" in body and "Critical" in body  # deterministic finding POSTED
 
 
+
+
+class TestEntropyMath:
+    def test_16_char_hex_secret_passes_literal_check(self):
+        """M3 leg-2: entropy>=4.3 was unsatisfiable for 16-char literals
+        (max 16-unique-char entropy is exactly 4.0) — short real secrets
+        were structurally undetectable by the literal gate."""
+        import math
+
+        def entropy(s):
+            if not s:
+                return 0.0
+            freq = {c: s.count(c) for c in set(s)}
+            return -sum((n / len(s)) * math.log2(n / len(s)) for n in freq.values())
+
+        hex16 = "a3f19c7b52d8e40f"  # 16 unique chars
+        assert entropy(hex16) == 4.0  # the mathematical ceiling for len 16
+        assert entropy(hex16) >= 3.5  # now passes the (fixed) threshold
+        prose = "the quick brown fox"  # low entropy English
+        assert entropy(prose[:16]) < 3.5
