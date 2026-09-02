@@ -138,7 +138,7 @@ class TestPostMergeSweep:
         assert r.postmerge_reviewed == 1 and len(forge.posts) == 1
         assert "(post-merge)" in forge.posts[0][1]
         st = state.load_state(tmp_path / "state.json")
-        assert state.merged_watermark(st) == "2026-09-01T12:00:00Z"
+        assert state.merged_watermark(st) == _hours_ago(3)  # the fixture value, not a hardcoded date
 
     def test_no_re_review_when_relisted_same_sha(self, tmp_path, monkeypatch):
         """Watermark rewound (or PR merged mid-sweep): the head-SHA predicate,
@@ -284,7 +284,7 @@ class TestPostMergeSweep:
         r = _run(tmp_path, forge, monkeypatch)
         assert r.postmerge_reviewed == 0 and r.skipped_dependency == 1 and forge.posts == []
         st = state.load_state(tmp_path / "state.json")
-        assert state.merged_watermark(st) == "2026-09-01T12:00:00Z"  # terminal: not re-listed forever
+        assert state.merged_watermark(st) == _hours_ago(3)  # the fixture value, not a hardcoded date  # terminal: not re-listed forever
 
     def test_listing_failure_skips_cycle_not_watermark(self, tmp_path, monkeypatch):
         forge = FakeForge()
