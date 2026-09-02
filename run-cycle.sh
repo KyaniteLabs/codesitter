@@ -39,31 +39,43 @@ if [ -z "${CODESITTER_FORGEJO_TOKEN:-}" ]; then
 fi
 
 # SCALE Phase 2: tiered due-list + process pool (consensus-gated, #6).
-# The tier scheduler derives the due list (NEVER writes state); every due
-# repo gets a worker; results land as per-repo files where MISSING = ERR
-# (a worker dying pre-write must never inherit last cycle's result — the
-# Critic's stale-file amendment).
+# The scheduler is invoked EXACTLY ONCE (Sol#2: three invocations = 3x the
+# probe cost + fragile grep-splitting); its JSON envelope carries due files,
+# alerts, and counts; scheduler FAILURE is a loud exit, never 0-ok/0-err
+# (Sol#1: a dead scheduler used to look like a healthy empty cycle).
 mkdir -p logs
-DUE=$(python3 -m fl4write.tiers *.fl4write.yaml 2>/dev/null)
-echo "$(date -Iseconds) $DUE" | grep "^..*tiers:" >> "$LOG" || true
-# duplicate-config ALERTs + tier lines from the scheduler reach runner.log
-python3 -m fl4write.tiers *.fl4write.yaml 2>/dev/null | grep -E "^(ALERT|tiers:)" | while read -r line; do
-    echo "$(date -Iseconds) $line" >> "$LOG"
-done
-DUE_FILES=$(python3 -m fl4write.tiers *.fl4write.yaml 2>/dev/null | grep -v -E "^(ALERT|tiers:)")
-# stale result files cleared BEFORE dispatch (the amendment)
-for f in $DUE_FILES; do
+PLAN=$(python3 -m fl4write.tiers --plan *.fl4write.yaml 2>>"$LOG")
+if [ $? -ne 0 ] || [ -z "$PLAN" ]; then
+    echo "$(date -Iseconds) ERR: tier scheduler failed — fleet NOT cycled this hour" >> "$LOG"
+    exit 1
+fi
+PLAN_ALERTS=$(echo "$PLAN" | python3 -c "import json,sys; [print('ALERT: '+a) for a in json.load(sys.stdin).get('alerts',[])]" 2>/dev/null)
+PLAN_SUMMARY=$(echo "$PLAN" | python3 -c "import json,sys; print(json.load(sys.stdin).get('summary',''))" 2>/dev/null)
+[ -n "$PLAN_SUMMARY" ] && echo "$(date -Iseconds) $PLAN_SUMMARY" >> "$LOG"
+if [ -n "$PLAN_ALERTS" ]; then
+    echo "$PLAN_ALERTS" | while read -r line; do echo "$(date -Iseconds) $line" >> "$LOG"; done
+fi
+
+# mapfile = no word-splitting on filenames with spaces (Sol#3)
+mapfile -t DUE_FILES < <(echo "$PLAN" | python3 -c "import json,sys; [print(f) for f in json.load(sys.stdin).get('due',[])]" 2>/dev/null)
+
+# stale result files cleared BEFORE dispatch (the Critic's amendment)
+for f in "${DUE_FILES[@]}"; do
     rm -f "logs/$(echo "$f" | tr '/' '_').result"
 done
 
-POOL=${FL4WRITE_POOL:-$(( $(nproc 2>/dev/null || echo 4) > 4 ? 4 : $(nproc 2>/dev/null || echo 4) ))}
+# pool: nproc once; the env override is CAPPED, never bypassed (Sol#11)
+NPROC=$(nproc 2>/dev/null || echo 4)
+POOL_REQ=${FL4WRITE_POOL:-4}
+[[ "$POOL_REQ" =~ ^[0-9]+$ ]] || POOL_REQ=4
+POOL=$(( POOL_REQ < NPROC ? (POOL_REQ < 4 ? POOL_REQ : 4) : (NPROC < 4 ? NPROC : 4) ))
 
 run_one() {
     f="$1"
     exec 9>&-  # NEVER inherit the flock fd — orphaned workers must not
                # silently block the next cycle (the Architect's trap)
     slug=$(echo "$f" | tr '/' '_')
-    OUT=$(timeout 900 python3 -m fl4write.cli "$f" --fixes --issues 2>"logs/$slug.err")
+    OUT=$(timeout 900 python3 -m fl4write.cli "$f" --fixes --issues 2>&1)
     rc=$?
     # full detail to the per-repo log; runner.log keeps the aggregate surface
     echo "$OUT" >> "logs/$slug.log" 2>/dev/null || true
@@ -79,18 +91,17 @@ run_one() {
         echo 0 > "logs/$slug.result"
     else
         echo "$(date -Iseconds) ERR: $f — $(echo "$OUT" | tail -5)" >> "$LOG"
-        cat "logs/$slug.err" | tail -3 >> "$LOG" 2>/dev/null || true
         echo 1 > "logs/$slug.result"
     fi
 }
 export -f run_one
 export LOG
 
-echo "$DUE_FILES" | xargs -P "$POOL" -I{} bash -c 'run_one "$@"' _ {}
+printf '%s\0' "${DUE_FILES[@]}" | xargs -0 -P "$POOL" -I{} bash -c 'run_one "$@"' _ {}
 
 # aggregate: MISSING result file = ERR, never silence (the Critic's law)
 OK=0; ERR=0
-for f in $DUE_FILES; do
+for f in "${DUE_FILES[@]}"; do
     slug=$(echo "$f" | tr '/' '_')
     if [ -f "logs/$slug.result" ] && [ "$(cat logs/$slug.result)" = "0" ]; then
         OK=$((OK+1))

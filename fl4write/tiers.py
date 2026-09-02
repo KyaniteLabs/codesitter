@@ -36,17 +36,32 @@ TIER_CADENCE_S = {"hot": 3600, "warm": 4 * 3600, "cold": 24 * 3600}
 STATE_DIR = Path.home() / ".fl4write"
 
 
+def _known_repo(repo: str) -> bool:
+    """Has this repo EVER cycled? The telemetry stream is the durable record
+    (a result-file or telemetry line naming the repo = established)."""
+    tel = STATE_DIR / "telemetry.jsonl"
+    try:
+        with tel.open(encoding="utf-8", errors="ignore") as fh:
+            return any(f'"repo": "{repo}"' in line for line in fh)
+    except OSError:
+        return False
+
+
 def _state_path(repo: str) -> Path:
     return STATE_DIR / f"{repo.replace('/', '__')}.state.json"
 
 
 def _read_state(repo: str) -> dict | None:
-    """None = missing or corrupt (UNKNOWN class — never 'inactive')."""
+    """None = missing or unusable (UNKNOWN class — never 'inactive'). Valid
+    JSON with the wrong SHAPE (a list, a string) is also unusable (Sol#9)."""
     p = _state_path(repo)
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        st = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
+    if not isinstance(st, dict) or not isinstance(st.get("prs", {}), dict):
+        return None  # shape-corrupt = UNKNOWN, never a crash (Sol#9)
+    return st
 
 
 def _probe_pushed(owner_type: str, owner: str, token_env: str = "CODESITTER_GITHUB_TOKEN") -> dict[str, float]:
@@ -87,9 +102,11 @@ def classify(repo: str, forge_github: bool, pushed_epoch: float | None,
     beyond 7d with healthy state."""
     st = _read_state(repo)
     if st is None:
-        if not _state_path(repo).exists():
-            return "hot", "bootstrap (no state file — first cycle)"
-        return "warm", "UNKNOWN: state unreadable/corrupt — failing toward frequency"
+        if not _state_path(repo).exists() and not _known_repo(repo):
+            return "hot", "bootstrap (no state file AND never cycled — new repo)"
+        # deleted/missing state on an ESTABLISHED repo is UNKNOWN, never
+        # bootstrap-hot and never cold (Sol#9: absence is unproven, not new)
+        return "warm", "UNKNOWN: state missing/corrupt on an established repo — failing toward frequency"
     if not forge_github:
         # Forgejo repos have no GitHub pushed signal; the org merges fast
         # (LEARNINGS #24) — WARM floor, refined by local activity below.
@@ -126,15 +143,17 @@ def due(configs: list[tuple[str, str, bool]], now: float | None = None,
     counts = {"hot": 0, "warm": 0, "cold": 0}
     for repo, fname in by_repo.items():
         forge_github = next(g for f, r, g in configs if r == repo)
-        pushed = (pushed_map or {}).get(repo.split("/", 1)[1]) if forge_github else None
+        pushed = (pushed_map or {}).get(repo) if forge_github else None
         tier, reason = classify(repo, forge_github, pushed, now)
         counts[tier] = counts.get(tier, 0) + 1
-        # stagger: cold repos due at (hash % 24)h marks; warm at (hash % 4)h
-        slug = sum(ord(c) for c in repo)
+        # stagger by a STABLE FULL-RANGE hash (Sol#5: additive ASCII sums
+        # cluster real repo names into the same hourly slot)
+        import hashlib
+
         cadence = TIER_CADENCE_S[tier]
-        phase = (slug % cadence) if tier != "hot" else 0
+        phase = int(hashlib.sha256(repo.encode()).hexdigest()[:8], 16) % cadence if tier != "hot" else 0
         n = int(now)
-        due_now = (n % cadence) >= phase and ((n - phase) % cadence) < 3600
+        due_now = ((n - phase) % cadence) < 3600
         if tier == "hot" or due_now:
             out.append(fname)
         if "UNKNOWN" in reason:
@@ -145,14 +164,20 @@ def due(configs: list[tuple[str, str, bool]], now: float | None = None,
 
 def main() -> int:
     import argparse
+    import contextlib
+    import io
 
     ap = argparse.ArgumentParser()
     ap.add_argument("configs", nargs="+", help="config filenames")
-    ap.add_argument("--json", action="store_true", help="emit due list as JSON")
+    ap.add_argument("--json", action="store_true", help="emit due list as JSON (legacy)")
+    ap.add_argument("--plan", action="store_true",
+                    help="ONE envelope {due, alerts, summary} — the runner parses this "
+                         "ONCE (3 invocations = 3x the probe cost)")
     args = ap.parse_args()
     from fl4write.config import load_config
 
     parsed = []
+    alerts: list[str] = []
     for f in args.configs:
         try:
             c = load_config(f)
@@ -161,15 +186,32 @@ def main() -> int:
             )
             parsed.append((f, c.repo, github))
         except Exception as exc:  # noqa: BLE001 — a bad config cycles anyway
-            print(f"ALERT: config {f} unparseable ({exc}) — scheduled hot as fallback")
+            alerts.append(f"config {f} unparseable ({str(exc)[:60]}) — scheduled hot as fallback")
             parsed.append((f, f"__unparsed__{f}", True))
     org_map = _probe_pushed("org", "KyaniteLabs")
     user_map = _probe_pushed("user", "simongonzalezdc")
-    pushed = {**org_map, **user_map}
-    due_files = due(parsed, pushed_map=pushed)
-    if args.json:
+    # keyed by FULL owner/name — a user fork sharing an org repo's bare name
+    # must not overwrite the org timestamp (Sol#10)
+    pushed = {}
+    for mapping, owner in ((org_map, "KyaniteLabs"), (user_map, "simongonzalezdc")):
+        for name, ts in mapping.items():
+            pushed[f"{owner}/{name}"] = ts
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        due_files = due(parsed, pushed_map=pushed)
+    for line in buf.getvalue().splitlines():  # scheduler ALERTs join the envelope
+        if line.startswith("ALERT: "):
+            alerts.append(line[len("ALERT: "):])
+    summary = next((ln for ln in buf.getvalue().splitlines() if ln.startswith("tiers: ")), "")
+    if args.plan:
+        print(json.dumps({"due": due_files, "alerts": alerts, "summary": summary}))
+    elif args.json:
         print(json.dumps(due_files))
     else:
+        for a in alerts:
+            print(f"ALERT: {a}")
+        if summary:
+            print(summary)
         for f in due_files:
             print(f)
     return 0

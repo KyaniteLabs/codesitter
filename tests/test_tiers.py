@@ -84,7 +84,7 @@ class TestDueList:
             (state_dir / f"{repo.replace('/', '__')}.state.json").write_text(
                 '{"version": 1, "prs": {}}')
         # o/hot pushed recently -> HOT -> due every hourly cycle
-        pushed = {"hot": NOW - 3600, "warm": NOW - 2 * 86400, "cold": NOW - 30 * 86400}
+        pushed = {"o/hot": NOW - 3600, "o/warm": NOW - 2 * 86400, "o/cold": NOW - 30 * 86400}  # full owner/name (Sol#10)
         due_count = sum(
             1 for t in range(NOW, NOW + 24 * 3600, 3600)
             if "hot.yaml" in tiers.due(self._configs(), now=t, pushed_map=pushed)
@@ -95,7 +95,7 @@ class TestDueList:
             1 for t in range(NOW, NOW + 24 * 3600, 3600)
             if "cold.yaml" in tiers.due(self._configs(), now=t, pushed_map=pushed)
         )
-        assert cold_count <= 2  # staggered: at most one window per day
+        assert 1 <= cold_count <= 2  # staggered: exactly once per day (never zero — Sol#5's test gap)
 
     def test_unknown_state_alerts_in_output(self, state_dir, capsys):
         (state_dir / "o__corrupt.state.json").write_text("{torn")
