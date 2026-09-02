@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -200,6 +201,14 @@ def _review_pr(
     outcome = f"shadow:{len(findings)}" if config.shadow else f"reviewed:{len(findings)}"
     state.mark_reviewed(st, pr.number, pr.head_sha, outcome)
     report.reviewed += 1
+
+    # finding-level severity into telemetry (the gap: the quality loop
+    # couldn't measure "fixable findings per day" without this)
+    from . import telemetry as _tel
+    sev_counts = Counter(f.severity for f in findings)
+    _tel.emit("review", repo=config.repo, pr=pr.number,
+              findings_total=len(findings), severity=dict(sev_counts),
+              lane="post-merge" if post_merge else "pr")
 
     if run_fixes and config.fix.enabled and not config.shadow:
         if any(f.category == "CI" for f in findings):
@@ -385,6 +394,16 @@ def _fix_freshness_gate(primary: ForgeAdapter, config: RepoConfig, finding) -> b
 # contents API refuses >1MB; anything near it is generated/vendored).
 _OMNI_MAX_FILE_BYTES = 200_000
 _OMNI_FIX_ATTEMPTS_PER_CYCLE = 3
+
+
+def _omni_readiness(findings: list[dict]) -> tuple[int, str]:
+    """CheckYourself-style readiness score from the sweep's findings."""
+    from .capabilities import readiness_score, score_label
+    from collections import Counter
+
+    sev = Counter(f.get("sev", f.get("severity", "Nit")) for f in findings)
+    score = readiness_score(dict(sev))
+    return score, score_label(score)
 
 
 def _omni_report_body(config: RepoConfig, findings: list[dict], scanned: int, total: int, complete: bool) -> str:

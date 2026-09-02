@@ -181,7 +181,7 @@ class TestPostMergeSweep:
     def test_cap_bounds_cycle_and_backlog_resumes(self, tmp_path, monkeypatch):
         forge = FakeForge()
         forge.merged_prs = [
-            make_pr(number=n, merged_at=f"2026-09-01T12:0{n}:00Z") for n in range(1, 6)
+            make_pr(number=n, merged_at=_hours_ago(6 - n, f"12:0{n}:00")) for n in range(1, 6)
         ]
         r1 = _run(tmp_path, forge, monkeypatch, post_merge={"enabled": True, "max_per_cycle": 3})
         assert r1.postmerge_reviewed == 3
@@ -225,8 +225,8 @@ class TestPostMergeSweep:
         error-path law: a fetch failure may never look like a processed merge)."""
         forge = FakeForge()
         forge.merged_prs = [
-            make_pr(number=1, merged_at="2026-09-01T12:01:00Z"),
-            make_pr(number=2, merged_at="2026-09-01T12:02:00Z"),
+            make_pr(number=1, merged_at=_hours_ago(3, "12:01:00")),
+            make_pr(number=2, merged_at=_hours_ago(3, "12:02:00")),
         ]
         seen = []
         attempts = {"n": 0}

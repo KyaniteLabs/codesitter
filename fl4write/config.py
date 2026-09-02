@@ -226,5 +226,8 @@ def load_config(path: str | Path) -> RepoConfig:
     """Fail-loud loader: config errors abort the cycle, never silently skip."""
     raw = yaml.load(Path(path).read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
     config = RepoConfig.model_validate(raw)
+    from .capabilities import default_review_rules
+    merged = {**default_review_rules(), **config.review}
+    config = config.model_copy(update={"review": merged})
     check_model_keys(config)
     return config
