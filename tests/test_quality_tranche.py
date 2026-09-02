@@ -438,3 +438,51 @@ class TestThinkPreambleParsing:
 
         with _pytest.raises(ValueError):
             extract_json("no json here at all")
+
+
+class TestVerifyDiffTests:
+    def test_failing_diff_yields_deterministic_critical(self, monkeypatch, tmp_path):
+        """The planted-bug lesson: prompt-only tracing missed self-failing
+        diffs (both M3 and deepseek, twice each). verify_diff_tests RUNS the
+        diff's tests sandboxed and files a Critical carrying the failure."""
+        from fl4write import executor
+        from fl4write.models import PullRequest
+
+        class R:
+            def __init__(self, code, out):
+                self.returncode, self.stdout, self.stderr = code, out, ""
+
+        def fake_run(cmd, cwd=None, timeout=120, env=None):
+            if cmd[:2] == ["git", "init"]:
+                return R(0, "")
+            if cmd[0] == "git":
+                return R(0, "")
+            if cmd[0] == "python3":
+                return R(1, "FAILED test_proof_target - assert 1.0 == 3.0")
+            return R(0, "")
+
+        monkeypatch.setattr(executor, "_run", fake_run)
+        pr = PullRequest(forge="github", number=198, repo="KyaniteLabs/Epoch", head_sha="a" * 40)
+        c = make_config()
+        f = executor.verify_diff_tests(pr, c, ["fl4write-proof/test_proof_target.py"])
+        assert f is not None and f.severity == "Critical"
+        assert "assert 1.0 == 3.0" in f.message and f.path == "fl4write-proof/test_proof_target.py"
+
+    def test_infra_trouble_is_never_a_finding(self, monkeypatch):
+        from fl4write import executor
+        from fl4write.models import PullRequest
+
+        def broken(cmd, **kw):
+            raise RuntimeError("network gone")
+
+        monkeypatch.setattr(executor, "_run", broken)
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        assert executor.verify_diff_tests(pr, make_config(), ["test_x.py"]) is None
+
+    def test_regex_matches_real_test_names(self):
+        from fl4write.engine import _TEST_FILE_RE
+
+        for good in ("tests/test_foo.py", "pkg/test_foo.py", "src/a.test.ts", "x/y_test.rs", "tests.py"):
+            assert _TEST_FILE_RE.search(good), good
+        for bad in ("src/main.py", "README.md", "testing.md"):
+            assert not _TEST_FILE_RE.search(bad), bad

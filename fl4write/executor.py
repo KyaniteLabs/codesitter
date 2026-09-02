@@ -269,6 +269,48 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         shutil.rmtree(workdir, ignore_errors=True)
 
 
+def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]) -> "Finding | None":
+    """Deterministic spec check: check out the PR head in a sandbox worktree
+    and run the repo's test command. If the diff's own tests FAIL, return a
+    Critical Finding carrying the failure tail — no model in the loop for
+    this class (both M3 and deepseek gave a planted, self-failing diff a
+    clean review twice each; live-caught on the first-real-fix E2E).
+    Returns None on any infrastructure trouble (never a false finding)."""
+    from .models import Finding as _Finding
+
+    token = os.environ.get("CODESITTER_GITHUB_TOKEN", "")
+    workdir = Path(tempfile.mkdtemp(prefix="fl4write-verify-"))
+    try:
+        fetch_url = f"https://github.com/{pr.repo}.git"
+        if _run(["git", "init", "-q"], cwd=workdir).returncode != 0:
+            return None
+        pull_env = _push_token_env(workdir, token)
+        if _run(["git", "fetch", "-q", "--depth", "1", fetch_url, pr.head_sha],
+                cwd=workdir, timeout=180, env=pull_env).returncode != 0:
+            return None
+        if _run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], cwd=workdir).returncode != 0:
+            return None
+        cmd = os.environ.get("CODESITTER_TEST_CMD", "python3 -m pytest tests/ -x -q --tb=line")
+        result = _run(cmd.split(), cwd=workdir, timeout=300, env=_sandbox_env())
+        if result.returncode == 0:
+            return None
+        tail = (result.stdout + "\n" + result.stderr).strip().splitlines()
+        return _Finding(
+            rule_id="tests",
+            severity="Critical",
+            path=test_files[0] if test_files else "tests",
+            line=1,
+            category="CI",
+            message="The diff's own tests FAIL against this code (sandbox run): "
+                    + " | ".join(tail[-3:])[:300],
+        )
+    except Exception as exc:  # noqa: BLE001 — infrastructure trouble is never a finding
+        log.warning("verify_diff_tests infra failure for %s#%s: %s", pr.repo, pr.number, exc)
+        return None
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
 def open_issue(repo: str, title: str, body: str) -> int:
     """Open an issue as the bot (CI-watch escalation surface). The issues LANE
     stays comment-only; this is the one bounded exception, config-gated by

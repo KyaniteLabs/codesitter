@@ -142,6 +142,8 @@ class RepoConfig(_StrictModel):
     retro_audit: RetroAuditConfig = Field(default_factory=RetroAuditConfig)
     omnisweep: OmniSweepConfig = Field(default_factory=OmniSweepConfig)
     known_env_failures: list[str] = Field(default_factory=list)  # test ids to ignore
+    verify_tests: bool = True  # run the diff's own tests sandboxed; a failing
+    # diff is a deterministic Critical (prompt-only tracing missed planted bugs)
     shadow: bool = False  # True = log findings, post nothing
     gatekeeper: bool = True  # nit-filter second pass (fail-open)
     issues_enabled: bool = False  # issues-lane triage (comment-only)

@@ -25,6 +25,7 @@ Audit 2026-09-01:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -41,6 +42,9 @@ log = logging.getLogger("fl4write.engine")
 ShadowSink = Callable[[str, int, str], None]
 
 REVIEW_BUDGET_S = 90  # worst-case model time for one review (2 routes x ~45s + slack)
+_TEST_FILE_RE = re.compile(
+    r"(^|/)(test_[^/]+\.py|[^/]+_test\.(go|rs|ts|js)|[^/]+\.test\.(ts|js|tsx|jsx)|tests?\.py)$"
+)
 MODEL_FAILURE_CAP = 3  # per (PR, head SHA); exceed = alert-and-stop retrying
 
 
@@ -123,6 +127,19 @@ def _review_pr(
         report.alerts.append(f"diff unavailable for #{pr.number} — not reviewed, will retry")
         return "diff-unavailable"
     diff_files, diff_text = diff
+    findings: list = []
+
+    # Deterministic spec check first: run the diff's own tests (sandboxed).
+    test_like = sorted(p for p in diff_files if _TEST_FILE_RE.search(p))
+    if test_like and config.verify_tests and not config.shadow:
+        from . import executor as _ex
+
+        failing = _ex.verify_diff_tests(pr, config, test_like)
+        if failing is not None:
+            findings.append(failing)
+            report.alerts.append(
+                f"#{pr.number}: diff's own tests FAIL at head — deterministic Critical filed"
+            )
 
     try:
         doc = analyze(pr, diff_files, diff_text, config)
@@ -141,7 +158,7 @@ def _review_pr(
         return "model-unavailable"
     st.get("model_failures", {}).pop(f"{pr.number}:{pr.head_sha[:10]}", None)
 
-    findings = doc.findings
+    findings = findings + doc.findings
     if findings and config.gatekeeper:
         findings, dropped, failed_open = gatekeeper.filter_findings(findings, config)
         report.gatekeeper_dropped += dropped
