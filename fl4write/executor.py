@@ -339,15 +339,21 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
         # attribute MAIN's pre-existing red to this diff (audit A3: a
         # false-Critical machine wearing the word 'deterministic').
         py_tests = [f for f in test_files if f.endswith(".py")]
-        if py_tests:
-            cmd = f"python3 -m pytest {' '.join(py_tests)} -q --tb=line"
+        if config.test_cmd and any(m in config.test_cmd for m in ("&&", ";", "|")):
+            # committed per-repo chain (DialectOS class): bash -lc keeps one
+            # argv; the string is config-repo content, never repo-controlled
+            argv = ["bash", "-lc", config.test_cmd]
+            cmd = config.test_cmd
         else:
-            cmd = os.environ.get("CODESITTER_TEST_CMD", "python3 -m pytest tests/ -x -q --tb=line")
+            cmd = config.test_cmd or (
+                f"python3 -m pytest {' '.join(py_tests)} -q --tb=line" if py_tests
+                else os.environ.get("CODESITTER_TEST_CMD", "python3 -m pytest tests/ -x -q --tb=line"))
+            argv = cmd.split()
         env = _push_token_env(workdir, token)
         _drop_askpass(env)  # tests never see the helper (A1)
         import time as _time
         _t0 = _time.time()
-        result = _run(cmd.split(), cwd=workdir, timeout=300, env=env)
+        result = _run(argv, cwd=workdir, timeout=config.test_timeout, env=env)
         from . import telemetry as _tel
         _tel.emit("verify_tests", repo=pr.repo, head=pr.head_sha[:10], cmd=cmd,
                   files=test_files, ok=result.returncode == 0,
