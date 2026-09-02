@@ -692,5 +692,10 @@ class TestEntropyMath:
         assert entropy(uniq16) == 4.0  # the mathematical ceiling for len 16
         hex16 = "a3f19c7b52d8e40f"  # 15 unique (f repeats) — still passes
         assert entropy(hex16) >= 3.5  # now passes the (fixed) threshold
-        prose = "the quick brown fox"  # low entropy English
-        assert entropy(prose[:16]) < 3.5
+        import re as _re
+        # the gate only ever sees UNBROKEN 16+ char tokens (spaces break the
+        # regex) — prose sentences never reach the entropy check at all
+        assert not _re.findall(r"[A-Za-z0-9_\-]{16,}", "the quick brown fox jumps")
+        # a 16-char English word (regex-matched) stays below the threshold
+        word = "characterization"  # 16 chars, repeats -> low entropy
+        assert entropy(word) < 3.5
