@@ -149,3 +149,26 @@ without any API token. **Law: porting a working system to a new surface
 re-runs its whole incident history — before building, enumerate the new
 surface's own versions of every law already learned; before declaring an
 action blocked, enumerate every host AND CLI you can already reach.**
+
+## 29. The author is structurally blind — delegate audits are load-bearing (2026-09-02)
+Two fresh reviewers (GLM-5.3-max subagent; gpt-5.6-sol via codex) found 2
+Critical + 7 Major in a batch its author had already passed five times —
+including a token file sitting INSIDE the test sandbox and a counter that
+had never counted since deploy. Then the CEO's completeness check ("did you
+fix EVERY finding?") exposed SIX unfixed items behind the author's own
+"all fixed" — LEARNINGS #26 repeating on the author himself. **Law: every
+feature tranche ships with one fresh-context delegate audit BEFORE deploy
+(third-reviewer class; quorum: MiniMax-M3 + Sol + mimo-v2.5-pro); a
+completeness claim by the author is a hypothesis, checked line-by-line
+against the source list, never a report.**
+## 30. Prompts do not catch self-failing diffs — RUN them (2026-09-02)
+Both MiniMax-M3 and deepseek gave a planted, test-failing diff a clean
+review — TWICE EACH — including once with an explicit tests-are-the-spec
+prompt contract. The fix was structural, not rhetorical: verify_diff_tests
+executes the diff's own tests in the sandboxed worktree; a failing diff is
+a deterministic Critical that the gatekeeper cannot drop and the fix lane
+cannot auto-patch (it anchors at the TEST — test-weakening is one lane
+away). The planted-bug corpus (tests/test_planted_diffs.py) is the standing
+Q1 instrument: deterministic layer 100% by construction, model recall
+measured live. **Law: when a deterministic check is possible, prompt
+harder second — and the eval corpus grows from every production miss.**

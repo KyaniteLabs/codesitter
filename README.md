@@ -1,5 +1,7 @@
 # FL4WRITE (`fl4write`)
 
+**Day-1 state (2026-09-02):** 54 repos across GitHub + Forgejo (own bot identity on both); five review modes live (open-PR, post-merge, retro, ci_watch, omnisweep full-tree); fix lane working (first real fix: Epoch #199); verify-tests runs the diff's own tests deterministically; plus-ultra telemetry stream + Quality Loop (issue #5). 224 tests.
+
 *Official stylization (CEO, 2026-09-01): **FL4WRITE**. Identity surfaces unchanged by law: repo/package `fl4write`, env vars `CODESITTER_*`, markers `fl4write:v1:`, bot logins.*
 
 Self-hosted, multi-forge code review bot — the org's CodeRabbit replacement.

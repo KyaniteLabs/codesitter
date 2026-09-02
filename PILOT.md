@@ -54,6 +54,22 @@ resolution across the org AND user-account installations).
   tastecheck ×1, content-production-system ×1). An ALERT means: re-adopt on
   current main, then verify CONTENTS-ON-MAIN — never trust the merge event.
 
+## Session state (2026-09-02, PM-2 day 1 close)
+
+**Measurement mode.** Zero build debt (MECE six lanes + two delegate audits
+absorbed to zero, 224+3 tests). Live from the 06:00 UTC cycle: severity
+discipline (rubric x2 prompts + deterministic demotion + diff-anchored
+literal verification), gatekeeper demote-mode, verify-tests (runs the diff's
+own tests; deterministic Critical; never auto-patched), the un-deadened fix
+lane (first real fix: Epoch #199), plus-ultra telemetry (~/.fl4write/
+telemetry.jsonl — per-call tokens/latency/finish, gatekeeper decisions,
+fix outcomes; route stats + calibration snapshot per cycle line). Quality
+Loop = fl4write #5 (five CEO questions as falsifiable metrics, daily PM
+reports). Reviewer quorum: MiniMax-M3 + Sol(codex) + mimo-v2.5-pro.
+Watches: floor Qwen backend (lane re-downloading; fleet routes around it),
+first organic verify/fix firing, CEO 20-finding weekly adjudication sample.
+Issues-lane contract: ISSUES-BEHAVIOR.md.
+
 ## Pilot soak (clock restarted 2026-09-01)
 
 Day 1 of 14. Criteria before repo #32 or more autonomy: **14 incident-free
