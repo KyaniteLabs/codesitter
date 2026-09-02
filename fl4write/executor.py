@@ -199,7 +199,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         )
         from .analyzer import extract_json
 
-        parsed = extract_json(response)
+        parsed = extract_json(response, envelope_key="fixed_content")
         fixed = parsed.get("fixed_content")
     except Exception as exc:  # audit A6: network/HTTP/RuntimeError classes
         # crashed whole cycles through the narrow tuple — fail-open means

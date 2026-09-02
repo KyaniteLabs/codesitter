@@ -137,12 +137,21 @@ def _probe_adoption(config, forge_adapter=None) -> None:
             print(f"ALERT: config probe inconclusive for {config.repo} (probe failed — not an adoption-loss claim)")
             return
     else:
-        present = bool(
-            forge_adapter.path_exists(config.repo, ".fl4write.yaml")
-            or forge_adapter.path_exists(config.repo, ".codesitter.yaml")
-        )
+        results = [
+            forge_adapter.path_exists(config.repo, ".fl4write.yaml"),
+            forge_adapter.path_exists(config.repo, ".codesitter.yaml"),
+        ]
+        if any(r is True for r in results):
+            present = True
+        elif any(r is None for r in results):
+            # unqueryable is NOT absent (Sol audit + Critic residual): a
+            # forge outage must not fire false re-adopt alerts
+            print(f"ALERT: config probe inconclusive for {config.repo} (forge unqueryable — not an adoption-loss claim)")
+            return
+        else:
+            present = False
     if not present:
-        print(f"ALERT: adoption lost — no .fl4write.yaml or .codesitter.yaml on {config.repo} main (re-adopt)")
+        print(f"ALERT: adoption lost — no .fl4write.yaml or .codesitter.yaml on {config.repo} default branch (re-adopt)")
         logging.getLogger("fl4write.cli").warning("adoption probe negative for %s", config.repo)
 
 

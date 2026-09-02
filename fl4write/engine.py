@@ -270,7 +270,7 @@ def _fix_lane(
         # bot_identity REQUIRED (post-merge build): the merge gate re-verifies
         # authorship against it — a missing identity fails every merge closed.
         merged = executor.check_and_merge_own_prs(config, primary.bot_login)
-        report.fix_prs_merged += merged
+        report.fix_prs_merged += len(merged)  # Sol audit: was int += list
     except Exception as exc:  # merge scan must not kill the cycle
 
         log.warning("merge scan failed for %s: %s", config.repo, exc)

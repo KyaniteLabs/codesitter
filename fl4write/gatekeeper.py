@@ -91,7 +91,7 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
         )
         from .analyzer import extract_json
 
-        parsed = extract_json(response)
+        parsed = extract_json(response, envelope_key="keep")
         keep_set = _keep_set(parsed)
         if keep_set is None:
             raise ValueError(f"keep-list unusable: {str(parsed)[:120]}")

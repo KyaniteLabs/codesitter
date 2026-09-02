@@ -488,3 +488,48 @@ class TestVerifyDiffTests:
             assert _TEST_FILE_RE.search(good), good
         for bad in ("src/main.py", "README.md", "testing.md"):
             assert not _TEST_FILE_RE.search(bad), bad
+
+
+class TestSolAuditFixes:
+    def test_envelope_key_survives_fenced_and_broken_think(self):
+        """Sol reproduced three extract_json failures: fenced ```json with a
+        trailing-brace prose, unclosed <think>, uppercase <THINK>. Envelope-
+        key parsing must survive all three."""
+        from fl4write.analyzer import extract_json
+
+        fenced = '```json\n{"keep": []}\n``` prose {x}'
+        unclosed = '<think>{analysis}\n{"keep": []}'
+        upper = '<THINK>{analysis}</THINK>\n{"keep": []}'
+        for hostile in (fenced, unclosed, upper):
+            assert extract_json(hostile, envelope_key="keep") == {"keep": []}
+
+    def test_merge_counter_counts_not_concatenates(self):
+        """Sol: fix_prs_merged += list was a runtime TypeError swallowed by
+        the broad except — the merge scan never counted. Source-level pin
+        until the behavioral seam exists."""
+        import inspect
+
+        import fl4write.engine as eng
+
+        src = inspect.getsource(eng)
+        assert "fix_prs_merged += len(merged)" in src and "fix_prs_merged += merged\n" not in src
+
+    def test_probe_none_is_inconclusive_not_lost(self, capsys):
+        """Forgejo outage (path_exists None) must not fire adoption-lost."""
+        from fl4write.cli import _probe_adoption
+        from fl4write.config import RepoConfig
+
+        class DeadForge:
+            def path_exists(self, repo, path):
+                return None  # unqueryable
+
+        c = RepoConfig.model_validate({
+            "repo": "o/r",
+            "forges": {"forgejo": {"role": "primary", "api_base": "https://g.example/api/v1", "token_env": "FT"}},
+            "model": {"endpoint": "http://m/v1/chat/completions", "model": "t", "key_env": "MK"},
+            "review": {"secrets": "law"},
+            "severity_vocab": ["Critical", "Major", "Minor", "Nit"],
+        })
+        _probe_adoption(c, forge_adapter=DeadForge())
+        out = capsys.readouterr().out
+        assert "inconclusive" in out and "adoption lost" not in out

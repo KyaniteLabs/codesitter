@@ -115,7 +115,7 @@ class ModelUnavailable(RuntimeError):
     pass
 
 
-def extract_json(content: str) -> dict:
+def extract_json(content: str, envelope_key: str | None = None) -> dict:
     """Parse the model's JSON object out of a response that may carry a
     reasoning preamble (MiniMax-M3 emits <think>...</think> whose text can
     contain braces — the naive first-{ slice then spans garbage + JSON and
@@ -124,12 +124,22 @@ def extract_json(content: str) -> dict:
     import json as _json
     import re as _re
 
-    cleaned = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL).strip()
-    for candidate in (cleaned, content):  # stripped first; raw as fallback
+    cleaned = _re.sub(r"<think>(.*?)</think>", "", content, flags=_re.DOTALL | _re.IGNORECASE).strip()
+    candidates = [cleaned, content]
+    if envelope_key:
+        # envelope-aware: the LAST '{"key"' occurrence is the payload even
+        # when fenced ```json blocks, unclosed think tags, or prose braces
+        # precede it (Sol-audit reproduced failures; generic brace-slice died)
+        marker = '{"' + envelope_key + '"'
+        for c in (cleaned, content):
+            idx = c.rfind(marker)
+            if idx != -1:
+                candidates.insert(0, c[idx:])
+    for candidate in candidates:
         try:
             start, end = candidate.index("{"), candidate.rindex("}") + 1
             parsed = _json.loads(candidate[start:end])
-            if isinstance(parsed, dict):
+            if isinstance(parsed, dict) and (envelope_key is None or envelope_key in parsed):
                 return parsed
         except ValueError:
             continue
@@ -172,7 +182,7 @@ def analyze(
         raise ModelUnavailable(f"all model routes failed: {last_err}")
 
     try:
-        raw = extract_json(content)
+        raw = extract_json(content, envelope_key="findings")
     except ValueError as exc:
         raise ModelUnavailable(f"model output not parseable JSON: {str(exc)[:120]}") from exc
 
