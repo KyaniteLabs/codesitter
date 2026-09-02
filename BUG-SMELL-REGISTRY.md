@@ -29,3 +29,5 @@ no triage. Curated outcomes live in LEARNINGS.md.
 - 2026-09-02 acceptance>100% — recomputing from raw parts (resolved+reactions) ignored the capped signal: 1 finding + 2 reactions = 200%. Consume the capped aggregate
 - 2026-09-02 M3-think-preamble — <think> blocks carry braces; naive first-{ slice dies. Envelope-key raw_decode is the parser; pinned with fenced/unclosed/uppercase cases
 - 2026-09-02 flock-skip-is-correct — off-cycle runs holding the lock make the next cron skip silently (exit 0, no log): long cycles look like missing cycles. Not a bug; know the signature
+- 2026-09-02 ultraqa batch — contents API list-response crash (directory match → list, not dict); indentation error in the fix broke 28 tests; capability rules defined but NOT deployed (both Sol+M3 caught); _omni_readiness dead code (no caller); fixture time-rot round 4 → LEARNINGS #31-32
+- 2026-09-02 checkyourself-integration — sev/severity key mismatch between _omni_readiness and telemetry emit (M3); Counter import in hot path (M3 style); capability merge at config-load-time is the deployment fix

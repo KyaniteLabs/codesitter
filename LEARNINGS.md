@@ -172,3 +172,23 @@ away). The planted-bug corpus (tests/test_planted_diffs.py) is the standing
 Q1 instrument: deterministic layer 100% by construction, model recall
 measured live. **Law: when a deterministic check is possible, prompt
 harder second — and the eval corpus grows from every production miss.**
+
+## 31. Capability rules must be DEPLOYED, not just defined (2026-09-02)
+The CheckYourself integration defined 19 capability rules in capabilities.py
+but shipped without wiring them into config loading. The grounding gate
+(analyzer rule_id must exist in config.review) would have dropped every
+capability-citing finding. Both non-GLM auditors (Sol + M3) caught it
+independently — the author had written the rules, tested the scoring, and
+assumed deployment. **Law: a new rule/schema/feature must be verified LIVE
+against the production grounding/config path before the commit message says
+'ships' — definition without deployment is a dead knob (LEARNINGS #25d
+reborn).**
+## 32. The fix-pass needs the same verification bar as the bug it fixes (2026-09-02)
+An indentation error in the list-response guard broke 28 tests. The guard
+was correct logic at wrong indentation — Python's syntax caught it, but
+only because the test suite imports executor.py at collection time.
+Without the suite, the fix would have shipped broken and taken down the
+ci_watch lane on the next cycle. **Corollary to LEARNINGS #25: a fix's
+test run IS the verification — but only if the test suite exercises the
+fixed path. The ultraqa gauntlet caught this because baseline
+verification (step 2) runs the suite FIRST.**

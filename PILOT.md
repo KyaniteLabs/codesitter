@@ -54,6 +54,14 @@ resolution across the org AND user-account installations).
   tastecheck ×1, content-production-system ×1). An ALERT means: re-adopt on
   current main, then verify CONTENTS-ON-MAIN — never trust the merge event.
 
+## Session state (2026-09-02, PM-2 day 2)
+
+**CheckYourself integrated.** 19 capability-based review rules (auth, data,
+secrets, API, testing, CI/CD, observability, performance, security, privacy)
+merge into every config at load time. Readiness score (0-100, CheckYourself
+caps) on omnisweep issues. Finding-level severity in telemetry. The analyzer
+demands capability-grounded findings.
+
 ## Session state (2026-09-02, PM-2 day 1 close)
 
 **Measurement mode.** Zero build debt (MECE six lanes + two delegate audits
