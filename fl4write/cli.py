@@ -215,6 +215,13 @@ def main() -> int:
     # the old gh-only probe 404'd every cycle on Forgejo-primary repos and
     # fired false "adoption lost" alerts, live-observed on the 23:00 cycle.
     _probe_adoption(config, native if "api.github.com" not in primary_binding.api_base else None)
+    from . import telemetry as _tel
+    _cal = _tel.calibration_snapshot()
+    if _cal:
+        print(f"calibration: {_cal}")
+    for model, st in _tel.route_stats().items():
+        print(f"route {model}: {st['ok']}/{st['calls']} ok, parse_fail={st['parse_fail']}, "
+              f"lat={st['latency_s']:.0f}s, tok_in={st['prompt_tokens']}, tok_out={st['completion_tokens']}")
     for a in report.alerts:
         print(f"ALERT: {a}")
     print(

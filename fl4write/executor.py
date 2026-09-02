@@ -172,6 +172,9 @@ def _run_tests(cwd: Path, config: RepoConfig) -> bool:
 def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[str, Any]:
     """One fix attempt: rails → fetch file at PR head → model patch →
     worktree at PR head → sandboxed tests → PR. Returns a result dict."""
+    from . import telemetry as _tel
+
+    _t0 = __import__("time").time()
     blocked_reason = fix_allowed(pr, config, 0)
     if blocked_reason:
         return {"status": "blocked", "reason": blocked_reason,
@@ -278,6 +281,8 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
                 f"Proposal: {finding.proposal}\n\nTests pass. Review and merge."
             ),
         })
+        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path,
+                  status="pr_opened", latency_s=round(__import__("time").time() - _t0, 1))
         return {"status": "pr_opened", "pr_number": new_pr["number"],
                 "pr_url": new_pr["html_url"], "branch": branch}
     except Exception as exc:  # contained into a result dict
@@ -318,18 +323,29 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
             cmd = os.environ.get("CODESITTER_TEST_CMD", "python3 -m pytest tests/ -x -q --tb=line")
         env = _push_token_env(workdir, token)
         _drop_askpass(env)  # tests never see the helper (A1)
+        import time as _time
+        _t0 = _time.time()
         result = _run(cmd.split(), cwd=workdir, timeout=300, env=env)
+        from . import telemetry as _tel
+        _tel.emit("verify_tests", repo=pr.repo, head=pr.head_sha[:10], cmd=cmd,
+                  files=test_files, ok=result.returncode == 0,
+                  latency_s=round(_time.time() - _t0, 1))
         if result.returncode == 0:
             return None
         tail = (result.stdout + "\n" + result.stderr).strip().splitlines()
+        # Sol-B2: the verifier records the EXACT evidence it ran — command,
+        # files, head SHA — so the claim is auditable, not asserted
         return _Finding(
             rule_id="tests",
             severity="Critical",
             path=test_files[0] if test_files else "tests",
             line=1,
             category="CI",
-            message="The diff's own tests FAIL against this code (sandbox run): "
-                    + " | ".join(tail[-3:])[:300],
+            message=(
+                f"The diff's own tests FAIL (verified: cmd={cmd!r}; "
+                f"files={test_files!r}; head={pr.head_sha[:10]}): "
+                + " | ".join(tail[-3:])[:240]
+            ),
         )
     except Exception as exc:  # noqa: BLE001 — infrastructure trouble is never a finding
         log.warning("verify_diff_tests infra failure for %s#%s: %s", pr.repo, pr.number, exc)

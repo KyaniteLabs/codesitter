@@ -34,12 +34,14 @@ log = logging.getLogger("fl4write.gatekeeper")
 
 _GATEKEEPER_SYSTEM = (
     "You are a staff engineer reviewing a code reviewer's findings before they "
-    "are posted to a PR. Your job is to KILL findings that will be ignored. "
-    'Reply ONLY with JSON: {"keep": [{"path": str, "line": int, "reason": str}]} '
-    "— only the findings worth a developer's attention. Kill nits, style "
-    "comments, anything a senior dev would dismiss. Keep only findings that "
-    "would block a merge or cause a production incident. The keep entries must "
-    "copy path and line EXACTLY as given."
+    "are posted to a PR. Your job is to KILL findings that will be ignored and "
+    "DEMOTE findings that are real but over-ranked. "
+    'Reply ONLY with JSON: {"keep": [{"path": str, "line": int, "reason": str}], '
+    '"demote": [{"path": str, "line": int, "severity": str, "reason": str}]} '
+    "— keep ONLY findings worth a developer's attention (kill nits, style "
+    "comments, anything a senior dev would dismiss). demote entries may ONLY "
+    "lower a severity (never raise); use the provided severity vocabulary. "
+    "Both lists copy path and line EXACTLY as given."
 )
 
 
@@ -58,6 +60,24 @@ def _keep_set(parsed: object) -> set[tuple[str, int]] | None:
             out.add((str(k.get("path", "")).strip(), int(k.get("line"))))
         except (TypeError, ValueError):
             continue
+    return out
+
+
+def _demotions(parsed: dict, severity_vocab: list[str]) -> dict[tuple[str, int], str]:
+    """Valid {(path, line): lower_severity} — demotion may only LOWER, and the
+    target must be in the vocab; anything else is discarded (never trusted)."""
+    out: dict[tuple[str, int], str] = {}
+    for d in parsed.get("demote") or []:
+        if not isinstance(d, dict):
+            continue
+        try:
+            key = (str(d.get("path", "")).strip(), int(d.get("line")))
+        except (TypeError, ValueError):
+            continue
+        target = str(d.get("severity", ""))
+        if target not in severity_vocab:
+            continue
+        out[key] = target
     return out
 
 
@@ -100,6 +120,18 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
             # "Model says drop ALL" and "model returned garbage" are
             # indistinguishable — refuse the destructive read, fail open.
             raise ValueError("keep-list matched zero findings; refusing drop-all as parse failure")
+        # L2: demotions apply ONLY to kept findings and only DOWNWARD
+        demote = _demotions(parsed, config.severity_vocab)
+        demoted_ids = []
+        for f in kept:
+            target = demote.get((f.path, f.line))
+            if target and config.severity_vocab.index(target) > config.severity_vocab.index(f.severity):
+                log.info("gatekeeper demoted %s:%s %s->%s", f.path, f.line, f.severity, target)
+                demoted_ids.append(f"{f.path}:{f.line} {f.severity}->{target}")
+                f.severity = target
+        from . import telemetry as _tel
+        _tel.emit("gatekeeper", repo=config.repo, kept=len(kept),
+                  dropped=len(findings) - len(kept), demoted=demoted_ids)
         for f in findings:
             if (f.path, f.line) not in keep_set:
                 log.info("gatekeeper dropped: %s:%s (%s) %s", f.path, f.line, f.rule_id, f.message[:60])
