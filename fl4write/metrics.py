@@ -55,12 +55,28 @@ def comment_signals(forge: ForgeAdapter, repo: str, pr_number: int) -> dict[str,
 
 
 def acceptance_snapshot(forge: ForgeAdapter, config: RepoConfig) -> dict[str, Any]:
-    """Repo-level acceptance across open PRs. Best-effort: never raises."""
+    """Repo-level acceptance across open AND recently-merged PRs (L6: this
+    org's PRs merge in ~60s — an open-only denominator was structurally n/a;
+    the post-merge/retro findings live on MERGED PRs). Best-effort: never
+    raises."""
     total = addressed = 0
+    prs: list = []
     try:
-        prs = forge.list_open_prs(config.repo)
+        prs = list(forge.list_open_prs(config.repo))
     except ForgeError as exc:
-        log.warning("acceptance snapshot skipped (%s): %s", config.repo, exc)
+        log.warning("acceptance open-list skipped (%s): %s", config.repo, exc)
+    if hasattr(forge, "list_merged_prs"):
+        try:
+            from datetime import datetime, timedelta, timezone
+
+            since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+            prs += [
+                p for p in forge.list_merged_prs(config.repo, since)
+                if all(not (p.number == q.number) for q in prs)
+            ]
+        except (ForgeError, NotImplementedError):
+            pass  # merged sampling is additive, never load-bearing
+    if not prs:
         return {"total": 0, "addressed": 0, "rate": "n/a"}
     for pr in prs:
         try:

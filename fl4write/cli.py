@@ -224,7 +224,14 @@ def main() -> int:
               f"lat={st['latency_s']:.0f}s, tok_in={st['prompt_tokens']}, tok_out={st['completion_tokens']}")
     for a in report.alerts:
         print(f"ALERT: {a}")
-    print(
+    print(format_cycle_line(report, config))
+    return 0
+
+
+def format_cycle_line(report, config) -> str:
+    """The per-repo cycle line, extracted for BEHAVIORAL testing (the Critic's
+    residual: source-inspection is a tripwire, not a test). Pure: no prints."""
+    return (
         f"fl4write cycle: repo={report.repo} scanned={report.scanned} "
         f"reviewed={report.reviewed} shadow={config.shadow} "
         f"postmerge={report.postmerge_reviewed} "

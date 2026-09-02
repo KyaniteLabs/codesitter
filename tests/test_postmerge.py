@@ -259,7 +259,9 @@ class TestPostMergeSweep:
 
         forge.list_merged_prs = spy
         r = _run(tmp_path, forge, monkeypatch, post_merge={"enabled": False})
-        assert listed == [] and r.postmerge_reviewed == 0 and forge.posts == []
+        # the sweep never reviews/posts; a listing call may still come from the
+        # acceptance metric (L6 samples merged PRs) — that is a different lane
+        assert r.postmerge_reviewed == 0 and forge.posts == []
 
     def test_initial_lookback_bounds_catch_up(self, tmp_path, monkeypatch):
         """First cycle: watermark unset — the catch-up window is bounded by

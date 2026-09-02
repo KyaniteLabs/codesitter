@@ -28,6 +28,9 @@ def fix_allowed(pr: PullRequest, config: RepoConfig, depth_used: int) -> str | N
     """Return None if a fix may proceed, else the blocking reason (posted as
     an escalation comment — never silently skipped)."""
     if pr.is_fork:
+        # fork_policy knob is comment-only by schema AND by code rail — the
+        # knob exists so the policy is VISIBLE in config; the rail is here.
+        assert config.fix.fork_policy == "comment-only"
         return "fork PR — comment-only by code rail"
     if pr.is_bot_author:
         return "bot-authored (dependency) PR — read-only artifact by policy"

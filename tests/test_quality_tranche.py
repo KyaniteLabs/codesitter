@@ -275,15 +275,28 @@ class TestForgeAwareSurveillance:
 
 class TestTelemetryAssertions:
     def test_cycle_line_carries_quality_counters(self):
-        """The gate demanded assertions, not existence checks: gate_fail /
-        fix_attempts / fix_fail are IN the printed cycle line."""
-        import inspect
+        """BEHAVIORAL (the Critic's residual closed): the formatted line
+        carries every quality counter, tested against a real CycleReport —
+        not by source inspection."""
+        from fl4write.cli import format_cycle_line
+        from fl4write.engine import CycleReport
 
-        import fl4write.cli as cli
-
-        src = inspect.getsource(cli.main)
-        for field in ("gate_fail=", "fix_attempts=", "fix_fail=", "mirror_degraded="):
-            assert field in src, f"cycle line lost {field}"
+        r = CycleReport(repo="o/r")
+        r.gatekeeper_failed = 2
+        r.fix_attempts = 3
+        r.fix_failures = 1
+        r.mirror_degraded = 1
+        r.postmerge_reviewed = 4
+        r.retro_reviewed = 2
+        r.omni_scanned = 5
+        r.omni_findings = 7
+        r.ci_red_heads = 1
+        line = format_cycle_line(r, make_config())
+        for expected in (
+            "gate_fail=2", "fix_attempts=3", "fix_fail=1", "mirror_degraded=1",
+            "postmerge=4", "retro=2", "omni=5/7f", "ci_red=1", "repo=o/r",
+        ):
+            assert expected in line, f"cycle line lost {expected}"
 
     def test_omni_findings_carry_via(self, tmp_path, monkeypatch):
         from fl4write import state
