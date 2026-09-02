@@ -186,13 +186,20 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             config.model, prompt,
             system=PATCH_SYSTEM + "\n\n" + SYSTEM_PROMPT_ADDENDUM,
         )
-        parsed = json.loads(response[response.index("{") : response.rindex("}") + 1])
+        from .analyzer import extract_json
+
+        parsed = extract_json(response)
         fixed = parsed.get("fixed_content")
     except (ModelUnavailable, ValueError, json.JSONDecodeError) as exc:
         return {"status": "error", "reason": f"model unavailable: {exc}"}
 
     if fixed is None or not isinstance(fixed, str):
         return {"status": "nofix", "reason": "model returned no fix"}
+    if fixed.strip() == content.strip():
+        # Live-caught (first real attempt, 2026-09-02): a no-op patch flowed
+        # through worktree→commit→push→PR and died as an opaque 422. A patch
+        # identical to the original is a nofix, caught BEFORE any writes.
+        return {"status": "nofix", "reason": "model patch identical to original (no-op)"}
 
     token = os.environ.get("CODESITTER_GITHUB_TOKEN", "")
     workdir = Path(tempfile.mkdtemp(prefix="fl4write-fix-"))
@@ -223,12 +230,16 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             return {"status": "testfail", "reason": "tests failed with fix applied"}
 
         _run(["git", "add", "--", finding.path], cwd=workdir)
-        _run(
+        commit = _run(
             ["git", "commit", "-q", "-m",
              f"fix({finding.rule_id}): {finding.message[:60]}\n\n"
              "Co-authored-by: fl4write <fl4write@kyanitelabs.tech>"],
             cwd=workdir, env=_sandbox_env(),
         )
+        if commit.returncode != 0:
+            # an empty commit (no staged change) must not ride silently to a
+            # doomed PR — live-caught as the opaque 422 class
+            return {"status": "nofix", "reason": f"nothing to commit: {commit.stderr[-80:]}"}
         branch = f"fl4write/fix-{pr.number}-{finding.rule_id[:20]}"
         _run(["git", "branch", "-M", branch], cwd=workdir)
         push = _run(

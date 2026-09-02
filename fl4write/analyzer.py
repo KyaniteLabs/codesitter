@@ -112,6 +112,27 @@ class ModelUnavailable(RuntimeError):
     pass
 
 
+def extract_json(content: str) -> dict:
+    """Parse the model's JSON object out of a response that may carry a
+    reasoning preamble (MiniMax-M3 emits <think>...</think> whose text can
+    contain braces — the naive first-{ slice then spans garbage + JSON and
+    dies; live-caught on the CEO's standing route, 2026-09-02). Strip think
+    blocks first, then brace-slice; raise ValueError when unparseable."""
+    import json as _json
+    import re as _re
+
+    cleaned = _re.sub(r"<think>.*?</think>", "", content, flags=_re.DOTALL).strip()
+    for candidate in (cleaned, content):  # stripped first; raw as fallback
+        try:
+            start, end = candidate.index("{"), candidate.rindex("}") + 1
+            parsed = _json.loads(candidate[start:end])
+            if isinstance(parsed, dict):
+                return parsed
+        except ValueError:
+            continue
+    raise ValueError(f"no parseable JSON object (head: {cleaned[:60]!r})")
+
+
 def _path_ignored(path: str, config: RepoConfig) -> bool:
     patterns = (config.path_filters or {}).get("ignore", [])
     return any(fnmatch.fnmatch(path, pat) for pat in patterns)
@@ -148,9 +169,8 @@ def analyze(
         raise ModelUnavailable(f"all model routes failed: {last_err}")
 
     try:
-        start, end = content.index("{"), content.rindex("}")
-        raw = json.loads(content[start : end + 1])
-    except (ValueError, json.JSONDecodeError) as exc:
+        raw = extract_json(content)
+    except ValueError as exc:
         raise ModelUnavailable(f"model output not parseable JSON: {str(exc)[:120]}") from exc
 
     items = raw.get("findings")

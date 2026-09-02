@@ -24,7 +24,6 @@ Audit 2026-09-01 hardening:
 
 from __future__ import annotations
 
-import json
 import logging
 
 from .analyzer import _call_model
@@ -90,7 +89,9 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
             config.model, prompt,
             system=_GATEKEEPER_SYSTEM + "\n\n" + SYSTEM_PROMPT_ADDENDUM,
         )
-        parsed = json.loads(response[response.index("{") : response.rindex("}") + 1])
+        from .analyzer import extract_json
+
+        parsed = extract_json(response)
         keep_set = _keep_set(parsed)
         if keep_set is None:
             raise ValueError(f"keep-list unusable: {str(parsed)[:120]}")

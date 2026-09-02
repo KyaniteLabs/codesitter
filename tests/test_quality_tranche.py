@@ -394,3 +394,47 @@ class TestOmniFixStale:
         assert r.fix_attempts == 0
         st2 = state.load_state(sp)
         assert st2["omni_findings"][0].get("fix_stale") is True  # unchanged, not re-gated
+
+
+class TestNoOpPatchGuard:
+    def test_identical_patch_is_nofix_before_any_writes(self, monkeypatch, tmp_path):
+        """Live-caught on the first real fix attempt: a model patch identical
+        to the original walked worktree→commit→push→PR and died as an opaque
+        422 with an empty branch left behind. Identical = nofix, pre-writes."""
+        from fl4write import executor
+
+        monkeypatch.setattr(executor, "_get_file_content", lambda r, p, ref: "original")
+        monkeypatch.setattr(
+            executor, "_call_model",
+            lambda route, prompt, mode="pr", system=None, **kw: '{"fixed_content": "original"}')
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        f = Finding(rule_id="secrets", severity="Critical", path="x.py", line=1, message="m")
+        c = make_config(fix={"enabled": True, "merge_own_prs": False})
+        result = executor.attempt_fix(pr, f, c)
+        assert result["status"] == "nofix" and "no-op" in result["reason"]
+
+        def must_not_touch(wd, p, content):
+            raise AssertionError("no-op patch must never reach the worktree")
+
+        monkeypatch.setattr(executor, "_write_contained", must_not_touch)
+
+
+class TestThinkPreambleParsing:
+    def test_m3_think_block_with_braces_parses(self):
+        """The CEO's standing route (MiniMax-M3) emits <think>...</think> that
+        can contain braces; the naive first-{ slice died on it (live-caught).
+        The extractor must survive think-with-braces AND raw JSON."""
+        from fl4write.analyzer import extract_json
+
+        hostile = (
+            "<think>the function looks like {broken: 'code'} so the fix is {a: 1}"
+            "</think>\n{\"findings\": [{\"rule_id\": \"secrets\", \"severity\": \"Major\", "
+            "\"path\": \"x.py\", \"line\": 1, \"category\": \"c\", \"message\": \"m\"}]}"
+        )
+        parsed = extract_json(hostile)
+        assert parsed["findings"][0]["rule_id"] == "secrets"
+        assert extract_json('{"keep": []}') == {"keep": []}
+        import pytest as _pytest
+
+        with _pytest.raises(ValueError):
+            extract_json("no json here at all")
