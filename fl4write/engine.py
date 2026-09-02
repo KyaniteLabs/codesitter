@@ -111,6 +111,7 @@ def _review_pr(
     report: CycleReport,
     run_fixes: bool,
     post_merge: bool = False,
+    deadline: float | None = None,
 ) -> str:
     """Review one PR. Contained: any failure logs and returns — the cycle and
     its state survive. Returns the outcome: terminal outcomes ("reviewed",
@@ -130,8 +131,15 @@ def _review_pr(
     findings: list = []
 
     # Deterministic spec check first: run the diff's own tests (sandboxed).
+    # Rails (audit A2): NEVER on fork PRs (hostile by org law); GitHub-only
+    # (the fetch is github.com — on Forgejo it silently died per-cycle).
+    # Budget (audit A7): verify can cost ~500s worst case — reserve it or skip.
     test_like = sorted(p for p in diff_files if _TEST_FILE_RE.search(p))
-    if test_like and config.verify_tests and not config.shadow:
+    if (
+        test_like and config.verify_tests and not config.shadow
+        and not pr.is_fork and primary.name == "github"
+        and (deadline is None or (deadline - time.monotonic()) > REVIEW_BUDGET_S + 500)
+    ):
         from . import executor as _ex
 
         failing = _ex.verify_diff_tests(pr, config, test_like)
@@ -140,6 +148,8 @@ def _review_pr(
             report.alerts.append(
                 f"#{pr.number}: diff's own tests FAIL at head — deterministic Critical filed"
             )
+        elif deadline is not None:
+            pass  # budget consumed; the deadline gate below re-checks anyway
 
     try:
         doc = analyze(pr, diff_files, diff_text, config)
@@ -158,12 +168,15 @@ def _review_pr(
         return "model-unavailable"
     st.get("model_failures", {}).pop(f"{pr.number}:{pr.head_sha[:10]}", None)
 
-    findings = findings + doc.findings
+    deterministic = [f for f in findings if f.category == "CI"]
+    findings = [f for f in findings if f.category != "CI"] + doc.findings
     if findings and config.gatekeeper:
         findings, dropped, failed_open = gatekeeper.filter_findings(findings, config)
         report.gatekeeper_dropped += dropped
         if failed_open:
             report.gatekeeper_failed += 1
+    # the deterministic verify finding is NEVER gatekeeper-droppable (A4)
+    findings = deterministic + findings
 
     rh = f"{pr.head_sha[:12]}{len(findings):04x}"
     previous: list[Finding] = []
@@ -189,18 +202,28 @@ def _review_pr(
     report.reviewed += 1
 
     if run_fixes and config.fix.enabled and not config.shadow:
+        if any(f.category == "CI" for f in findings):
+            # audit A5: a verify Critical anchors at the TEST file — the fix
+            # lane patching it is structurally test-weakening. Human surface.
+            findings_for_fix = [f for f in findings if f.category != "CI"]
+            report.alerts.append(
+                f"#{pr.number}: failing-diff Critical posted for HUMAN action — "
+                "the fix lane will not patch test files"
+            )
+        else:
+            findings_for_fix = findings
         if primary.name != "github":
             # Comorbidity pass catch: the executor's PR/merge path is
             # GitHub-hardcoded — attempting anyway burns a model call then
             # dies as a contained error every cycle (silent feature death).
             # Fail LOUD as an escalation instead.
             blocked = "fix lane is GitHub-only in v1 — Forgejo repos are review/comment-only"
-            for f in findings:
+            for f in findings_for_fix:
                 if f.severity in ("Critical", "Major"):
                     primary.create_comment(config.repo, pr.number, fixlane.escalate(pr, [f], blocked))
                     report.fix_escalations += 1
         else:
-            _fix_lane(pr, findings, config, primary, st, report)
+            _fix_lane(pr, findings_for_fix, config, primary, st, report)
 
     return "shadow" if config.shadow else "reviewed"
 
@@ -319,7 +342,7 @@ def _post_merge_sweep(
         try:
             outcome = _review_pr(
                 pr, config, primary, get_diff, shadow_sink, st, report, run_fixes,
-                post_merge=True,
+                post_merge=True, deadline=deadline,
             )
         except ForgeError as exc:
             report.alerts.append(f"#{pr.number}: forge error contained: {exc}")
@@ -923,7 +946,8 @@ def run_cycle(
                 if not state.needs_review(st, pr.number, pr.head_sha):
                     continue
                 try:
-                    _review_pr(pr, config, primary, get_diff, shadow_sink, st, report, run_fixes)
+                    _review_pr(pr, config, primary, get_diff, shadow_sink, st, report, run_fixes,
+                               deadline=deadline)
                 except ForgeError as exc:
                     # Per-PR containment (audit C7): a throttled/broken call
                     # must not abort the cycle or lose already-reviewed state.

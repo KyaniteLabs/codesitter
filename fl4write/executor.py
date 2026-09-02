@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from . import scrub
-from .analyzer import ModelUnavailable, _call_model
+from .analyzer import _call_model
 from .config import RepoConfig
 from .fixlane import FixLaneBlocked, dependency_depth, escalate, fix_allowed, merge_own_pr
 from .models import Finding, PullRequest
@@ -137,16 +137,27 @@ def _write_contained(workdir: Path, rel_path: str, content: str) -> str | None:
 
 
 def _push_token_env(workdir: Path, token: str) -> dict[str, str]:
-    """Env for git push that keeps the token OUT of argv (GIT_ASKPASS helper,
-    0600, removed by the caller's workdir cleanup)."""
-    helper = workdir / ".git" / "fl4write-askpass.sh"
-    helper.parent.mkdir(parents=True, exist_ok=True)
+    """Env for authenticated git that keeps the token OUT of argv AND out of
+    the workdir (audit A1, live-critical: the helper used to live at
+    workdir/.git/fl4write-askpass.sh where the diff's own tests run — one
+    Path read exfiltrated the installation token). It now lives in a sibling
+    temp dir; callers MUST call _drop_askpass() before running any tests."""
+    askpass_dir = Path(tempfile.mkdtemp(prefix="fl4write-askpass-"))
+    helper = askpass_dir / "askpass.sh"
     helper.write_text(f"#!/bin/sh\necho '{token}'\n")
     helper.chmod(stat.S_IRUSR | stat.S_IXUSR)
     env = _sandbox_env()
     env["GIT_ASKPASS"] = str(helper)
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env["_FL4WRITE_ASKPASS_DIR"] = str(askpass_dir)
     return env
+
+
+def _drop_askpass(env: dict[str, str]) -> None:
+    """Remove the token-bearing helper; call before untrusted code runs."""
+    d = env.pop("_FL4WRITE_ASKPASS_DIR", None)
+    if d:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def _run_tests(cwd: Path, config: RepoConfig) -> bool:
@@ -190,8 +201,10 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
 
         parsed = extract_json(response)
         fixed = parsed.get("fixed_content")
-    except (ModelUnavailable, ValueError, json.JSONDecodeError) as exc:
-        return {"status": "error", "reason": f"model unavailable: {exc}"}
+    except Exception as exc:  # audit A6: network/HTTP/RuntimeError classes
+        # crashed whole cycles through the narrow tuple — fail-open means
+        # except Exception or it isn't (LEARNINGS #25c)
+        return {"status": "error", "reason": f"model unavailable: {str(exc)[:120]}"}
 
     if fixed is None or not isinstance(fixed, str):
         return {"status": "nofix", "reason": "model returned no fix"}
@@ -214,6 +227,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             ["git", "fetch", "-q", "--depth", "1", fetch_url, pr.head_sha],
             cwd=workdir, timeout=180, env=pull_env,
         )
+        _drop_askpass(pull_env)  # token helper gone before any code checkout
         if fetch.returncode != 0:
             return {"status": "error", "reason": f"fetch of PR head failed: {fetch.stderr[-100:]}"}
         if _run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], cwd=workdir).returncode != 0:
@@ -237,15 +251,19 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             cwd=workdir, env=_sandbox_env(),
         )
         if commit.returncode != 0:
-            # an empty commit (no staged change) must not ride silently to a
-            # doomed PR — live-caught as the opaque 422 class
-            return {"status": "nofix", "reason": f"nothing to commit: {commit.stderr[-80:]}"}
+            # empty commit vs environmental failure must be told apart (A8):
+            # nofix would misroute ops triage and the ci-watch break heuristic
+            if "nothing to commit" in (commit.stderr or ""):
+                return {"status": "nofix", "reason": "nothing to commit (patch was a no-op)"}
+            return {"status": "error", "reason": f"git commit failed: {commit.stderr[-80:]}"}
         branch = f"fl4write/fix-{pr.number}-{finding.rule_id[:20]}"
         _run(["git", "branch", "-M", branch], cwd=workdir)
+        push_env = _push_token_env(workdir, token)
         push = _run(
             ["git", "push", "-q", fetch_url, f"HEAD:refs/heads/{branch}"],
-            cwd=workdir, timeout=120, env=pull_env,
+            cwd=workdir, timeout=120, env=push_env,
         )
+        _drop_askpass(push_env)
         if push.returncode != 0:
             return {"status": "error", "reason": f"push failed: {push.stderr[-100:]}"}
 
@@ -290,8 +308,17 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
             return None
         if _run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], cwd=workdir).returncode != 0:
             return None
-        cmd = os.environ.get("CODESITTER_TEST_CMD", "python3 -m pytest tests/ -x -q --tb=line")
-        result = _run(cmd.split(), cwd=workdir, timeout=300, env=_sandbox_env())
+        # ONLY the diff's own test files — the whole-suite default would
+        # attribute MAIN's pre-existing red to this diff (audit A3: a
+        # false-Critical machine wearing the word 'deterministic').
+        py_tests = [f for f in test_files if f.endswith(".py")]
+        if py_tests:
+            cmd = f"python3 -m pytest {' '.join(py_tests)} -q --tb=line"
+        else:
+            cmd = os.environ.get("CODESITTER_TEST_CMD", "python3 -m pytest tests/ -x -q --tb=line")
+        env = _push_token_env(workdir, token)
+        _drop_askpass(env)  # tests never see the helper (A1)
+        result = _run(cmd.split(), cwd=workdir, timeout=300, env=env)
         if result.returncode == 0:
             return None
         tail = (result.stdout + "\n" + result.stderr).strip().splitlines()

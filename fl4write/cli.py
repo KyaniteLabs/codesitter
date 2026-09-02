@@ -115,18 +115,27 @@ def _probe_adoption(config, forge_adapter=None) -> None:
 
     if forge_adapter is None:
         present = False
+        inconclusive = False
         for name in (".fl4write.yaml", ".codesitter.yaml"):
             try:
                 probe = subprocess.run(
                     ["gh", "api", f"repos/{config.repo}/contents/{name}", "--jq", ".name"],
                     capture_output=True, text=True, timeout=30,
                 )
-            except subprocess.TimeoutExpired:
-                print(f"ALERT: config probe timed out for {config.repo} (inconclusive — not an adoption-loss claim)")
-                return
+            except (subprocess.TimeoutExpired, OSError):
+                # a failed probe is NOT an adoption loss (audit A9: rate-limit
+                # 401/403 used to fire false re-adopt alerts)
+                inconclusive = True
+                break
             if probe.returncode == 0:
                 present = True
                 break
+            if "404" not in (probe.stderr or ""):
+                inconclusive = True
+                break
+        if inconclusive:
+            print(f"ALERT: config probe inconclusive for {config.repo} (probe failed — not an adoption-loss claim)")
+            return
     else:
         present = bool(
             forge_adapter.path_exists(config.repo, ".fl4write.yaml")
@@ -146,15 +155,16 @@ def main() -> int:
     live = "--live" in sys.argv
     run_fixes = "--fixes" in sys.argv
     run_issues = "--issues" in sys.argv
+    config = load_config(sys.argv[1])
     if "--omni" in sys.argv:
         # One-shot prelaunch kick: a NORMAL run_cycle (CycleLock, deadline,
         # one-state-owner all preserved) with the per-cycle file cap raised —
         # repeated capped cycles under the same lock, never a side door.
-        config = load_config(sys.argv[1])
+        # (audit A10: this used to reload the config right after, discarding
+        # the override — the flag was dead.)
         config = config.model_copy(update={
             "omnisweep": config.omnisweep.model_copy(update={"enabled": True, "max_files_per_cycle": 50}),
         })
-    config = load_config(sys.argv[1])
     if live:
         config = config.model_copy(update={"shadow": False})
     # Diff getter is FORGE-AWARE: GitHub-primary keeps the gh-CLI path;

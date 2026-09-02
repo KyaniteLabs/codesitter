@@ -263,7 +263,9 @@ class TestForgeAwareSurveillance:
 
         def fake_run(cmd, capture_output=True, text=True, timeout=30):
             calls.append(cmd[2])
-            return type("R", (), {"returncode": 0 if ".codesitter.yaml" in cmd[2] else 1})()
+            ok = ".codesitter.yaml" in cmd[2]
+            return type("R", (), {"returncode": 0 if ok else 1,
+                                  "stderr": "" if ok else '... HTTP 404: Not Found ...'})()
 
         monkeypatch.setattr(cli_mod.subprocess, "run", fake_run)
         cli_mod._probe_adoption(self._github_cfg(), forge_adapter=None)
