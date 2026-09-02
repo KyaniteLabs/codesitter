@@ -346,6 +346,81 @@ class TestTelemetryAssertions:
 
 
 class TestOmniFixStale:
+    def test_live_marking_marks_stale_and_short_circuits(self, tmp_path, monkeypatch):
+        """GLM audit: the old test SEEDED fix_stale — circular, blind to
+        deletion of the marking code. This drives the LIVE path: a finding
+        whose file is gone from HEAD gets fix_stale written by the engine."""
+        from fl4write import state
+        from fl4write.engine import run_cycle as rc
+
+        class StaleForge(ForgeAdapter):
+            name = "github"
+
+            def __init__(self):
+                super().__init__(cfg.ForgeBinding(role="primary", api_base="https://api.github.com", token_env="GHT"))
+                self.tree = [("gone.py", 10)]
+                self.attempts = 0
+
+            def list_open_prs(self, repo):
+                return []
+
+            def list_merged_prs(self, repo, since_iso):
+                return []
+
+            def get_persistent_comment(self, repo, number):
+                return None
+
+            def create_comment(self, repo, number, body):
+                return 1
+
+            def update_comment(self, repo, number, cid, body):
+                pass
+
+            def head_check_runs(self, repo):
+                return ("dead" + "beef" * 9, [])
+
+            def list_tree_files(self, repo):
+                return [(p, s) for p, s in self.tree], False
+
+            def get_file(self, repo, path, ref):
+                return "x=1" if path == "gone.py" else None
+
+            def open_issue(self, repo, title, body):
+                return 1
+
+            def update_issue(self, repo, number, body):
+                return True
+
+            def path_exists(self, repo, path):
+                return False  # the file vanished from HEAD AFTER the scan
+
+            def attempt_fix(self, pr, f, config):
+                self.attempts += 1
+                return {"status": "pr_opened"}
+
+        from fl4write.models import ReviewDoc
+
+        c = make_config(
+            omnisweep={"enabled": True, "fix": True, "fix_min_severity": "Major", "max_files_per_cycle": 5},
+            fix={"enabled": True, "merge_own_prs": False},
+        )
+        forge = StaleForge()
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+
+        def fake_analyze(pr, files, text, config, mode="pr"):
+            return ReviewDoc(pr=pr, findings=[Finding(
+                rule_id="secrets", severity="Major", path="gone.py", line=1, message="m")])
+
+        monkeypatch.setattr("fl4write.analyzer.analyze", fake_analyze)
+        import fl4write.executor as ex
+        monkeypatch.setattr(ex, "attempt_fix", forge.attempt_fix)
+        sp = tmp_path / "s.json"
+        rc(c, sp, get_diff=lambda pr: (set(), ""))  # cycle 1: scan completes
+        rc(c, sp, get_diff=lambda pr: (set(), ""))  # cycle 2: fix phase runs
+        st = state.load_state(sp)
+        assert st["omni_findings"][0].get("fix_stale") is True  # LIVE-marked
+        assert forge.attempts == 0  # never attempted — gated
+
     def test_stale_omni_finding_short_circuits_forever(self, tmp_path, monkeypatch):
         """fix_stale must short-circuit eligibility permanently (the gate's
         missing test): a stale finding is never re-gated, never attempted."""
@@ -412,13 +487,12 @@ class TestNoOpPatchGuard:
         pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
         f = Finding(rule_id="secrets", severity="Critical", path="x.py", line=1, message="m")
         c = make_config(fix={"enabled": True, "merge_own_prs": False})
-        result = executor.attempt_fix(pr, f, c)
-        assert result["status"] == "nofix" and "no-op" in result["reason"]
-
         def must_not_touch(wd, p, content):
             raise AssertionError("no-op patch must never reach the worktree")
 
         monkeypatch.setattr(executor, "_write_contained", must_not_touch)
+        result = executor.attempt_fix(pr, f, c)
+        assert result["status"] == "nofix" and "no-op" in result["reason"]
 
 
 class TestThinkPreambleParsing:
@@ -533,3 +607,56 @@ class TestSolAuditFixes:
         _probe_adoption(c, forge_adapter=DeadForge())
         out = capsys.readouterr().out
         assert "inconclusive" in out and "adoption lost" not in out
+
+
+class TestVerifyWiring:
+
+    """GLM audit: the engine wiring (engine.py verify block) was untested —
+    deleting it kept the suite green. This drives run_cycle end-to-end with a
+    failing diff and asserts the deterministic Critical reaches the POST."""
+
+    def test_failing_diff_reaches_posted_review_through_engine(self, tmp_path, monkeypatch, capsys):
+        from fl4write.engine import run_cycle as rc
+        from fl4write.models import ReviewDoc
+
+        class WiredForge(ForgeAdapter):
+            name = "github"
+
+            def __init__(self):
+                super().__init__(cfg.ForgeBinding(role="primary", api_base="https://api.github.com", token_env="GHT"))
+                self.posts = []
+
+            def list_open_prs(self, repo):
+                return [PullRequest(forge="github", number=9, repo=repo, title="t", head_sha="a" * 40)]
+
+            def get_persistent_comment(self, repo, number):
+                return None
+
+            def create_comment(self, repo, number, body):
+                self.posts.append((number, body))
+                return 1
+
+            def update_comment(self, repo, number, cid, body):
+                pass
+
+            def path_exists(self, repo, path):
+                return True
+
+        c = make_config(shadow=False, verify_tests=True)
+        forge = WiredForge()
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        monkeypatch.setattr(
+            "fl4write.analyzer.analyze",
+            lambda pr, files, text, config, mode="pr": ReviewDoc(pr=pr, findings=[]))
+        monkeypatch.setattr(
+            "fl4write.executor.verify_diff_tests",
+            lambda pr, config, test_files: Finding(
+                rule_id="tests", severity="Critical", path=test_files[0], line=1,
+                category="CI", message="the diff's own tests FAIL (wired)"))
+        rc(c, tmp_path / "s.json", get_diff=lambda pr: (
+            {"fl4write-proof/test_proof_target.py", "fl4write-proof/proof_target.py"}, "diff"))
+        assert len(forge.posts) == 1
+        body = forge.posts[0][1]
+        assert "tests FAIL" in body and "Critical" in body  # deterministic finding POSTED
+
+
