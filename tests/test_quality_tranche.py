@@ -688,8 +688,9 @@ class TestEntropyMath:
             freq = {c: s.count(c) for c in set(s)}
             return -sum((n / len(s)) * math.log2(n / len(s)) for n in freq.values())
 
-        hex16 = "a3f19c7b52d8e40f"  # 16 unique chars
-        assert entropy(hex16) == 4.0  # the mathematical ceiling for len 16
+        uniq16 = "abcdefghijklmnop"  # 16 truly-unique chars
+        assert entropy(uniq16) == 4.0  # the mathematical ceiling for len 16
+        hex16 = "a3f19c7b52d8e40f"  # 15 unique (f repeats) — still passes
         assert entropy(hex16) >= 3.5  # now passes the (fixed) threshold
         prose = "the quick brown fox"  # low entropy English
         assert entropy(prose[:16]) < 3.5
