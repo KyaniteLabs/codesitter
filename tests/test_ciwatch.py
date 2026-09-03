@@ -48,7 +48,7 @@ def make_config(**over):
 class CIRedForge(ForgeAdapter):
     name = "github"
 
-    def __init__(self, head="deadbeef" + "0" * 32, checks=None, annotations=None):
+    def __init__(self, head="deadbeef" + "0" * 32, checks=None, annotations=None, files=None):
         super().__init__(
             cfg.ForgeBinding(role="primary", api_base="https://api.github.com", token_env="GHT")
         )
@@ -62,6 +62,9 @@ class CIRedForge(ForgeAdapter):
         ]
         self.issues_opened: list[tuple[str, str]] = []
         self.fix_attempts: list[PullRequest] = []
+        self.files = files if files is not None else {
+            "tests/test_x.py", "tests/test_1.py", "tests/test_2.py", "tests/test_3.py",
+        }
 
     # -- engine surface
     def list_open_prs(self, repo):
@@ -83,6 +86,13 @@ class CIRedForge(ForgeAdapter):
         pass
 
     # -- ci-watch surface
+    def path_is_file(self, repo, path, ref=None):
+        if path in self.files:
+            return True
+        if path.startswith("UNQUERYABLE"):
+            return None  # fail-open: caller keeps the finding
+        return False
+
     def head_check_runs(self, repo):
         return self.head, list(self.checks)
 
@@ -180,6 +190,46 @@ class TestCIWatch:
         r = _run(tmp_path, forge, monkeypatch, fix_result={"status": "error", "reason": "fetch failed"})
         assert len(forge.fix_attempts) == 1  # environmental error stops the batch
         assert r.ci_escalations == 1 and r.ci_red_heads == 1  # cycle completed, escalated
+
+    def test_runlevel_meta_annotations_are_not_code_findings(self, tmp_path, monkeypatch):
+        """GH Actions auto-annotations anchor at the workflow dir (".github"):
+        not code findings — no fix attempt is burned on an unfetchable dir
+        (live 2026-09-03: the 10h red-main incident), and the red head still
+        escalates."""
+        forge = CIRedForge(annotations=[
+            {"path": ".github", "start_line": 2,
+             "message": "Node.js 20 is deprecated...", "level": "warning"},
+            {"path": ".github", "start_line": 39,
+             "message": "Process completed with exit code 1.", "level": "failure"},
+        ])
+        r = _run(tmp_path, forge, monkeypatch, fix_result={"status": "pr_opened"})
+        assert r.ci_red_heads == 1
+        assert forge.fix_attempts == []  # nothing burnable
+        assert r.ci_fix_prs_opened == 0
+        assert r.ci_escalations == 1  # red head still summons the human
+
+    def test_mixed_annotations_only_file_paths_attempted(self, tmp_path, monkeypatch):
+        forge = CIRedForge(annotations=[
+            {"path": ".github", "start_line": 39,
+             "message": "Process completed with exit code 1.", "level": "failure"},
+            {"path": "tests/test_x.py", "start_line": 12,
+             "message": "assert 1 == 2", "level": "failure"},
+        ])
+        r = _run(tmp_path, forge, monkeypatch, fix_result={"status": "pr_opened"})
+        assert len(forge.fix_attempts) == 1
+        assert forge.fix_attempts[0][1].path == "tests/test_x.py"
+        assert r.ci_fix_prs_opened == 1 and r.ci_escalations == 0
+
+    def test_unqueryable_path_keeps_the_finding(self, tmp_path, monkeypatch):
+        """path_is_file None (transport failure) must NOT drop the finding —
+        fail-open: a dropped real finding is worse than a stale attempt."""
+        forge = CIRedForge(annotations=[
+            {"path": "UNQUERYABLE/new.py", "start_line": 1,
+             "message": "flaky network", "level": "failure"},
+        ])
+        _run(tmp_path, forge, monkeypatch, fix_result={"status": "pr_opened"})
+        assert len(forge.fix_attempts) == 1
+        assert forge.fix_attempts[0][1].path == "UNQUERYABLE/new.py"
 
     def test_shadow_never_touches_the_repo(self, tmp_path, monkeypatch):
         forge = CIRedForge()

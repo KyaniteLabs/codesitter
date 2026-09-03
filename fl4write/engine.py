@@ -873,6 +873,23 @@ def _ci_watch_step(
                 )
             )
 
+    if findings:
+        # GH Actions emits RUN-LEVEL auto-annotations anchored at the workflow
+        # dir (path ".github", workflow line numbers — deprecation warnings,
+        # step failures). Those are not code findings: the fix lane fetches
+        # the anchored path and a directory is unfetchable (live 2026-09-03:
+        # every red head burned a fix attempt on ".github"). Mint findings
+        # only for paths that are FILES at the red head; None (unqueryable)
+        # keeps the finding — fail-open.
+        kept: list[Finding] = []
+        for f in findings:
+            is_file = primary.path_is_file(config.repo, f.path, ref=head)
+            if is_file is False:
+                log.info("ci_watch: dropped annotation at non-file path %s (run-level meta?)", f.path)
+            else:
+                kept.append(f)
+        findings = kept
+
     if findings and run_fixes and config.fix.enabled and not config.shadow:
         # Synthetic PR anchored at the red head: the fix lane fetches the file
         # at this SHA, patches, tests sandboxed, opens a follow-up PR. A
@@ -911,7 +928,7 @@ def _ci_watch_step(
                     f"Default-branch HEAD `{head}` is red; no automated fix landed.\n\n"
                     f"Failing checks:\n" + "\n".join(summaries) +
                     "\n\n_Findings from annotations:_\n"
-                    + ("\n".join(f"- `{f.path}:{f.line}` — {f.message[:120]}" for f in findings) or "(none — failing checks produced no annotations)")
+                    + ("\n".join(f"- `{f.path}:{f.line}` — {f.message[:120]}" for f in findings) or "(no file-level annotation findings — run-level/meta annotations only, or none)")
                 ),
             )
             report.ci_escalations += 1

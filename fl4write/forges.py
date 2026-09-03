@@ -194,6 +194,27 @@ class ForgeAdapter:
                 return False
             return None
 
+    def path_is_file(self, repo: str, path: str, ref: str | None = None) -> bool | None:
+        """Is `path` a FILE (not a directory) at `ref` (default branch when
+        None)? The contents API answers directories with a LIST — an HTTP 200
+        is not a file. Live 2026-09-03: GH Actions run-level annotations anchor
+        at the workflow dir (path ".github"), and the fix lane cannot fetch a
+        directory. True/False, or None when unqueryable (callers keep the
+        finding on None — fail-open, a dropped real finding is worse than a
+        stale one)."""
+        from urllib.parse import quote
+
+        q = f"/repos/{repo}/contents/{quote(path, safe='')}"
+        if ref:
+            q += f"?ref={quote(ref, safe='')}"
+        try:
+            data = self._call("GET", q)
+        except ForgeError as exc:
+            if "HTTP 404" in str(exc):
+                return False
+            return None
+        return isinstance(data, dict) and bool(data.get("content"))
+
     def check_annotations(self, repo: str, check_run_id: int) -> list[dict] | None:
         """Annotations for one check-run: [{path, start_line, message, level}]."""
         try:
