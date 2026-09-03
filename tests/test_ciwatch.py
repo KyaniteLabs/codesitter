@@ -255,3 +255,97 @@ class TestCIWatchRails:
             title="t", head_sha="a" * 40, is_fork=True,
         )
         assert "fork" in fixlane.fix_allowed(pr, make_config(), 0)
+
+
+# ---------------------------------------------------------------------------
+# UltraQA adversarial pass (2026-09-03): hostile annotation paths, the
+# adapter file-or-directory contract, and the no-model-call guarantee for
+# the dir-anchor class (LEARNINGS #36).
+# ---------------------------------------------------------------------------
+
+
+class _StubAdapter(ForgeAdapter):  # noqa: N801
+    name = "github"
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        super().__init__(cfg.ForgeBinding(role="primary", api_base="https://api.github.com", token_env="GHT"))
+
+    def _call(self, method, path):
+        shape, raise_flag = self.responses.pop(0)
+        if raise_flag:
+            from fl4write.forges import ForgeError
+            raise ForgeError("HTTP 404")
+        return shape
+
+
+class TestPathIsFileAdversarial:
+    def test_directory_response_is_not_a_file(self):
+        a = _StubAdapter([([{"name": "ci.yml"}], False)])
+        assert a.path_is_file("o/r", ".github") is False
+
+    def test_file_response_is_a_file(self):
+        a = _StubAdapter([({"name": "x.py", "content": "abc"}, False)])
+        assert a.path_is_file("o/r", "x.py") is True
+
+    def test_404_is_false(self):
+        a = _StubAdapter([(None, True)])
+        assert a.path_is_file("o/r", "gone.py") is False
+
+    def test_transport_error_is_none_fail_open(self):
+        from fl4write import forges
+        a = _StubAdapter([])
+        def boom(method, path):
+            raise forges.ForgeError("boom")
+        a._call = boom
+        assert a.path_is_file("o/r", "x.py") is None
+
+    def test_ref_is_passed_to_the_probe(self):
+        seen = []
+        a = _StubAdapter([({"content": "z"}, False)])
+        orig = a._call
+        def wrap(method, path):
+            seen.append(path)
+            return orig(method, path)
+        a._call = wrap
+        a.path_is_file("o/r", "x.py", ref="abc" * 13 + "0")
+        assert seen and "ref=" in seen[0]
+
+
+class TestCIWatchAdversarial:
+    def test_hostile_annotation_paths_only_file_paths_mint(self, tmp_path, monkeypatch):
+        forge = CIRedForge(annotations=[
+            {"path": "../etc/passwd", "start_line": 1, "message": "traversal", "level": "failure"},
+            {"path": "café/☃/x.py", "start_line": 1, "message": "unicode", "level": "failure"},
+            {"path": "", "start_line": 1, "message": "empty", "level": "failure"},
+            {"path": "tests/test_x.py", "start_line": 12, "message": "real", "level": "failure"},
+        ])
+        r = _run(tmp_path, forge, monkeypatch, fix_result={"status": "pr_opened"})
+        assert len(forge.fix_attempts) == 1
+        assert forge.fix_attempts[0][1].path == "tests/test_x.py"
+        assert r.ci_fix_prs_opened == 1
+
+    def test_directory_finding_never_calls_the_model(self, tmp_path, monkeypatch):
+        from fl4write import executor, telemetry
+        from fl4write.models import Finding
+        # keep the real calibration stream clean: this runs the REAL
+        # attempt_fix, whose error path emits a fix_attempt line
+        monkeypatch.setenv("FL4WRITE_TELEMETRY", str(tmp_path / "telemetry.jsonl"))
+        monkeypatch.setattr(telemetry, "_STREAM", None)
+        calls = []
+        monkeypatch.setattr(executor, "_call_model", lambda *a, **k: calls.append(1) or "{}")
+        monkeypatch.setattr(executor, "_get_file_content", lambda repo, path, ref: None)
+        pr = PullRequest(forge="github", number=1, repo="o/r", title="t", head_sha="a" * 40)
+        f = Finding(rule_id="ci", severity="Major", path=".github", line=1,
+                    category="CI", message="x")
+        cfg_obj = make_config()
+        cfg_obj.fix.enabled = True
+        res = executor.attempt_fix(pr, f, cfg_obj)
+        assert res["status"] == "error" and "cannot fetch" in res["reason"]
+        assert calls == []  # NO model burn on an unfetchable directory
+
+    def test_annotations_none_still_degrades(self, tmp_path, monkeypatch):
+        forge = CIRedForge(annotations=None)
+        forge.check_annotations = lambda repo, rid: None
+        r = _run(tmp_path, forge, monkeypatch, fix_result={"status": "pr_opened"})
+        assert r.ci_escalations == 1 and r.ci_red_heads == 1  # escalate, never crash

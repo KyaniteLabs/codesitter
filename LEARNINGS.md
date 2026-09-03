@@ -272,3 +272,20 @@ forge adapter's path_is_file() is the one truth, fail-open on None.** Fixed:
 adapter path_is_file(repo, path, ref) + mint-time filter in _ci_watch_step + 3
 regression tests.
 
+
+## 37. A wedged agent session is recoverable — and expensive to abandon (2026-09-03)
+The PM-3 DSH session wedged three ways in one day: a deepseek-lane 502 queue-full
+(07:46Z-cycle end), a model request that never returned (~5h20m, 08:29-13:51), and
+then ~70 minutes of tool-call emission failures (`unknown tool ""` — empty tool
+names on larger calls, small calls fine) that blocked landing the UltraQA
+adversarial test pass (turns 9-11, aborted by the CEO at 14:01 and 15:00). The
+in-flight work survived ONLY because the harness records every streamed tool-call
+argument in the session transcript (`~/.dsh/sessions/<ws>/session-<id>/session.jsonl.zstd`,
+10.6k events, 8MB) — the full intended test suite was reconstructed byte-for-byte
+from the recorded attempts and landed green in a fresh session. **Law: significant
+multi-step changes land in the repo at each green step, never as one pending
+giant append; when a lane misbehaves (queue-full, wedged request, empty tool
+names), stop burning turns — switch the route and keep tool calls small, then
+recover the in-flight payloads from the session JSONL.** Rescue path proven
+2026-09-03: decompress the zstd transcript, extract `tool/call` + `assistant/message`
+tool-call arguments, diff the successive attempts, land the latest complete draft.

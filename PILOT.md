@@ -73,6 +73,15 @@ Sep 2) — fleet 146→129. ci_watch now mints findings only from file paths
 #36, adapter path_is_file). Fix-lane dir-anchor root cause closed: 9→10
 attempts total, 0 landed, error class eliminated at the source.
 
+PM-3 UltraQA adversarial pass (2026-09-03, later): the session wedged before
+landing the gauntlet (harness route failures — LEARNINGS #37); the suite was
+recovered from the session transcript and landed in the successor session:
+9 adversarial tests over the dir-anchor class (hostile annotation paths
+incl. traversal/unicode/empty, the adapter path_is_file file-or-directory
+contract incl. 404 + transport fail-open + ref passthrough, the no-model-call
+guarantee for unfetchable directories, annotations=None degrade) — 23
+ciwatch tests green, 324 suite-wide.
+
 ## Session state (2026-09-02, PM-2 day 2)
 
 **CheckYourself integrated.** 19 capability-based review rules (auth, data,
