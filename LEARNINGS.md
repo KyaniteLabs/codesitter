@@ -229,8 +229,10 @@ INSIDE simongonzalezdc/resonant-gifts — and it contaminated my first
 adoption template before self-correction (every adoption must mirror the
 target repo's own central config). **Law: config + adoption identity follows
 the forge of truth — one central config per repo, on the forge where its PRs
-merge; an adoption file on a mirror side is ephemeral by construction; every
-adoption carries the repo's OWN central config content and is verified
-contents-on-branch after landing.** Fleet: 152→146 central configs; repo-key
+merge; an adoption survives only while every lander (PR, push, or force-land)
+carries it — sweep force-lands cut from stale bases eat it (racing-branch
+law; mirror-synced copies track the forge of truth and survive, verified on
+the six org repos); every adoption carries the repo's OWN central config
+content and is verified contents-on-branch after landing.** Fleet: 152→146 central configs; repo-key
 uniqueness pinned by tests/test_fleet_configs.py (the loader cannot cycle
 two configs for one repo — duplicate keys are shadowed, never run).
