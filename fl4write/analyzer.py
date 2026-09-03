@@ -163,6 +163,34 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
         # exactly one JSON value and IGNORES trailing prose/braces — the
         # brace-slice kept dying on trailing junk (fenced-json case)
         marker = '{"' + envelope_key + '"'
+        # UltraQA round 2 (P5 + Sol audit): MULTIPLE envelopes are ambiguous and
+        # last-wins was exploitable (a prompt-injected trailing
+        # {"fixed_content": "…"} overrides the real patch). Rule: decode every
+        # envelope occurrence; identical duplicates parse, DISTINCT values
+        # refuse (possible injected duplicate). Callers degrade (parse_fail /
+        # fix aborted) instead of consuming attacker-chosen content.
+        decoded: dict = {}
+        unique: set[str] = set()
+        pos = 0
+        while True:
+            idx = content.find(marker, pos)
+            if idx == -1:
+                break
+            try:
+                parsed, _ = _json.JSONDecoder().raw_decode(content[idx:])
+            except ValueError:
+                pos = idx + 1
+                continue
+            if isinstance(parsed, dict) and envelope_key in parsed:
+                unique.add(_json.dumps(parsed, sort_keys=True))
+                decoded = parsed
+            pos = idx + 1
+        if len(unique) > 1:
+            raise ValueError(
+                f"ambiguous envelope: {len(unique)} distinct occurrences of {marker!r} "
+                "in one response — refusing (possible injected duplicate)")
+        if len(unique) == 1:
+            return decoded
         for c in (cleaned, content):
             idx = c.rfind(marker)
             if idx != -1:
@@ -209,11 +237,13 @@ _CONTRADICT_TERMINAL = (
     r"\b(diff|code|change|patch|implementation) (is|looks) (clean|fine|safe|correct|good)\b[^.!?\n]*[.!;]*$",
 )
 # Concrete-breakage assertions that make a clean-looking tail legitimate.
+# (UltraQA round 2, Sol audit: bare "missing" is not concrete — "missing test
+# is not a bug… This is fine." must still drop.)
 _DEFECT_ASSERT_RE = re.compile(
     r"\b(fail(s|ed|ing|ure)?|break(s|ing)?|broke(n)?|crash(es|ed)?|corrupt(s|ed|ion)?|"
     r"vulnerab\w*|exploit\w*|inject\w*|leak(s|ed|ing)?|bypass\w*|unauthor\w*|deadlock|"
     r"regress\w*|unsafe|XSS|SSRF|RCE|traversal|exfiltr\w*|refus\w*|wrong(ly)?|"
-    r"incorrect\w*|backdoor|missing\b|unbounded|TOCTOU|silently|race condition|"
+    r"incorrect\w*|backdoor|unbounded|TOCTOU|silently|race condition|"
     r"no (validation|auth|backoff|limit|rate limit|timeout|bounds?|cap)\b)",
     re.IGNORECASE)
 # All-clear clauses in "no X" form; stripped before the defect scan so a
@@ -353,10 +383,13 @@ def analyze(
         if f.severity == "Critical" and f.rule_id in ("testing-quality", "tests"):
             low = f.message.lower()
             # coverage-verb constructions ("the tests fail to COVER/exercise the
-            # new branch") are NOT failure claims (UltraQA round 1, ADV-02);
-            # genuine failure verbs ("failed to compile/run/start") stay claims.
+            # new branch") are NOT failure claims (UltraQA round 1, ADV-02;
+            # round-2 qualifier variants per Sol audit: "fails to adequately
+            # cover", "failed to fully exercise"); genuine failure verbs
+            # ("failed to compile/run/start") stay claims.
             low = re.sub(
-                r"\bfail(s|ed|ing)? to (cover|exercise|assert|test|reach|hit|touch)\b",
+                r"\bfail(s|ed|ing)? to (adequately |fully |properly |actually |really )?"
+                r"(cover|exercise|assert|test|reach|hit|touch)\b",
                 " ", low)
             claims_failure = bool(re.search(
                 r"\b(fail(s|ed|ing|ure)?s?|break(s|ing)?|broke(n)?)\b", low))

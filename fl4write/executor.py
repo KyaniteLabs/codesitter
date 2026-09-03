@@ -122,9 +122,11 @@ def _default_branch(repo: str) -> str:
 
 
 def _write_contained(workdir: Path, rel_path: str, content: str) -> str | None:
-    """Write `content` to workdir/rel_path, REFUSING symlinks and escapes.
+    """Write `content` to workdir/rel_path, REFUSING symlinks and escapes
+    (incl. backslash separators — Windows semantics, UltraQA round 2).
     Returns an error reason, or None on success."""
-    if not rel_path or rel_path.startswith(("/", "\\")) or ".." in Path(rel_path).parts:
+    if (not rel_path or rel_path.startswith(("/", "\\"))
+            or ".." in Path(rel_path).parts or "\\" in rel_path):
         return f"refusing unsafe path {rel_path!r}"
     target = workdir / rel_path
     if target.is_symlink():
@@ -223,6 +225,12 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
 
         parsed = extract_json(response, envelope_key="fixed_content")
         fixed = parsed.get("fixed_content")
+    except ValueError as exc:  # parse-level (UltraQA round 2): ambiguous or
+        # unparseable model output is NOT a transport failure — label it so ops
+        # triage doesn't chase the model route for a parse problem
+        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="error",
+                  reason=f"model output unparseable: {str(exc)[:80]}")
+        return {"status": "error", "reason": f"model output unparseable: {str(exc)[:120]}"}
     except Exception as exc:  # audit A6: network/HTTP/RuntimeError classes
         # crashed whole cycles through the narrow tuple — fail-open means
         # except Exception or it isn't (LEARNINGS #25c)
@@ -296,6 +304,8 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             return {"status": "error", "reason": f"push failed: {push.stderr[-100:]}"}
 
         base = _default_branch(pr.repo)
+        from .renderer import _md_escape_block  # heading-safe model prose
+
         new_pr = _gh_api("POST", f"/repos/{pr.repo}/pulls", {
             "title": f"fix({finding.rule_id}): {scrub.inline(finding.message, 60)}",
             "head": branch,
@@ -303,7 +313,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             "body": (
                 "Automated fix by FL4WRITE.\n\n"
                 f"Finding: [{finding.severity}] {finding.path}:{finding.line} — {scrub.inline(finding.message)}\n"
-                f"Proposal: {finding.proposal}\n\nTests pass. Review and merge."
+                f"Proposal: {_md_escape_block(finding.proposal)}\n\nTests pass. Review and merge."
             ),
         })
         _tel.emit("fix_attempt", repo=pr.repo, path=finding.path,

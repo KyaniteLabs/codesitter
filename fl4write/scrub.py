@@ -28,7 +28,9 @@ _BASE64_IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]*base64[^)]*\)", re.IGNORECASE)
 _REMOTE_SRC_RE = re.compile(r"<\s*(img|source|script|iframe)[^>]*src\s*=", re.IGNORECASE)
 _REMOTE_IMG_RE = re.compile(r"!\[[^\]]*\]\(\s*https?://[^)]*\)", re.IGNORECASE)  # exfil beacon
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-_HIDDEN_TAG_RE = re.compile(r"</?\s*(details|summary|script|style|iframe)\b[^>]*>", re.IGNORECASE)
+_HIDDEN_TAG_RE = re.compile(
+    r"</?\s*(details|summary|script|style|iframe|h[1-6]|table|thead|tbody|tr|th|td|"
+    r"div|section|article|blockquote|pre|hr)\b[^>]*>", re.IGNORECASE)
 # Our persistent-comment marker must be minted only by the renderer.
 _MARKER_RE = re.compile(r"(?:fl4write|codesitter):v\d+:[0-9a-fA-F]+")
 

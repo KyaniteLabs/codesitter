@@ -32,10 +32,15 @@ log = logging.getLogger("fl4write.metrics")
 
 def comment_signals(forge: ForgeAdapter, repo: str, pr_number: int) -> dict[str, int] | None:
     """Signals for one PR from our persistent comment, or None without one."""
-    existing = forge.get_persistent_comment(repo, pr_number)
-    if not existing:
+    try:
+        existing = forge.get_persistent_comment(repo, pr_number)
+    except (ValueError, TypeError, KeyError, AttributeError, IndexError):
+        return None  # UltraQA round 2: malformed comment tuples degrade, never raise
+    if not existing or not isinstance(existing, (tuple, list)) or len(existing) < 2:
         return None
     body = existing[1]
+    if not isinstance(body, str):
+        return None
     current = parse_finding_lines(body)
     resolved = body.count("- ✅ `~")
     reactions = 0
@@ -63,7 +68,9 @@ def acceptance_snapshot(forge: ForgeAdapter, config: RepoConfig) -> dict[str, An
     prs: list = []
     try:
         prs = list(forge.list_open_prs(config.repo))
-    except ForgeError as exc:
+    except (ForgeError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        # UltraQA round 2: shape errors are external-surface failures — this
+        # function's contract is "never raises" (acceptance=n/a on the line)
         log.warning("acceptance open-list skipped (%s): %s", config.repo, exc)
     if hasattr(forge, "list_merged_prs"):
         try:
@@ -74,8 +81,12 @@ def acceptance_snapshot(forge: ForgeAdapter, config: RepoConfig) -> dict[str, An
                 p for p in forge.list_merged_prs(config.repo, since)
                 if all(not (p.number == q.number) for q in prs)
             ]
-        except (ForgeError, NotImplementedError):
+        except (ForgeError, NotImplementedError, ValueError, TypeError, KeyError,
+                AttributeError):
             pass  # merged sampling is additive, never load-bearing
+    # UltraQA round 2: row-shape guard — a half-parsed adapter returning
+    # garbage rows must not crash the snapshot (contract: never raises)
+    prs = [p for p in prs if getattr(p, "number", None) is not None]
     seen: set[int] = set()
     for pr in prs:
         if pr.number in seen:  # merged+open overlap or duplicate pages (Sol#7)

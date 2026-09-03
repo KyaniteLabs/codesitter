@@ -695,6 +695,14 @@ def _retro_sweep(
     except ForgeError as exc:
         report.alerts.append(f"retro listing failed (skipped this cycle): {exc}")
         return set()
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        # UltraQA round 2: API shape drift degrades the lane, never crashes
+        report.alerts.append(f"retro listing degraded (skipped this cycle): {exc}")
+        return set()
+
+    # row-shape guard (UltraQA round 2): one malformed merged row must not
+    # abort the sweep
+    listed = [p for p in listed if getattr(p, "number", None) is not None]
 
     seen: set[int] = set(st.get("retro_seen", {}))
     pending = sorted(
@@ -859,19 +867,29 @@ def _ci_watch_step(
         name = run.get("name") or "unnamed check"
         conclusion = run.get("conclusion") or "?"
         summary = ((run.get("output") or {}).get("summary") or "").strip()
-        summaries.append(f"- **{name}** — {conclusion}" + (f": {summary[:300]}" if summary else ""))
+        # CI check text is forge-external: single-line it before it lands in an
+        # escalation body (UltraQA round 2, P2 — annotations/summaries bypass
+        # the analyzer, so the scrub that protects posted findings doesn't run)
+        summaries.append(f"- **{scrub.inline(name, 60)}** — {scrub.inline(conclusion, 20)}"
+                         + (f": {scrub.inline(summary, 300)}" if summary else ""))
         anns = primary.check_annotations(config.repo, run.get("id")) or []
         for a in anns[: config.ci_watch.max_annotations]:
             if not a.get("path") or not a.get("message"):
                 continue
+            try:
+                # annotation line is forge-external: non-numeric values must not
+                # crash the watch (UltraQA round 2)
+                ann_line = int(a.get("start_line") or a.get("line") or 0) or 1
+            except (TypeError, ValueError):
+                ann_line = 1
             findings.append(
                 Finding(
                     rule_id="ci",
                     severity="Major",
-                    path=a["path"],
-                    line=int(a.get("start_line") or 0) or 1,
+                    path=scrub.inline(str(a["path"]), 200),
+                    line=ann_line,
                     category="CI",
-                    message=f"[{name}] {a['message'][:400]}",
+                    message=scrub.scrub(f"[{scrub.inline(name, 60)}] {a['message'][:400]}"),
                 )
             )
 
@@ -970,6 +988,22 @@ def run_cycle(
                 report.alerts.append(f"primary unreachable: {exc}")
                 log.warning("primary unreachable for %s: %s", config.repo, exc)
                 prs = []
+            except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                # UltraQA round 2: a forge API SHAPE change (rows missing
+                # fields, unexpected types) is an external-surface failure,
+                # not a bug in the cycle — degrade this lane, never crash it.
+                report.alerts.append(f"primary list_open_prs degraded: {exc}")
+                log.warning("list_open_prs shape failure for %s (degraded): %s", config.repo, exc)
+                prs = []
+
+            # Adapter contract guard: garbage rows (None, dicts, strings from a
+            # half-parsed API) are dropped with an alert — one bad row must not
+            # crash the cycle (UltraQA round 2, ENG-garbage-rows).
+            if not all(isinstance(p, PullRequest) for p in prs):
+                dropped_rows = sum(1 for p in prs if not isinstance(p, PullRequest))
+                report.alerts.append(f"primary returned {dropped_rows} malformed PR rows (dropped)")
+                log.warning("dropped %d malformed PR rows for %s", dropped_rows, config.repo)
+                prs = [p for p in prs if isinstance(p, PullRequest)]
 
             open_numbers = set()
             for pr in prs:
