@@ -192,3 +192,18 @@ ci_watch lane on the next cycle. **Corollary to LEARNINGS #25: a fix's
 test run IS the verification — but only if the test suite exercises the
 fixed path. The ultraqa gauntlet caught this because baseline
 verification (step 2) runs the suite FIRST.**
+
+## 33. Desks transfer by retirement, never by parallel operation (2026-09-02)
+The ZCode→DSH migration's failure mode was never the new desk — it was
+two desks alive at once: duplicate tracker posts, conflicting reviews,
+racing commits on shared state. Same failure class as a two-host runner:
+the automation layer is platform-agnostic; the judgment layer is
+single-occupant. The transfer instrument was one self-contained prompt
+(PM3-HANDOFF.md) carrying verified state numbers, standing authorities,
+traps, prioritized open loops, and the access map — deliberately
+sufficient WITHOUT the old desk's session memory. The old desk's last act
+was proving it holds nothing open: no crons, no background workers,
+clean tree, everything pushed. **Law: moving an agent desk across
+platforms = retire-then-spawn; the handoff prompt must be the only
+dependency, and retirement is not complete until the old side's write
+paths are provably closed.**
