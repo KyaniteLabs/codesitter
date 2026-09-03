@@ -128,9 +128,17 @@ def load_state(path: Path) -> dict[str, Any]:
     read is silent data loss."""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if data.get("version") == STATE_VERSION:
-            return data
-        log.warning("state %s has unknown version %r; bounded reconcile", path, data.get("version"))
+        if not isinstance(data, dict):
+            # valid JSON of the wrong shape (list/str/int — hand-edited or a
+            # foreign file at the path): same bounded reconcile, never an
+            # AttributeError crash mid-cycle (UltraQA round 1, ADV-07)
+            log.warning("state %s is %s, not an object; bounded reconcile", path, type(data).__name__)
+        elif data.get("version") == STATE_VERSION:
+            if isinstance(data.get("prs"), dict):
+                return data
+            log.warning("state %s version ok but shape wrong; bounded reconcile", path)
+        else:
+            log.warning("state %s has unknown version %r; bounded reconcile", path, data.get("version"))
     except FileNotFoundError:
         pass
     except json.JSONDecodeError as exc:

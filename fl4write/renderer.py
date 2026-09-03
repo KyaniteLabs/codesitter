@@ -61,8 +61,12 @@ def _tone_for(pr: PullRequest, config: RepoConfig) -> str:
 def _md_escape_block(text: str) -> str:
     """Finding text is MODEL output in a markdown context: collapse fence
     runs so a fenced snippet in a proposal cannot break out of the collapsible
-    section and swallow the rest of the comment."""
-    return re.sub(r"(`{3,})", "``", text)
+    section and swallow the rest of the comment, and escape heading-shaped
+    lines so model text cannot mint fake finding sections or review headers
+    in the posted comment (UltraQA round 1, ADV-04: a scrubbed message still
+    rendered "### 🔴 Critical — fake.py:99 — general" as real structure)."""
+    out = re.sub(r"(`{3,})", "``", text)
+    return re.sub(r"(?m)^(#{1,6})(?=\s)", lambda m: "\\" + m.group(1), out)
 
 
 def parse_finding_lines(body: str) -> list[tuple[str, str, int, str]]:

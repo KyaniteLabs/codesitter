@@ -189,27 +189,50 @@ def _path_ignored(path: str, config: RepoConfig) -> bool:
 
 
 # L1-B4 severity-integrity gate (adjudicated 2026-09-03, council consult CTO+CS;
-# Sol delegate-audit fix 2026-09-03): pass/no-failure phrases only count when
-# they are the message's TERMINAL conclusion — "…which matches. So tests pass.
-# No issue." refutes its own finding, while "the test passes a mutable config
-# to the helper, mutating shared state" is a legit defect statement. The old
-# guard scanned message[:120] for 3 phrases; every liminal-window escape (2,3,
-# 6,9) buried its contradiction later or used uncovered phrasing.
+# Sol delegate-audit fix + UltraQA round-1 escape pass): pass/no-failure
+# phrases only refute the finding when they are the message's TERMINAL
+# conclusion AND the body asserts no concrete breakage anywhere — a finding
+# that ends "the test passes. No issue." refutes itself, while "…the retry
+# loop has no backoff and hammers the API; the rest of the diff is clean"
+# states a real defect with a clean tail and must survive.
 _CONTRADICT_TERMINAL = (
-    r"\bno (failing test( found)?|issue|problems?|failure|defect|change needed|bug|problem)\b[.!;]*$",
-    r"\b(tests?|checks?|everything)\s+(pass|passes|passed)\b[.!;]*$",
-    r"\b(would|should|will) pass\b[.!;]*$",
-    r"\bassertion is correct\b[.!;]*$",
-    r"\b(is|are) consistent\b[.!;]*$",
-    r"\bnot a (failure|bug|defect)\b[.!;]*$",
-    r"\b(could not|cannot) reproduce\b[.!;]*$",
+    r"\bno (failing test( found)?|issue|problems?|failure|defect|change needed|bug|problem)\b[^.!?\n]*[.!;]*$",
+    r"\b(tests?|checks?|everything)(\s+all)?\s+(pass|passes|passed)\b[^.!?\n]*[.!;]*$",
+    r"\b(would|should|will) pass\b[^.!?\n]*[.!;]*$",
+    r"\bassertion is correct\b[^.!?\n]*[.!;]*$",
+    r"\b(is|are) consistent\b[^.!?\n]*[.!;]*$",
+    r"\bnot a (failure|bug|defect)\b[^.!?\n]*[.!;]*$",
+    r"\b(could not|cannot) reproduce\b[^.!?\n]*[.!;]*$",
+    r"\bthis is fine\b[^.!?\n]*[.!;]*$",
+    r"\bnothing (wrong|bad|broken|suspicious)\b[^.!?\n]*[.!;]*$",
+    r"\beverything checks? out\b[^.!?\n]*[.!;]*$",
+    r"\b(diff|code|change|patch|implementation) (is|looks) (clean|fine|safe|correct|good)\b[^.!?\n]*[.!;]*$",
 )
+# Concrete-breakage assertions that make a clean-looking tail legitimate.
+_DEFECT_ASSERT_RE = re.compile(
+    r"\b(fail(s|ed|ing|ure)?|break(s|ing)?|broke(n)?|crash(es|ed)?|corrupt(s|ed|ion)?|"
+    r"vulnerab\w*|exploit\w*|inject\w*|leak(s|ed|ing)?|bypass\w*|unauthor\w*|deadlock|"
+    r"regress\w*|unsafe|XSS|SSRF|RCE|traversal|exfiltr\w*|refus\w*|wrong(ly)?|"
+    r"incorrect\w*|backdoor|missing\b|unbounded|TOCTOU|silently|race condition|"
+    r"no (validation|auth|backoff|limit|rate limit|timeout|bounds?|cap)\b)",
+    re.IGNORECASE)
+# All-clear clauses in "no X" form; stripped before the defect scan so a
+# refutation's own words ("No failure found", "no change needed") cannot count
+# as concrete-breakage evidence.
+_REFUTATION_SPAN_RE = re.compile(
+    r"\b(?:no (?:failing test(?: found)?|issue|problems?|failure|defect|change needed|bug|problem)"
+    r"|not a (?:failure|bug|defect)|nothing (?:wrong|bad|broken|suspicious))\b[^.!?\n]*[.!;]?")
 
 
 def _self_contradicting(message: str) -> bool:
-    tail = message.rstrip().lower()
-    # terminal-conclusion scan (the finding's own final clause)
-    if any(re.search(p, tail) for p in _CONTRADICT_TERMINAL):
+    low = message.rstrip().lower()
+    # terminal scan on the RAW tail ("…but not a failure." refutes even though
+    # the span stripper would remove its words) …
+    terminal_refutes = any(re.search(p, low) for p in _CONTRADICT_TERMINAL)
+    # … while the defect scan runs on the refutation-stripped text so a
+    # refutation's own words ("no failure found") are not breakage evidence.
+    remainder = _REFUTATION_SPAN_RE.sub(" ", low).strip()
+    if terminal_refutes and not _DEFECT_ASSERT_RE.search(remainder):
         return True
     # legacy head guard: the pre-2026-09-03 3-phrase check, kept verbatim
     head = message[:120].lower()
@@ -329,6 +352,12 @@ def analyze(
     for f in findings:
         if f.severity == "Critical" and f.rule_id in ("testing-quality", "tests"):
             low = f.message.lower()
+            # coverage-verb constructions ("the tests fail to COVER/exercise the
+            # new branch") are NOT failure claims (UltraQA round 1, ADV-02);
+            # genuine failure verbs ("failed to compile/run/start") stay claims.
+            low = re.sub(
+                r"\bfail(s|ed|ing)? to (cover|exercise|assert|test|reach|hit|touch)\b",
+                " ", low)
             claims_failure = bool(re.search(
                 r"\b(fail(s|ed|ing|ure)?s?|break(s|ing)?|broke(n)?)\b", low))
             if not claims_failure or not (config.test_cmd or "").strip():
