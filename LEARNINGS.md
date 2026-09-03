@@ -257,3 +257,18 @@ new surface: filesystem case semantics); 'CI green' is a claim about the CI
 runner - read gh run list, never local pytest.** Fix: fixture written via
 tiers._state_path, pinned by construction.
 
+## 36. CI run-level annotations are meta, not code findings (2026-09-03)
+ci_watch minted Major findings from EVERY check annotation - and GitHub Actions
+emits run-level auto-annotations anchored at the WORKFLOW DIRECTORY (path
+'.github', lines = workflow YAML lines: 'Node.js 20 is deprecated', 'Process
+completed with exit code 1.'). The fix lane then correctly refused to fetch a
+directory (executor._get_file_content returns None for list responses - the
+f1088e3 guard), so every red head burned a fix attempt on '.github' and
+escalated. Root cause: ci_watch assumed annotation.path == source file; GH
+violates that for run-level annotations. **Law: any CI-annotation surface must
+mint findings only for paths that are FILES at the relevant ref - an HTTP 200
+from the contents API is not a file (directories answer with a list); the
+forge adapter's path_is_file() is the one truth, fail-open on None.** Fixed:
+adapter path_is_file(repo, path, ref) + mint-time filter in _ci_watch_step + 3
+regression tests.
+

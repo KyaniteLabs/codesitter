@@ -66,6 +66,13 @@ repo-key uniqueness pinned (tests/test_fleet_configs.py). LEARNINGS #34.
 Open: FJ fix-lane executor port (fix lane remains GitHub-only — v1 limit),
 GH config re-add trigger = real GitHub PR flow returns.
 
+PM-3 remediation (2026-09-03, CEO fix-all): 17 mirror-side GH central configs
+retired (all-FJ; FJ twins live + adopted; zero GH PR flow on all 17 since
+Sep 2) — fleet 146→129. ci_watch now mints findings only from file paths
+(run-level annotations at the workflow dir are meta, not code — LEARNINGS
+#36, adapter path_is_file). Fix-lane dir-anchor root cause closed: 9→10
+attempts total, 0 landed, error class eliminated at the source.
+
 ## Session state (2026-09-02, PM-2 day 2)
 
 **CheckYourself integrated.** 19 capability-based review rules (auth, data,
