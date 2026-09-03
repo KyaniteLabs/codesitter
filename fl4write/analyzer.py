@@ -29,6 +29,7 @@ import fnmatch
 import json
 import logging
 import os
+import re
 import time
 import urllib.request
 
@@ -187,6 +188,34 @@ def _path_ignored(path: str, config: RepoConfig) -> bool:
     return any(fnmatch.fnmatch(path, pat) for pat in patterns)
 
 
+# L1-B4 severity-integrity gate (adjudicated 2026-09-03, council consult CTO+CS;
+# Sol delegate-audit fix 2026-09-03): pass/no-failure phrases only count when
+# they are the message's TERMINAL conclusion — "…which matches. So tests pass.
+# No issue." refutes its own finding, while "the test passes a mutable config
+# to the helper, mutating shared state" is a legit defect statement. The old
+# guard scanned message[:120] for 3 phrases; every liminal-window escape (2,3,
+# 6,9) buried its contradiction later or used uncovered phrasing.
+_CONTRADICT_TERMINAL = (
+    r"\bno (failing test( found)?|issue|problems?|failure|defect|change needed|bug|problem)\b[.!;]*$",
+    r"\b(tests?|checks?|everything)\s+(pass|passes|passed)\b[.!;]*$",
+    r"\b(would|should|will) pass\b[.!;]*$",
+    r"\bassertion is correct\b[.!;]*$",
+    r"\b(is|are) consistent\b[.!;]*$",
+    r"\bnot a (failure|bug|defect)\b[.!;]*$",
+    r"\b(could not|cannot) reproduce\b[.!;]*$",
+)
+
+
+def _self_contradicting(message: str) -> bool:
+    tail = message.rstrip().lower()
+    # terminal-conclusion scan (the finding's own final clause)
+    if any(re.search(p, tail) for p in _CONTRADICT_TERMINAL):
+        return True
+    # legacy head guard: the pre-2026-09-03 3-phrase check, kept verbatim
+    head = message[:120].lower()
+    return any(w in head for w in ("no issue", "is consistent", "no problems"))
+
+
 def analyze(
     pr: PullRequest, diff_files: set[str], diff_text: str, config: RepoConfig,
     mode: str = "pr",
@@ -271,9 +300,17 @@ def analyze(
             # the model could not anchor to a real line is not reviewable
             dropped.append(f"unanchored line={f.line} {f.path} ({f.rule_id})")
             continue
-        msg_head = f.message[:120].lower()
-        if any(w in msg_head for w in ("no issue", "is consistent", "no problems")):
-            # self-contradicting: the message refutes its own finding
+        # L1-B4 severity-integrity gate (2026-09-03 adjudication sample, council
+        # consult CTO+CS): a finding whose own body concludes "passes / no issue /
+        # no failure / no change needed" refutes itself and may not post at any
+        # severity. The old guard scanned only message[:120] for 3 phrases — the
+        # liminal window's self-contradictory Criticals ("tests pass. No issue."
+        # -> Critical, "assertion is correct. No failure." -> Critical) all buried
+        # their contradiction past char 120 or used uncovered phrasing. A pass/no-
+        # failure phrase is contradictory only when it appears AFTER the message's
+        # last contrast marker (legit findings say "the suite passes, BUT this
+        # path is untested" — the clause after "but" is the finding).
+        if _self_contradicting(f.message):
             dropped.append(f"self-contradicting {f.path}:{f.line} ({f.rule_id})")
             continue
         if _path_ignored(f.path, config):
@@ -283,6 +320,21 @@ def analyze(
         f.proposal = scrub.scrub(f.proposal)
         f.category = scrub.scrub(f.category)
         findings.append(f)
+    # L1-B5 testing-quality severity ceiling (same adjudication sample; Sol
+    # audit fix: anchored failure wording only — "tests only assert a fixture
+    # loads" is coverage noise, not a failure claim): the rubric's Critical bar
+    # is a VERIFIABLE failing diff test. A testing-quality Critical needs an
+    # explicit failure/regression claim AND a runnable per-repo test_cmd (the
+    # engine can actually prove it); anything else is a coverage note -> Major.
+    for f in findings:
+        if f.severity == "Critical" and f.rule_id in ("testing-quality", "tests"):
+            low = f.message.lower()
+            claims_failure = bool(re.search(
+                r"\b(fail(s|ed|ing|ure)?s?|break(s|ing)?|broke(n)?)\b", low))
+            if not claims_failure or not (config.test_cmd or "").strip():
+                f.severity = "Major"
+                log.info("demoted testing-quality Critical->Major (unverifiable/no-failure claim): %s:%s",
+                         f.path, f.line)
     # L1-B3: a secrets-family Critical must carry a LITERAL credential in the
     # message — a token PREFIX (ghp_/sk-/AKIA/xoxb/glpat-) or a high-entropy
     # quoted string. "README mentions env-var names" dies here (259-Critical

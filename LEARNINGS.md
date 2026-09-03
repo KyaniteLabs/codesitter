@@ -289,3 +289,36 @@ names), stop burning turns — switch the route and keep tool calls small, then
 recover the in-flight payloads from the session JSONL.** Rescue path proven
 2026-09-03: decompress the zstd transcript, extract `tool/call` + `assistant/message`
 tool-call arguments, diff the successive attempts, land the latest complete draft.
+
+## 38. Posted severity is not finding quality — adjudication is the instrument (2026-09-03)
+The Q1 proxy (posted Critical+Major share as "finding quality") was wrong: a severity label is
+the MODEL's claim, not a verdict. First desk adjudication round (CTO + CS consults,
+council-consult-2026-09-03-fl4write-quality, code at the reviewed SHAs): of 23 posted findings
+on liminal post-merge reviews, **8 FALSE incl. 7 of 10 Criticals** — bodies said "tests pass /
+no issue / assertion is correct" then posted Critical, or cited test content that does not
+exist in the file (HTML-escaped markup fabricated from an unread test file). Honest quality
+~9-30% vs the 55-85% proxy: **3-6x overstated**. Mechanisms: L1-B1 counted any message
+containing "test" as verified (has_test = "test" in low); the self-contradiction guard scanned
+only message[:120] for 3 phrases; and testing-quality Criticals never met the rubric's own bar
+(verifiable failing diff test). **Law: severity-integrity gates are deterministic, not
+prompts; Q1 = adjudicated REAL share from desk rounds; every posted C/M passes the
+contradiction gate and the testing-quality ceiling.** Fixed: L1-B4 full-message
+self-contradiction gate + L1-B5 testing-quality Critical ceiling (test_cmd-gated) + 12
+regression tests pinning the sample escapes. The adjudication ALSO found the bot under-posts:
+PR #1119's tempo shim rides addInitScript, which never runs for setContent pages — the crash
+it claims to fix persists (missed-defect evidence, filed on the PR). Phase 2: citation
+grounding — findings must quote the reviewed SHA's actual bytes (fabricated-premise class).
+
+## 39. Speculative-security Criticals need code reading, not phrase gates (2026-09-03)
+Sample residue after the L1-B4/L1-B5 tranche: two security-threat Criticals (items 13, 19 —
+XSS-on-static-prepend, "prototype pollution" on a hardcoded shim list) survive every text
+gate because their hedged conditionals ("could be exploited if the content is malicious /
+if an attacker can influence…") are indistinguishable by text from the sample's REAL
+security findings (items 17, 18 — same hedges, but the content IS user-uploaded playables
+under --no-sandbox). The discriminator was domain knowledge of the trust boundary, which
+deterministic message filters cannot encode. **Law: severity-integrity gates are necessary
+but not sufficient — speculative-security Criticals require either citation grounding
+(findings quote the reviewed bytes) or a Critical-only verification pass; until then their
+survival is a tracked residue, not a closed class.** Sample effect: of the 10 posted
+Criticals, 4 dropped + 4 floored to Major by the tranche; 2 (13, 19) remain as documented
+residue for phase 2.

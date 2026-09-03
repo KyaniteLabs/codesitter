@@ -82,6 +82,17 @@ contract incl. 404 + transport fail-open + ref passthrough, the no-model-call
 guarantee for unfetchable directories, annotations=None degrade) — 23
 ciwatch tests green, 324 suite-wide.
 
+Q1 calibration round 1 (2026-09-03, evening): first desk adjudication of the
+posted-finding sample (CTO + CS consults, all code at reviewed SHAs) —
+8/23 findings FALSE incl. 7/10 Criticals (self-contradictory bodies;
+fabricated test-content premises); honest finding quality ≈9–30% vs the
+posted-severity proxy of 55–85% (~3–6× overstated). LEARNINGS #38. Analyzer
+gates landed: L1-B4 full-message self-contradiction gate + L1-B5
+testing-quality Critical ceiling (verifiable failure claim + runnable
+test_cmd required), 12 regression tests. Per-PR retractions posted on
+liminal #1114–#1117/#1119/#1122 + one real missed defect filed (#1119 tempo
+shim never runs for setContent pages). Q1 metric = adjudicated REAL share.
+
 ## Session state (2026-09-02, PM-2 day 2)
 
 **CheckYourself integrated.** 19 capability-based review rules (auth, data,
