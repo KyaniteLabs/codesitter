@@ -340,3 +340,17 @@ every untrusted-text render site must be single-line/inert by construction.** Re
 documented: speculative-security Criticals (hedged "could be exploited if…" on static code)
 are text-indistinguishable from the real hedged findings — phase-2 citation grounding or a
 Critical-only verification pass closes them (LEARNINGS #39). 357 tests green after the round.
+
+## 41. Forge adapters are an untrusted input surface like everything else (2026-09-03, UltraQA round 2)
+Round 2 of the readiness gauntlet: every adapter boundary must contain SHAPE errors, not
+just ForgeError (HTTP): list_open_prs/merged rows missing fields, garbage rows, malformed
+persistent-comment tuples, non-numeric annotation lines — any of them crashed the whole
+cycle before the fix. Same law as round 1 in new clothes (assumed contract shape, LEARNINGS
+#40): valid-JSON-wrong-shape state, forge rows of the wrong shape, CI annotation text
+bypassing the analyzer scrub — all external surfaces need containment + scrubbing at THEIR
+boundary, not downstream. Fixes: envelope ambiguity (a second DISTINCT {"fixed_content"} in
+one model response refuses to parse — identical duplicates parse), adapter row guards +
+shape-error tuples at open/merged listing, acceptance, comment-signals and retro sites,
+ci_watch annotation scrub + line hardening, structural raw-HTML scrub (h1-h6/tables/divs),
+fix-PR proposal heading-escape, testing-quality "fail to adequately cover" wording. Sol
+audit round 2: GO-WITH-CHANGES, all 5 items closed with regression pins. 374 tests green.
