@@ -54,7 +54,10 @@ class TestClassification:
         assert tier == "warm"  # pushed long ago but open PRs + watermark live
 
     def test_forgejo_warm_floor(self, state_dir):
-        (state_dir / "simon__cncl.state.json").write_text('{"version": 1, "prs": {}}')
+        # fixture written through the PRODUCTION path builder: a hand-typed
+        # filename once drifted in case ("cncl" vs "CNCL") and passed on
+        # macOS's case-insensitive FS while failing Linux CI (LEARNINGS #35)
+        tiers._state_path("simon/CNCL").write_text('{"version": 1, "prs": {}}')
         tier, _ = tiers.classify("simon/CNCL", False, None, NOW)
         assert tier == "warm"
 

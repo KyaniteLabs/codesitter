@@ -236,3 +236,24 @@ the six org repos); every adoption carries the repo's OWN central config
 content and is verified contents-on-branch after landing.** Fleet: 152→146 central configs; repo-key
 uniqueness pinned by tests/test_fleet_configs.py (the loader cannot cycle
 two configs for one repo — duplicate keys are shadowed, never run).
+
+## 35. macOS case-insensitivity hides fixture-path drift from CI (2026-09-03)
+CI on main was RED from 2026-09-02 17:12 UTC for ~10 hours - every push failed
+test_forgejo_warm_floor while local runs stayed green, so the 'CI green'
+handoff claim (measured on the laptop, not the runner) was stale by the time
+PM-3 sat down. Root cause: the test wrote its fixture as
+simon__cncl.state.json while _state_path('simon/CNCL') builds
+simon__CNCL.state.json - on macOS's case-insensitive APFS the read
+succeeds and the test passes; on Linux CI the file does not exist and the
+classifier took the bootstrap path (hot != warm). The tiers tranche added the
+failing test; every commit since (the ultraqa fixes, LEARNINGS #31/32 docs,
+the PM-3 handoff, PM-2's close-out) sat red unseen. The own-repo ci_watch
+WORKED (ci_red=1 every cycle since 23:00, escalation issues #9-#11 on
+KyaniteLabs/fl4write, fix attempts failed Linux verification) - the missing
+piece was a human reading gh run list. **Law: a test that writes files must
+build their paths with the SAME code the production path uses (hand-typed
+fixture filenames are a contract nobody signed - LEARNINGS #27's class on a
+new surface: filesystem case semantics); 'CI green' is a claim about the CI
+runner - read gh run list, never local pytest.** Fix: fixture written via
+tiers._state_path, pinned by construction.
+
