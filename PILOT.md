@@ -54,6 +54,18 @@ resolution across the org AND user-account installations).
   tastecheck ×1, content-production-system ×1). An ALERT means: re-adopt on
   current main, then verify CONTENTS-ON-MAIN — never trust the merge event.
 
+## Session state (2026-09-03, PM-3 day 1)
+
+Fleet aligned to the forge of truth (CEO all-FJ order, Sep 2): six GH-era
+shadow configs retired (kinocut, Epoch, Innerscape, checkyourself,
+devarch-framework, Elixis — their FJ configs + FJ adoptions are live),
+tastecheck + complyos + resonant-constable + resonant-context-kit
+re-adopted on current mains, resonant-gifts in-repo config corrected
+(wrong-target content survived inside the repo). 152→146 central configs;
+repo-key uniqueness pinned (tests/test_fleet_configs.py). LEARNINGS #34.
+Open: FJ fix-lane executor port (fix lane remains GitHub-only — v1 limit),
+GH config re-add trigger = real GitHub PR flow returns.
+
 ## Session state (2026-09-02, PM-2 day 2)
 
 **CheckYourself integrated.** 19 capability-based review rules (auth, data,

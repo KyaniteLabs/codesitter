@@ -78,11 +78,13 @@ class TestConfig:
             make_config(tone="savage")
 
     def test_reference_instance_loads(self, tmp_path):
-        src = Path(__file__).parent.parent / "kinocut.fl4write.yaml"
+        # kinocut is FJ-primary since the all-FJ order (LEARNINGS #34); the
+        # GH-side instance was retired — the .fj twin is the live config.
+        src = Path(__file__).parent.parent / "kinocut.fj.fl4write.yaml"
         c = cfg.load_config(src)
         assert c.repo == "KyaniteLabs/kinocut"
         assert c.fix.max_fix_depth == 2
-        assert {b.role for b in c.forges.values()} == {"primary", "mirror"}
+        assert {b.role for b in c.forges.values()} == {"primary"}
 
 
 # ---------------------------------------------------------------- state (#67)

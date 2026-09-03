@@ -207,3 +207,30 @@ clean tree, everything pushed. **Law: moving an agent desk across
 platforms = retire-then-spawn; the handoff prompt must be the only
 dependency, and retirement is not complete until the old side's write
 paths are provably closed.**
+
+## 34. Config and adoption identity follows the forge of truth (2026-09-03)
+PM-3's first session found two live defect classes in the fleet's config layer.
+(a) Six dual-homed org repos (kinocut, Epoch, Innerscape, checkyourself,
+devarch-framework, Elixis) carried TWO central configs naming the same repo
+key (X + X.fj after the Sep-2 Forgejo sweep). The loader dedupes by repo key:
+one config cycles (alphabetically first — the .fj), the other shadows forever
+and ALERTs every cycle (18 cycles of noise, ~6 lines each). With the CEO's
+all-FJ order the Forgejo side IS the live review surface (open FJ PR queues
+on kinocut/Epoch/Innerscape, reviewed by the .fj configs; ZERO GitHub PR
+merges on any of the six since Sep 2) — the GitHub configs were wave-1 era
+shadow configs and were retired. (b) Adoption losses: tastecheck + complyos
+lost their in-repo .fl4write.yaml to force-land sweeps landing on main
+(racing-branch law, mirror form — the sweep carries a stale tree), and
+resonant-constable + resonant-context-kit were armed 09-03 with no in-repo
+adoption at all. Both classes ALERTed every cycle. Also caught: 671eb01
+removed the wrong-target resonant-gifts CENTRAL config, but the same
+wrong-target content (repo: resonant-tastecheck, floor route) still lived
+INSIDE simongonzalezdc/resonant-gifts — and it contaminated my first
+adoption template before self-correction (every adoption must mirror the
+target repo's own central config). **Law: config + adoption identity follows
+the forge of truth — one central config per repo, on the forge where its PRs
+merge; an adoption file on a mirror side is ephemeral by construction; every
+adoption carries the repo's OWN central config content and is verified
+contents-on-branch after landing.** Fleet: 152→146 central configs; repo-key
+uniqueness pinned by tests/test_fleet_configs.py (the loader cannot cycle
+two configs for one repo — duplicate keys are shadowed, never run).
