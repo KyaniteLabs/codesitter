@@ -57,6 +57,16 @@ def scrub(text: str) -> str:
     return s
 
 
+def inline(text: str, limit: int | None = None) -> str:
+    """Scrub + collapse to ONE line for list/title renderings (issue bodies,
+    escalation bullets, PR titles): finding text with newlines must never
+    break a bullet list or mint fake entries (UltraQA round 1, ADV-04/P3 —
+    scrub keeps \n structural, which is right for prose but wrong here)."""
+    s = scrub(text)
+    s = " ".join(s.split()) if s else ""
+    return s[:limit] if limit else s
+
+
 def assert_clean(text: str) -> None:
     """Fail loudly if scrub() output still contains a defense category."""
     for ch in text:

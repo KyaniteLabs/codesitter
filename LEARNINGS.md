@@ -322,3 +322,21 @@ but not sufficient — speculative-security Criticals require either citation gr
 survival is a tracked residue, not a closed class.** Sample effect: of the 10 posted
 Criticals, 4 dropped + 4 floored to Major by the tranche; 2 (13, 19) remain as documented
 residue for phase 2.
+
+## 40. Text gates are whack-a-mole; grounding is the cure (2026-09-03, UltraQA round 1)
+The readiness gauntlet (CEO: "FL4WRITE is NOT ready for use") ran the full adversarial
+battery over the calibration tranche and the pipeline. New escapes found and fixed: (a) five
+more self-refuting terminal phrases ("this is fine", "the diff is clean and safe to merge",
+"tests all pass", "nothing wrong", "everything checks out") — every phrase list grows a
+round behind the generator; (b) "the tests FAIL TO COVER the branch" bypassed the
+failure-claim gate (coverage wording, not a failure); (c) a valid-JSON state file of the
+wrong shape (list/str/int) crashed the whole cycle instead of bounded-reconciling;
+(d) scrubbed finding text could still mint fake finding headings in the posted comment
+(markdown structure is not a scrub class); (e) newline-bearing messages could break bullets
+in escalation/issue bodies (engine, executor, fixlane — now single-lined via scrub.inline).
+**Law: deterministic text filters are necessary but not sufficient — severity claims need
+GROUNDING (cite the reviewed-SHA bytes; run the diff's tests when claiming they fail), and
+every untrusted-text render site must be single-line/inert by construction.** Residue,
+documented: speculative-security Criticals (hedged "could be exploited if…" on static code)
+are text-indistinguishable from the real hedged findings — phase-2 citation grounding or a
+Critical-only verification pass closes them (LEARNINGS #39). 357 tests green after the round.

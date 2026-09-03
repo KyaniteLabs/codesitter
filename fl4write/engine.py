@@ -25,6 +25,8 @@ Audit 2026-09-01:
 from __future__ import annotations
 
 import logging
+
+from . import scrub
 import re
 import time
 from collections import Counter
@@ -928,7 +930,7 @@ def _ci_watch_step(
                     f"Default-branch HEAD `{head}` is red; no automated fix landed.\n\n"
                     f"Failing checks:\n" + "\n".join(summaries) +
                     "\n\n_Findings from annotations:_\n"
-                    + ("\n".join(f"- `{f.path}:{f.line}` — {f.message[:120]}" for f in findings) or "(no file-level annotation findings — run-level/meta annotations only, or none)")
+                    + ("\n".join(f"- `{f.path}:{f.line}` — {scrub.inline(f.message, 120)}" for f in findings) or "(no file-level annotation findings — run-level/meta annotations only, or none)")
                 ),
             )
             report.ci_escalations += 1

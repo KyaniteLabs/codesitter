@@ -274,7 +274,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         _run(["git", "add", "--", finding.path], cwd=workdir)
         commit = _run(
             ["git", "commit", "-q", "-m",
-             f"fix({finding.rule_id}): {finding.message[:60]}\n\n"
+             f"fix({finding.rule_id}): {scrub.inline(finding.message, 60)}\n\n"
              "Co-authored-by: fl4write <fl4write@kyanitelabs.tech>"],
             cwd=workdir, env=_sandbox_env(),
         )
@@ -297,12 +297,12 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
 
         base = _default_branch(pr.repo)
         new_pr = _gh_api("POST", f"/repos/{pr.repo}/pulls", {
-            "title": f"fix({finding.rule_id}): {finding.message[:60]}",
+            "title": f"fix({finding.rule_id}): {scrub.inline(finding.message, 60)}",
             "head": branch,
             "base": base,
             "body": (
                 "Automated fix by FL4WRITE.\n\n"
-                f"Finding: [{finding.severity}] {finding.path}:{finding.line} — {finding.message}\n"
+                f"Finding: [{finding.severity}] {finding.path}:{finding.line} — {scrub.inline(finding.message)}\n"
                 f"Proposal: {finding.proposal}\n\nTests pass. Review and merge."
             ),
         })

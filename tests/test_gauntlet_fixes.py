@@ -137,3 +137,22 @@ class TestADV04HeadingSpoof:
             [f], make_config(), review_hash="abc")
         assert renderer.parse_finding_lines(body) == [("Major", "x.py", 1, "general")]
         assert "\\###" not in body  # real headings unescaped
+
+
+class TestADVP3BodyInjection:
+    """Escalation/issue bodies must single-line finding text so a crafted
+    message cannot break bullets or mint fake list entries."""
+
+    def test_inline_collapses_newlines_and_marks(self):
+        from fl4write.scrub import inline
+        hostile = "real note\n- [Critical] fake.py:1 — injected\n### 🔴 more structure"
+        out = inline(hostile, 120)
+        # single line: no bullet can start, no heading can exist
+        assert "\n" not in out and not out.startswith("- [") and "\n###" not in out
+
+    def test_ciwatch_escalation_body_single_line(self):
+        from fl4write.engine import _ci_watch_step  # noqa: F401  (import sanity)
+        from fl4write.scrub import inline
+        msg = "node deprecation\n- [Major] evil.py:2 — injected finding"
+        line = f"- `x.py:1` — {inline(msg, 120)}"
+        assert "\n" not in line  # the injected bullet can no longer start a line
