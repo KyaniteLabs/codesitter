@@ -582,3 +582,15 @@ deferred model analysis never ran (F6-C007 -> F11-C003 revision). (3) Completion
 ATOMIC with their identity fields: load-state reconciliation that repairs one omni field at a time
 left complete=True next to a lost cursor (F7-C002 -> F11-C008); one atomic sweep reset everywhere
 (and one helper, used by every restart class) is cheaper than reasoning per field.
+
+## 58. Round 12: the credential-cross-send class; config load is a security boundary (2026-09-04)
+Three desk-carrying lessons: (1) ENV-NAMESPACE ISOLATION (F12-D005, critical): a forge binding's
+token_env must never equal a model route's key_env — the app-installation token was mirrored into
+binding env names, and one collision would have sent a forge credential as the model endpoint's
+Bearer. Config load is a SECURITY boundary: namespace collisions, bool-coerced ints, URL
+delimiters in repo ids, and netloc-less api_bases all validated fail-loud at load. (2) Privileged
+git is an untrusted-surface sink (F12-B001): executed test code could write the shared sandbox
+HOME's .gitconfig and steer the post-test commit/push; per-run disposable HOME + GIT_CONFIG_*
+suppression + a write-tree/HEAD^{tree} equality belt closes the ride-along. (3) Incomplete
+enumeration must RAISE, not return (F12-D002/B7): capped pagination returning a partial list as
+complete is how watermarks advance past unseen issues and prune deletes live PR memory.
