@@ -1910,3 +1910,47 @@ class TestMECERound5SolPins:
                                             _t.time())
         assert tier3 == "warm" and "wm_recent=True" in reason3
         assert tier == "cold" or True  # placeholder guard (assert above is real)
+
+
+class TestMECERound5GlmPins:
+    """Round-5 glm DOM-A: contradiction-gate legacy head guard overrides the
+    adjudicated L1-B4 contract (F5-A01); gatekeeper keep-set ignores rule_id
+    so same-line siblings are auto-kept (F5-A02)."""
+
+    def test_all_clear_head_with_concrete_breakage_survives(self):
+        from fl4write.analyzer import _self_contradicting
+
+        keep = ("No issues with the auth flow. However the retry loop has no "
+                "backoff and hammers the payment API on every failure.")
+        assert _self_contradicting(keep) is False, \
+            "legacy head guard dropped a finding that asserts concrete breakage"
+        vacuous = "No issues with the auth flow. The code is consistent and nothing is wrong."
+        assert _self_contradicting(vacuous) is True  # genuinely vacuous still drops
+
+    def test_gatekeeper_keep_is_rule_keyed_for_same_line_findings(self, monkeypatch):
+        import json as _json
+
+        from fl4write.gatekeeper import filter_findings
+
+        f_secrets = Finding(rule_id="secrets", severity="Major", path="x.py",
+                            line=3, message="hardcoded key")
+        f_tests = Finding(rule_id="testing", severity="Nit", path="x.py",
+                          line=3, message="add a comment")
+        c = make_config()
+
+        def fake_model(route, prompt, system=None):
+            return _json.dumps({"keep": [{"path": "x.py", "line": 3,
+                                          "rule_id": "secrets"}]})
+
+        monkeypatch.setattr("fl4write.gatekeeper._call_model", fake_model)
+        kept, dropped, failed = filter_findings([f_secrets, f_tests], c)
+        assert failed is False and dropped == 1
+        assert [f.rule_id for f in kept] == ["secrets"], \
+            "rule-keyed keep auto-kept the unrequested same-line sibling"
+        # a line-only row (no rule_id) still keeps the whole line (legacy)
+        def fake_model2(route, prompt, system=None):
+            return _json.dumps({"keep": [{"path": "x.py", "line": 3}]})
+
+        monkeypatch.setattr("fl4write.gatekeeper._call_model", fake_model2)
+        kept2, _dropped2, failed2 = filter_findings([f_secrets, f_tests], c)
+        assert failed2 is False and len(kept2) == 2

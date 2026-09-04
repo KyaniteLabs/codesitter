@@ -330,10 +330,13 @@ _DEFECT_ASSERT_RE = re.compile(
     re.IGNORECASE)
 # All-clear clauses in "no X" form; stripped before the defect scan so a
 # refutation's own words ("No failure found", "no change needed") cannot count
-# as concrete-breakage evidence.
+# as concrete-breakage evidence. MECE round-5 (glm F5-A01 follow-on): plural
+# "issues", "bugs", and "nothing IS wrong" forms are refutations too — leaving
+# "wrong" in the remainder made the bounded head guard keep vacuous messages.
 _REFUTATION_SPAN_RE = re.compile(
-    r"\b(?:no (?:failing test(?: found)?|issue|problems?|failure|defect|change needed|bug|problem)"
-    r"|not a (?:failure|bug|defect)|nothing (?:wrong|bad|broken|suspicious))\b[^.!?\n]*[.!;]?")
+    r"\b(?:no (?:failing test(?: found)?|issues?|problems?|failure|defect|change needed|bugs?|problem)"
+    r"|not a (?:failure|bug|defect)|nothing (?:is |looks |seems )?(?:wrong|bad|broken|suspicious))"
+    r"\b[^.!?\n]*[.!;]?")
 
 
 def _self_contradicting(message: str) -> bool:
@@ -346,9 +349,15 @@ def _self_contradicting(message: str) -> bool:
     remainder = _REFUTATION_SPAN_RE.sub(" ", low).strip()
     if terminal_refutes and not _DEFECT_ASSERT_RE.search(remainder):
         return True
-    # legacy head guard: the pre-2026-09-03 3-phrase check, kept verbatim
+    # legacy head guard, bounded by the SAME adjudicated condition as the
+    # terminal scan (MECE round-5, glm F5-A01): an all-clear phrase in the
+    # head only drops the finding when NO concrete breakage is asserted
+    # anywhere in the refutation-stripped remainder — "No issues with X.
+    # However … no backoff … failure." opens all-clear but IS a defect
     head = message[:120].lower()
-    return any(w in head for w in ("no issue", "is consistent", "no problems"))
+    if any(w in head for w in ("no issue", "is consistent", "no problems")):
+        return not _DEFECT_ASSERT_RE.search(remainder)
+    return False
 
 
 def analyze(

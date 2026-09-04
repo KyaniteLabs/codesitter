@@ -46,22 +46,42 @@ _GATEKEEPER_SYSTEM = (
 )
 
 
-def _keep_set(parsed: object) -> set[tuple[str, int]] | None:
-    """Validated (path, line) set, or None when unparseable/unusable."""
+def _keep_sets(parsed: object) -> tuple[set[tuple[str, int]], dict[tuple[str, int], set[str]]] | None:
+    """((line-only keep keys), {(path,line): {rule_id}}) or None when
+    unparseable/unusable. MECE round-5 (glm F5-A02): rows that copy rule_id
+    disambiguate same-line findings — keeping one sibling must NOT auto-keep
+    the other (mirror of the Sol#3 demote-side fix); rows without rule_id
+    keep the whole line (legacy-model behavior)."""
     if not isinstance(parsed, dict):
         return None
     keep = parsed.get("keep")
     if not isinstance(keep, list):
         return None
-    out: set[tuple[str, int]] = set()
+    line_only: set[tuple[str, int]] = set()
+    by_rule: dict[tuple[str, int], set[str]] = {}
     for k in keep:
         if not isinstance(k, dict):
             continue
         try:
-            out.add((str(k.get("path", "")).strip(), int(k.get("line"))))
+            pl = (str(k.get("path", "")).strip(), int(k.get("line")))
         except (TypeError, ValueError):
             continue
-    return out
+        rule = str(k.get("rule_id", "")).strip()
+        if rule:
+            by_rule.setdefault(pl, set()).add(rule)
+        else:
+            line_only.add(pl)
+    return line_only, by_rule
+
+
+def _keep_set(parsed: object) -> set[tuple[str, int]] | None:
+    """Legacy (path, line) view used by callers that only need membership
+    presence (drop logging); the authoritative matcher is filter_findings."""
+    both = _keep_sets(parsed)
+    if both is None:
+        return None
+    line_only, by_rule = both
+    return line_only | set(by_rule)
 
 
 def _demotions(parsed: dict, severity_vocab: list[str]) -> dict[tuple[str, int, str], str]:
@@ -115,10 +135,33 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
         from .analyzer import extract_json
 
         parsed = extract_json(response, envelope_key="keep")
-        keep_set = _keep_set(parsed)
-        if keep_set is None:
+        keep_sets = _keep_sets(parsed)
+        if keep_sets is None:
             raise ValueError(f"keep-list unusable: {str(parsed)[:120]}")
-        kept = [f for f in findings if (f.path, f.line) in keep_set]
+        line_only, by_rule = keep_sets
+        # MECE round-5 (glm F5-A02): rule-keyed rows disambiguate same-line
+        # findings; a (path,line) row keeps the whole line; when every row at
+        # a line carries a rule that matches NO finding, the single finding on
+        # that line is kept (mirror of the demote-side ambiguity fallback)
+        at_line: dict[tuple[str, int], list[Finding]] = {}
+        for f in findings:
+            at_line.setdefault((f.path, f.line), []).append(f)
+
+        def _kept(f: Finding) -> bool:
+            pl = (f.path, f.line)
+            if pl in line_only:
+                return True
+            rules = by_rule.get(pl)
+            if rules is None:
+                return False
+            if f.rule_id in rules:
+                return True
+            same_line = at_line.get(pl, [])
+            # single finding at the line but the model's rule copy doesn't
+            # match it: ambiguous, treat as a keep (no sibling to protect)
+            return len(same_line) == 1
+
+        kept = [f for f in findings if _kept(f)]
         if not kept:
             # "Model says drop ALL" and "model returned garbage" are
             # indistinguishable — refuse the destructive read, fail open.
@@ -150,8 +193,9 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
         from . import telemetry as _tel
         _tel.emit("gatekeeper", repo=config.repo, kept=len(kept),
                   dropped=len(findings) - len(kept), demoted=demoted_ids)
+        kept_ids = {id(f) for f in kept}
         for f in findings:
-            if (f.path, f.line) not in keep_set:
+            if id(f) not in kept_ids:
                 log.info("gatekeeper dropped: %s:%s (%s) %s", f.path, f.line, f.rule_id, f.message[:60])
         dropped = len(findings) - len(kept)
         if dropped:
