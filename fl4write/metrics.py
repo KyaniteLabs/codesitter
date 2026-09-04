@@ -46,10 +46,17 @@ def comment_signals(forge: ForgeAdapter, repo: str, pr_number: int) -> dict[str,
     reactions = 0
     summary = getattr(forge, "reaction_summary", None)
     if summary is not None:
+        # MECE round-2 (terra F2-005/006): reactions are counted ONLY for the
+        # acceptance contents (+1/hooray); an 👀 or 🚀 must not count as
+        # "addressed". Values are {login: n} dicts — malformed rows degrade.
         try:
-            for group in (summary(repo, existing[0]) or {}).values():
-                reactions += sum(1 for v in (group or {}).values() if v)
-        except ForgeError:
+            groups = summary(repo, existing[0]) or {}
+            for content, voters in groups.items():
+                if content not in ("+1", "hooray"):
+                    continue
+                if isinstance(voters, dict):
+                    reactions += sum(1 for v in voters.values() if v)
+        except (ForgeError, ValueError, TypeError, KeyError, AttributeError):
             pass  # reactions are an enhancement, never a dependency
     return {
         "findings": len(current),

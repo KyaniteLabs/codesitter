@@ -134,7 +134,19 @@ def load_state(path: Path) -> dict[str, Any]:
             # AttributeError crash mid-cycle (UltraQA round 1, ADV-07)
             log.warning("state %s is %s, not an object; bounded reconcile", path, type(data).__name__)
         elif data.get("version") == STATE_VERSION:
-            if isinstance(data.get("prs"), dict):
+            prs = data.get("prs")
+            if isinstance(prs, dict):
+                # MECE round-2 (terra F2-003): nested PR records must be sane —
+                # a null record crashed needs_review; a non-numeric key crashed
+                # prune_closed. Drop malformed entries (bounded reconcile).
+                bad = [k for k, v in prs.items()
+                       if not isinstance(v, dict)
+                       or not (str(k).isdigit() or k.isdigit())]
+                if bad:
+                    log.warning("state %s: dropping %d malformed PR records (bounded reconcile)",
+                                path, len(bad))
+                    data = dict(data)
+                    data["prs"] = {k: v for k, v in prs.items() if k not in bad}
                 return data
             log.warning("state %s version ok but shape wrong; bounded reconcile", path)
         else:

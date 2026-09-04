@@ -416,8 +416,10 @@ def _omni_readiness(findings: list[dict]) -> tuple[int, str]:
 
     sev = Counter(f.get("sev", f.get("severity", "Nit")) for f in findings)
     rule_to_cat = {rid: cat for rid, cat, _, _ in CAPABILITIES}
-    cats = {rule_to_cat.get(f.get("rule_id", ""), "")
-            for f in findings if rule_to_cat.get(f.get("rule_id", ""))}
+    # persisted omni findings carry the field "rule" (round-1 wiring bug:
+    # helper read rule_id and no caller existed — terra F2-007)
+    cats = {rule_to_cat.get(f.get("rule_id") or f.get("rule", ""), "")
+            for f in findings if rule_to_cat.get(f.get("rule_id") or f.get("rule", ""))}
     score = readiness_score(dict(sev), categories_checked=cats)
     return score, score_label(score)
 
@@ -566,9 +568,12 @@ def _omnisweep_step(
     )
     total = len(scan)
     scanned_total = int(st.get("omni_scanned_total", 0))
-    if scanned_total + total > config.omnisweep.max_total_files:
+    if total > config.omnisweep.max_total_files:
+        # MECE round-2 (terra F2-001): the cap bounds the TREE (one-shot);
+        # the old scanned_total+total check double-counted the tree every
+        # cycle and aborted large-but-legal sweeps mid-flight
         report.alerts.append(
-            f"omnisweep ABORTED: {scanned_total + total} files exceeds "
+            f"omnisweep ABORTED: tree has {total} files exceeds "
             f"max_total_files={config.omnisweep.max_total_files} — widen the cap or narrow excludes"
         )
         st["omni_complete"] = True
@@ -681,6 +686,9 @@ def _omni_upsert_issue(
     degrades to next-cycle retry, never data loss."""
     if config.shadow or not findings:
         return
+    if complete:
+        _score, _label = _omni_readiness(findings)
+        report.alerts.append(f"omnisweep readiness: {_score}/100 ({_label})")
     body = _omni_report_body(config, findings, scanned, total, complete)
     number = st.get("omni_issue")
     if number:
@@ -737,10 +745,13 @@ def _retro_sweep(
     # abort the sweep
     listed = [p for p in listed if isinstance(p, PullRequest)]
 
-    seen: set[int] = set(st.get("retro_seen", {}))
+    # MECE round-2 (terra F2-002): JSON persistence turns int keys into
+    # strings — the seen-set belt was comparing int numbers against str keys
+    # and NEVER excluded (masked by the strict '<' cursor). Normalize here.
+    seen: set[int] = {int(k) for k in st.get("retro_seen", {}) if str(k).isdigit()}
     pending = sorted(
         (p for p in listed
-         if p.merged_at < cursor and p.number not in seen),
+         if p.merged_at <= cursor and p.number not in seen),
         key=lambda p: p.merged_at,
         reverse=True,  # newest unprocessed first: recent mistakes matter most
     )[: config.retro_audit.max_per_cycle]
@@ -753,7 +764,7 @@ def _retro_sweep(
             report.alerts.append("retro sweep deferred — cycle deadline reached")
             break
         seen.add(pr.number)
-        st["retro_seen"] = {n: True for n in seen}
+        st["retro_seen"] = {int(n): True for n in seen}
         if not state.needs_review(st, pr.number, pr.head_sha):
             oldest_processed = pr.merged_at
             continue  # already reviewed at this SHA while it was open — nothing to catch
@@ -918,7 +929,8 @@ def _ci_watch_step(
     report.ci_red_heads += 1
     if st.get(f"ci_acted:{head}"):
         return  # already acted at this SHA — a new commit re-arms the watch
-    st[f"ci_acted:{head}"] = True
+    # MECE round-2 (terra F2-004): acted is set only after a SUCCESSFUL
+    # action below; an escalation failure stays un-acted and retries.
 
     findings: list[Finding] = []
     summaries: list[str] = []
@@ -1017,8 +1029,16 @@ def _ci_watch_step(
                 ),
             )
             report.ci_escalations += 1
+            st[f"ci_acted:{head}"] = True
         except Exception as exc:  # noqa: BLE001 — escalation must not kill the cycle
             report.alerts.append(f"ci_watch escalation failed for {config.repo}: {exc}")
+    elif opened:
+        st[f"ci_acted:{head}"] = True
+    else:
+        # no fix opened and no escalation channel (or shadow): acting again
+        # next cycle changes nothing — mark acted to keep the red-head count
+        # honest (one summon per SHA)
+        st[f"ci_acted:{head}"] = True
 
 
 def run_cycle(

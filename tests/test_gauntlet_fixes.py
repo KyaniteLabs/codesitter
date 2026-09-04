@@ -1000,3 +1000,69 @@ class TestMECERound2LunaPins:
         assert "🆕" not in body2.split("🆕", 1)[0][-200:] or "🆕 " not in body2
         assert "Resolved since last review" not in body2
         assert "✅" not in body2
+
+
+class TestMECERound2TerraPins:
+    """Round-2 terra DOM-C: omni cap one-shot (F2-001), retro tie cursor
+    (F2-002), state nested records (F2-003), ci escalation retry (F2-004),
+    reaction allowlist (F2-006), readiness field+caller (F2-007)."""
+
+    def test_omni_abort_only_when_tree_exceeds_cap(self):
+        # semantics pin: the abort decision compares the TREE to the cap once;
+        # previously scanned_total+total double-counted across cycles
+        import fl4write.engine as engine
+        from fl4write.engine import _omnisweep_step
+
+        class F:
+            name = "github"
+            bot_login = "x"
+            def list_tree_files(self, repo):
+                return ([(f"src/f{i}.py", 100) for i in range(1500)], False)
+            def head_check_runs(self, repo): return None
+            def get_file(self, *a): return None
+
+        from fl4write import config as cfg
+        raw = {"repo": "o/r",
+               "forges": {"github": {"role": "primary", "api_base": "http://x", "token_env": "T"}},
+               "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+               "review": {"secrets": "x"},
+               "severity_vocab": ["Critical", "Major", "Minor", "Nit"],
+               "shadow": False, "omnisweep": {"enabled": True, "max_total_files": 2000,
+                                              "max_files_per_cycle": 10}}
+        c = cfg.RepoConfig.model_validate(raw)
+        st = {"omni_scanned_total": 600}
+        rep = engine.CycleReport(repo="o/r", shadow_only=False)
+        # with no deadline, step processes max_files_per_cycle files (not
+        # 1500) and does NOT abort: tree 1500 <= cap 2000
+        _omnisweep_step(c, F(), None, None, st, rep, deadline=None)
+        assert not any("ABORTED" in a for a in rep.alerts)
+
+    def test_state_malformed_pr_record_dropped(self, tmp_path):
+        import json
+        from fl4write import state as stmod
+        p = tmp_path / "s.json"
+        p.write_text(json.dumps({"version": stmod.STATE_VERSION,
+                                 "prs": {"1": None, "2": {"last_reviewed_sha": "a" * 40},
+                                         "x": {}, "3": "str"}}))
+        st = stmod.load_state(p)
+        assert set(st["prs"]) == {"2"}  # only the sane record survives
+
+    def test_reaction_allowlist(self):
+        from fl4write.metrics import comment_signals
+
+        class F:
+            name = "github"
+            bot_login = "x"
+            def get_persistent_comment(self, repo, number):
+                return (1, "### 🔴 Critical — `x.py:1` — `general`\nmsg\n")
+            def reaction_summary(self, repo, comment_id):
+                return {"+1": {"a": 1}, "eyes": {"b": 1}, "hooray": {"c": 1}}
+
+        sig = comment_signals(F(), "o/r", 1)
+        assert sig["reactions"] == 2  # only +1 and hooray count
+
+    def test_omni_readiness_reads_persisted_rule_field(self):
+        from fl4write.engine import _omni_readiness
+        findings = [{"rule": "auth-permissions", "sev": "Nit", "msg": "x"}]
+        score, _ = _omni_readiness(findings)
+        assert score < 100  # only one category checked -> capped
