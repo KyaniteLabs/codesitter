@@ -1089,10 +1089,8 @@ class TestMECERound3SolPins:
     (F3-002), own-PR scan pagination (F3-007)."""
 
     def test_string_false_is_not_truthy(self):
-        from fl4write import issues
         # drive triage_issue validation via the parse+validate path by stubbing
         # the model call returning string booleans
-        import fl4write.analyzer as an
         import json as _json
         from fl4write import config as cfg
         raw = {"repo": "o/r",
