@@ -175,18 +175,22 @@ def render_triage_comment(issue_num: int, triage: dict[str, Any], config: RepoCo
     return result
 
 
-def _row_body_author(c) -> tuple[str, str] | None:
+def _row_body_author(c) -> tuple[int, str, str] | None:
     """F12-B010: ONE validated comment-row read for the marker scans — a
     non-dict row or a numeric body used to raise and retry the issue forever
-    instead of skipping the malformed row."""
+    instead of skipping the malformed row. F13-B005: the row identity (id)
+    is part of the contract — a matching marker without a usable id must
+    never KeyError or feed update_comment a non-integer."""
     if not isinstance(c, dict):
         return None
+    cid = c.get("id")
     body = c.get("body")
     user = c.get("user")
     login = user.get("login") if isinstance(user, dict) else None
-    if not isinstance(body, str) or not isinstance(login, str):
+    if isinstance(cid, bool) or not isinstance(cid, int) or cid <= 0 \
+            or not isinstance(body, str) or not isinstance(login, str):
         return None
-    return body, login
+    return cid, body, login
 
 
 def find_existing_triage(forge: ForgeAdapter, repo: str, number: int, bot_login: str) -> tuple[int, str] | None:
@@ -195,12 +199,12 @@ def find_existing_triage(forge: ForgeAdapter, repo: str, number: int, bot_login:
         _row = _row_body_author(c)
         if _row is None:
             continue  # malformed row skipped (F12-B010)
-        body, author = _row
+        cid, body, author = _row
         author = author.lower()
         if (
             "fl4write-triage:v1" in body or "codesitter-triage:v1" in body
         ) and is_own_identity(author, bot_login):
-            return c["id"], body
+            return cid, body
     return None
 
 
@@ -215,7 +219,7 @@ def _foreign_triage_exists(forge: ForgeAdapter, repo: str, number: int) -> bool:
         _row = _row_body_author(c)
         if _row is None:
             continue  # malformed row skipped (F12-B010)
-        body, _author = _row
+        _cid, body, _author = _row
         if "fl4write-triage:v1" in body or "codesitter-triage:v1" in body:
             return True
     return False
@@ -231,16 +235,33 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
     open issues and email-storming maintainers).
     """
     try:  # F7-B002: lane-boundary normalization — JSON persistence makes
-        # ints strings and corrupt values crash the comparisons below
-        last_num = int(st.get("last_triaged_number") or 0)
-    except (TypeError, ValueError):
+        # ints strings and corrupt values crash the comparisons below.
+        # F13-B004: bools and non-finite JSON (1e309 -> inf) must not become
+        # a watermark — int(True)==1 would skip issue #1 forever
+        _wm = st.get("last_triaged_number")
+        if isinstance(_wm, bool) or not isinstance(_wm, (int, float, str)):
+            last_num = 0
+        else:
+            last_num = int(float(_wm)) if float(_wm) == float(_wm) \
+                and float(_wm) not in (float("inf"), float("-inf")) else 0
+    except (TypeError, ValueError, OverflowError):
         last_num = 0
     summary = {"triaged": 0, "skipped": 0, "errors": 0, "quarantined": 0}
 
     try:
         _retry_raw = st.get("issues_retry", [])
-        retry = {int(x) for x in _retry_raw if str(x).isdigit()} \
-            if isinstance(_retry_raw, list) else set()
+        # F13-B003: guarded per-entry parse — str(x).isdigit() accepts
+        # Unicode digits ('²') that int() then refuses with ValueError
+        retry = set()
+        for x in (_retry_raw if isinstance(_retry_raw, list) else []):
+            try:
+                if isinstance(x, bool):
+                    continue
+                n = int(x)
+                if n > 0:
+                    retry.add(n)
+            except (TypeError, ValueError, OverflowError):
+                continue
         new_issues = collect_new_issues(forge, config.repo, last_num, retry=retry)
     except ForgeError as exc:
         log.warning("issues collect failed for %s: %s", config.repo, exc)

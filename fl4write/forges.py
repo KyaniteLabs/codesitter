@@ -395,9 +395,15 @@ class ForgeAdapter:
             # that would decode to b"" or partial bytes (binascii.Error too).
             # F11-002 (round 11, terra DOM-D, reopened F8-001): line-wrapped
             # base64 is legitimate API content — compact whitespace BEFORE the
-            # strict decode (executor does the same on patch content)
+            # strict decode (executor does the same on patch content).
+            # F13-D004 (reopened F1-024): whitespace-ONLY content compacts to
+            # b'' — an empty payload must read as unfetchable (None), never
+            # become a real file the model 'reviews'
             compact = "".join(data["content"].split())
-            return base64.b64decode(compact, validate=True).decode("utf-8")
+            raw = base64.b64decode(compact, validate=True)
+            if not raw:
+                return None
+            return raw.decode("utf-8")
         except (ValueError, UnicodeDecodeError, binascii.Error):
             return None
 
@@ -572,12 +578,14 @@ class GitHubAdapter(ForgeAdapter):
                 # clean
                 if page > _CHECK_RUN_PAGE_CAP:  # MECE round-4 (M3 F4-D08):
                     # bounded pages — a misbehaving server must not spin the
-                    # cycle forever
+                    # cycle forever. F13-D003: capped evidence is INCOMPLETE —
+                    # returning the partial prefix let ci_watch certify a
+                    # potentially-red HEAD clean; degrade to None instead
                     import logging as _log
                     _log.getLogger("fl4write.forges").warning(
-                        "head_check_runs %s: >%d full pages — capped (rows past "
-                        "the cap invisible to this call)", repo, _CHECK_RUN_PAGE_CAP)
-                    break
+                        "head_check_runs %s: >%d full pages — capped (None)",
+                        repo, _CHECK_RUN_PAGE_CAP)
+                    return None
                 runs = self._call(
                     "GET",
                     f"/repos/{repo}/commits/{sha}/check-runs?per_page=100&page={page}")
@@ -825,6 +833,7 @@ class ForgejoAdapter(ForgeAdapter):
 
             for e in root.get("tree") or []:
                 if not isinstance(e, dict):
+                    truncated = True  # F13-D002: garbage root rows
                     continue
                 if e.get("type") == "blob":
                     add_blob(e, "")
@@ -847,6 +856,9 @@ class ForgejoAdapter(ForgeAdapter):
                 on_stack.add(sha)
                 stack.append(("\x00exit", sha))
                 for e in entries:
+                    if not isinstance(e, dict):
+                        truncated = True  # F13-D002: garbage descendant rows
+                        continue
                     if e.get("type") == "blob":
                         add_blob(e, prefix)
                     elif e.get("type") == "tree":

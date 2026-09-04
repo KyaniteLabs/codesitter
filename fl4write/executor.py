@@ -646,7 +646,13 @@ def _pytest_verify_argv(parts: list[str]) -> list[str] | None:
             j += 1  # positional path — replaced by the diff's own files
             continue
         if tok.startswith("--") and "=" in tok:
-            out.append(tok)  # --opt=value rides through verbatim
+            # F13-E001 (reopened F10-E002): attached forms ride through ONLY
+            # when the option name is allowlisted — '--unknown-flag=payload'
+            # used to bypass the fail-closed contract entirely
+            _name = tok.split("=", 1)[0]
+            if _name not in _LONG_FLAGS and _name not in _LONG_VALUE:
+                return None  # unmodeled attached option — fail closed
+            out.append(tok)
             j += 1
             continue
         if tok.startswith("--"):
@@ -697,20 +703,33 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
     token = os.environ.get("CODESITTER_GITHUB_TOKEN", "")
     workdir = Path(tempfile.mkdtemp(prefix="fl4write-verify-"))
     try:
+        def _v_unverified(reason: str) -> None:
+            # F13-B006 (reopened F12-B012): every early exit emits its outcome
+            try:
+                from . import telemetry as _tel
+                _tel.emit("verify_tests", repo=pr.repo, head=pr.head_sha[:10],
+                          cmd="setup", files=test_files, ok=False,
+                          unverified=True, reason=str(reason)[:80])
+            except Exception:  # noqa: BLE001 - telemetry never blocks
+                pass
+
         verify_askpass: list[dict[str, str]] = []
         fetch_url = f"https://github.com/{pr.repo}.git"
         if _run(["git", "init", "-q"], cwd=workdir).returncode != 0:
+            _v_unverified("git init failed")
             return None
         pull_env = _push_token_env(workdir, token)
         verify_askpass.append(pull_env)
         if _run(["git", "fetch", "-q", "--depth", "1", fetch_url, pr.head_sha],
                 cwd=workdir, timeout=180, env=pull_env).returncode != 0:
             return None
+            _v_unverified('git fetch failed')
         _drop_askpass(pull_env)  # MECE round-3 (sol F3-002): the token helper
         # must be gone BEFORE untrusted test code executes — it used to live
         # until finally, readable by same-user tests during the run
         if _run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], cwd=workdir).returncode != 0:
             return None
+            _v_unverified('git checkout failed')
         # ONLY the diff's own test files — the whole-suite default would
         # attribute MAIN's pre-existing red to this diff (audit A3: a
         # false-Critical machine wearing the word 'deterministic').
@@ -903,6 +922,10 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
         )
     except Exception as exc:  # noqa: BLE001 — infrastructure trouble is never a finding
         log.warning("verify_diff_tests infra failure for %s#%s: %s", pr.repo, pr.number, exc)
+        try:
+            _v_unverified(f"infra: {type(exc).__name__}")
+        except Exception:  # noqa: BLE001
+            pass
         return None
     finally:
         for e in verify_askpass:  # MECE round-1 (luna F1-04): drop on every path
@@ -1016,10 +1039,18 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
             # The gate re-verifies authorship + CI IN CODE. is_own_identity
             # accepts the current + legacy bot slugs across renames.
             merge_own_pr(author=author, bot_identity=bot_identity, ci_green=ci_green, config=config)
-            _gh_api("PUT", f"/repos/{config.repo}/pulls/{number}/merge", {
+            _resp = _gh_api("PUT", f"/repos/{config.repo}/pulls/{number}/merge", {
                 "merge_method": "squash",
                 "sha": pr_data["head"]["sha"],  # F8-004: precondition
             })
+            # F13-B007: a merge is real only when the API PROVES it — the
+            # response used to be discarded and every non-exception outcome
+            # reported as merged
+            if not isinstance(_resp, dict) or _resp.get("merged") is not True \
+                    or _resp.get("sha") != pr_data["head"]["sha"]:
+                log.warning("merge of %s#%s did not prove completion: %s",
+                            config.repo, number, str(_resp)[:160])
+                continue
             merged.append({"pr": number, "status": "merged"})
             log.info("merged own fix PR #%s on %s (owner=%s)", number, config.repo, owner)
         except FixLaneBlocked as exc:

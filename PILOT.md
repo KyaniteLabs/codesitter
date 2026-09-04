@@ -122,13 +122,15 @@ Watches: floor Qwen backend (lane re-downloading; fleet routes around it),
 first organic verify/fix firing, CEO 20-finding weekly adjudication sample.
 Issues-lane contract: ISSUES-BEHAVIOR.md.
 
-## Pilot soak (clock restarted 2026-09-01)
+## Pilot soak (HISTORICAL — the 14-day clock was superseded by the 2026-09-04
+## fleet audit + MECE gauntlet read on fitness; see README Status + LEARNINGS)
 
-Day 1 of 14. Criteria before repo #32 or more autonomy: **14 incident-free
-days OR 100 incident-free reviews** — zero double-posts, zero email storms,
-model-route stability, surveillance proven. Incidents so far (all fixed with
-regression tests, see LEARNINGS.md): the email storm (#17), the rename-sweep
-URL bug (#18), the app-slug identity change (#20). Soak counts post-fix days.
+Clock restarted 2026-09-01; criteria were 14 incident-free days OR 100
+incident-free reviews — zero double-posts, zero email storms, model-route
+stability, surveillance proven. Incidents (all fixed with regression tests):
+the email storm (#17), the rename-sweep URL bug (#18), the app-slug identity
+change (#20). Soak counts post-fix days; the fleet outgrew the clock (154+
+repos, tier scheduler, MECE rounds 1-13) before it lapsed.
 
 ## Forgejo-only repos (approved 2026-09-01; SUPERSEDED 2026-09-02 by the CEO
 ## all-FJ order — configs landed on main and the fl4write bot identity is live;

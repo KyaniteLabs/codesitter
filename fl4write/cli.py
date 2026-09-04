@@ -215,7 +215,23 @@ def main() -> int:
         # error with exit 2 — never an uncaught traceback
         config = load_config(config_path)
     except Exception as exc:  # noqa: BLE001 — fail loudly but readably
-        print(f"config error: {type(exc).__name__}: {str(exc)[:300]}", file=sys.stderr)
+        # F13-D005: validation errors embed INPUT VALUES — a secret-bearing
+        # extra field used to print its value verbatim. Surface only field
+        # locations and error types; full detail goes to the log.
+        _detail = []
+        _errs = getattr(exc, "errors", None)
+        if callable(_errs):
+            try:
+                for _e in _errs():
+                    _loc = ".".join(str(x) for x in _e.get("loc", ()))
+                    _detail.append(f"{_loc or '?'}:{_e.get('type', 'invalid')}")
+            except Exception:  # noqa: BLE001
+                _detail = []
+        if not _detail:
+            _detail = [type(exc).__name__]
+        log.error("config load failed for %s: %s", config_path, exc)
+        print(f"config error: {'; '.join(_detail)[:200]} — see log for detail",
+              file=sys.stderr)
         return 2
     if "--omni" in sys.argv:
         # One-shot prelaunch kick: a NORMAL run_cycle (CycleLock, deadline,

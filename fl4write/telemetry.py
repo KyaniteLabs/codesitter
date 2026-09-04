@@ -62,6 +62,9 @@ _ROUTE_STATS: dict[str, dict[str, float]] = {}
 
 
 def _safe_int(v: object) -> int:
+    # F13-B008: booleans are not token counts — 'true' used to count as 1
+    if isinstance(v, bool):
+        return 0
     # F12-B011 (reopened F2-108): provider numbers can be non-finite
     # (1e309 parses to inf and int(inf) raises OverflowError) — a hostile or
     # corrupt event used to crash calibration AFTER a completed cycle

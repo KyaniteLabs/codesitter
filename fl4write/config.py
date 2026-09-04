@@ -37,7 +37,7 @@ def _int_field_names() -> set[str]:
     for _v in vars(_self).values():
         if isinstance(_v, type) and issubclass(_v, BaseModel):
             for _n, _f in getattr(_v, "model_fields", {}).items():
-                if _f.annotation is int:
+                if _f.annotation in (int, float):
                     names.add(_n)
     return names
 

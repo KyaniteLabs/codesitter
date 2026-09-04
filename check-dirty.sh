@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # C2 guard: the runner reads this dir via git pull. Uncommitted files = invisible.
 set -u
+# E6 (round 13): testability override — the runner default stays the fixed
+# checkout; controlled tests point the guard at a sandbox repo
+CHECKOUT="${FL4WRITE_CHECKOUT:-$HOME/workspaces/fl4write}"
 # MECE round-6 (sol F6-E05): never certify a MISSING checkout as clean
-cd ~/workspaces/fl4write || { echo "ALERT: cannot cd to ~/workspaces/fl4write — checkout missing"; exit 1; }
+cd "$CHECKOUT" || { echo "ALERT: cannot cd to $CHECKOUT — checkout missing"; exit 1; }
 # MECE rounds 1-3: ANY porcelain line is a hazard (MM/AM/UU included);
 # report honest untracked vs modified counts (luna F3-005)
 STATUS=$(git status --porcelain 2>&1)

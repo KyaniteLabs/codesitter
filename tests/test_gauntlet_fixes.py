@@ -1518,10 +1518,12 @@ class TestMECERound4M3Pins:
             return {"check_runs": [{"id": i} for i in range(100)]}
 
         ad._call = fake_call
+        # F13-D003 (reopened F4-D08): capped evidence is INCOMPLETE — the
+        # partial prefix must never be returned as a full picture (ci_watch
+        # used to certify a potentially-red HEAD clean)
         with caplog.at_level(logging.WARNING, logger="fl4write.forges"):
-            sha, runs = ad.head_check_runs("o/r")
-        assert sha == "c" * 40
-        assert len(runs) == 300  # 3 full pages, then the cap stops the scan
+            out = ad.head_check_runs("o/r")
+        assert out is None  # degrade, never partial-as-complete
         assert "capped" in caplog.text
 
 
@@ -2139,7 +2141,9 @@ class TestMECERound6SolPins:
         cd = (REPO_ROOT / "check-dirty.sh").read_text()
         assert "MALFORMED (shape)" in rc and 'isinstance(p.get("due"), list)' in rc
         assert "cd ~/workspaces/fl4write ||" in rc
-        assert "cd ~/workspaces/fl4write ||" in cd
+        # E6 (round 13): the guard cd's to the checkout (overridable for
+        # controlled tests) and must never certify a missing one clean
+        assert 'cd "$CHECKOUT" ||' in cd and "FL4WRITE_CHECKOUT" in cd
 
     def test_readme_fleet_count_matches_repo(self):
         import re as _re
@@ -4329,3 +4333,75 @@ class TestMECERound12AnalyzerProbes:
         assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"
         assert env["GIT_CONFIG_NOSYSTEM"] == "1"
         assert "GIT_TERMINAL_PROMPT" in env
+
+
+class TestMECERound13OpsReal:
+    """Round-13 DOM-E real-behavior pins: check-dirty under a failing git
+    shim (E6) and privileged-git hardening against a hostile HOME .gitconfig
+    (E7)."""
+
+    def test_check_dirty_failing_git_never_certifies_clean(self, tmp_path):
+        import subprocess
+        # controlled checkout: clean repo
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "x.py").write_text("x = 1\n")
+        shim = tmp_path / "bin"
+        shim.mkdir()
+        (shim / "git").write_text("#!/bin/sh\necho boom >&2\nexit 3\n")
+        (shim / "git").chmod(0o755)
+        env = {"PATH": f"{shim}:/usr/bin:/bin", "FL4WRITE_CHECKOUT": str(repo)}
+        r = subprocess.run(["bash", str(REPO_ROOT / "check-dirty.sh")],
+                           capture_output=True, text=True, env=env,
+                           cwd=str(tmp_path))
+        assert r.returncode != 0
+        assert "integrity UNKNOWN" in r.stdout
+
+    def test_check_dirty_clean_checkout_passes(self, tmp_path):
+        import subprocess
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "x.py").write_text("x = 1\n")
+        subprocess.run(["git", "-C", str(repo), "add", "x.py"], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t",
+                        "-c", "user.name=t", "commit", "-q", "-m", "c"], check=True)
+        r = subprocess.run(["bash", str(REPO_ROOT / "check-dirty.sh")],
+                           capture_output=True, text=True,
+                           env={"PATH": "/usr/bin:/bin",
+                                "FL4WRITE_CHECKOUT": str(repo)},
+                           cwd=str(tmp_path))
+        assert r.returncode == 0 and "clean" in r.stdout
+
+    def test_hardened_git_ignores_hostile_home_gitconfig(self, tmp_path):
+        """E7: a test-planted ~/.gitconfig (core.hooksPath) must never run
+        hooks or steer the privileged commit."""
+        import subprocess
+        from fl4write import executor as ex
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        (repo / "x.py").write_text("x = 1\n")
+        subprocess.run(["git", "-C", str(repo), "add", "x.py"], check=True)
+
+        hostile_home = tmp_path / "home"
+        hook_dir = tmp_path / "hooks"
+        hook_dir.mkdir()
+        marker = tmp_path / "hook-ran"
+        (hook_dir / "pre-commit").write_text(
+            f"#!/bin/sh\ntouch {marker}\n")
+        (hook_dir / "pre-commit").chmod(0o755)
+        hostile_home.mkdir(parents=True, exist_ok=True)
+        (hostile_home / ".gitconfig").write_text(
+            f'[core]\n\thooksPath = {hook_dir}\n')
+
+        env = ex._git_hardened_env(ex._sandbox_env_for(str(hostile_home)))
+        env.update({"GIT_AUTHOR_NAME": "fl4write[bot]",
+                    "GIT_AUTHOR_EMAIL": "fl4write@kyanitelabs.tech",
+                    "GIT_COMMITTER_NAME": "fl4write[bot]",
+                    "GIT_COMMITTER_EMAIL": "fl4write@kyanitelabs.tech"})
+        r = ex._run(["git", "commit", "-q", "-m", "c"], cwd=repo, env=env)
+        assert r.returncode == 0, r.stderr
+        assert not marker.exists(), "hostile hook executed during privileged commit"
