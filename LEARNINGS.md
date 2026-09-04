@@ -594,3 +594,17 @@ HOME's .gitconfig and steer the post-test commit/push; per-run disposable HOME +
 suppression + a write-tree/HEAD^{tree} equality belt closes the ride-along. (3) Incomplete
 enumeration must RAISE, not return (F12-D002/B7): capped pagination returning a partial list as
 complete is how watermarks advance past unseen issues and prune deletes live PR memory.
+
+## 59. Round 13: three Criticals and the strongest reopen signal yet (2026-09-04)
+Round 13 (45 findings, 3 Criticals) lessons: (1) CREDENTIAL NAMESPACES ARE A GRAPH,
+NOT A PAIR (F13-B1/D1/A1): sandbox HOME reuse, cross-forge env duplication and
+low-entropy assignment values were three different-looking holes in ONE invariant —
+executed content must never influence what credential travels where, and 'credential'
+must be defined by CONTEXT (password=...), not by entropy. (2) When a gate and a law
+collide, scope by clause: the wide negation strip is right for contradiction/scenario
+gates but wrong for failure-claim detection — claims need the NARROW negation rule
+('never fail' refutes; 'never runs it ... failure' claims). The same scope-vs-law
+discipline from #57 recurred. (3) Display transforms need injective encodings: every
+round that mapped raw paths through a lossy display (redaction, newline→space, '→`)
+created a reopen next round — control-escaping finally made lifecycle identity
+byte-faithful.
