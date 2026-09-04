@@ -62,6 +62,10 @@ case "$PLAN" in
     ""|'{'*) ;;
     *) PLAN="" ;;
 esac
+# MECE round-4 (terra F4-401): "starts with {" is not JSON — "{not-json"
+# slipped past and the downstream parsers silently produced an empty plan
+# (quiet no-op, breaking the loud-failure contract)
+echo "$PLAN" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>>"$LOG" || PLAN=""
 if [ $PLAN_RC -ne 0 ] || [ -z "$PLAN" ]; then
     echo "$(date -Iseconds) ERR: tier scheduler failed — fleet NOT cycled this hour" >> "$LOG"
     exit 1
