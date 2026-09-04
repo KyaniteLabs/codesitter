@@ -5,10 +5,13 @@ ADV-04 heading spoof in the posted comment. Each failure class pinned."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fl4write import config as cfg
 from fl4write.analyzer import analyze
 from fl4write.models import Finding, PullRequest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 RAW = {
     "repo": "KyaniteLabs/fl4write",
@@ -1079,7 +1082,7 @@ class TestMECERound3GlmPins:
 
     def test_retro_loop_contained(self):
         # the retro loop carries a ForgeError except now
-        src = open("/Users/simongonzalezdecruz/workspaces/fl4write/fl4write/engine.py").read()
+        src = (REPO_ROOT / "fl4write/engine.py").read_text()
         assert "retro #" in src and "forge error contained" in src
 
 
@@ -1125,7 +1128,7 @@ class TestMECERound3SolPins:
         assert "\\## spoof" in body  # the spoof survives only as literal text
 
     def test_verify_drop_before_tests(self):
-        src = open("/Users/simongonzalezdecruz/workspaces/fl4write/fl4write/executor.py").read()
+        src = (REPO_ROOT / "fl4write/executor.py").read_text()
         i = src.find("def verify_diff_tests")
         j = src.find("def open_issue")
         seg = src[i:j]
