@@ -1569,3 +1569,80 @@ class TestMECERound5TerraPins:
         assert cred not in body  # credential-shaped path redacted
         assert "## forged heading" not in body  # no forged structure
         assert not any(line.startswith("##") for line in body.splitlines()[1:])
+
+
+class TestMECERound5LunaPins:
+    """Round-5 luna DOM-D: adapter row-shape containment (F5-001/002), model
+    route numeric bounds (F5-003), cycle-budget env validation (F5-004)."""
+
+    @staticmethod
+    def _adapter(cls):
+        base = ("https://api.github.com" if cls is GitHubAdapter
+                else "https://git.example.com/api/v1")
+        return cls(cfg.ForgeBinding(role="primary", api_base=base, token_env="GHT"))
+
+    def test_null_annotation_rows_degrade_in_adapter(self):
+        ad = self._adapter(GitHubAdapter)
+        ad._paginated = lambda path, page_size=50, max_pages=10: [
+            None, "junk", {"path": "x.py", "start_line": 3, "message": "m",
+                           "annotation_level": "failure"}]
+        out = ad.check_annotations("o/r", 1)
+        assert out == [{"path": "x.py", "start_line": 3, "message": "m",
+                        "level": "failure"}]
+
+    def test_null_tree_entries_degrade_both_adapters(self):
+        for cls in (GitHubAdapter, ForgejoAdapter):
+            ad = self._adapter(cls)
+
+            def fake_call(method, path):
+                if path == "/repos/o/r":
+                    return {"default_branch": "main"}
+                if "/git/trees/" in path:
+                    if cls is GitHubAdapter:  # one recursive flattened call
+                        return {"tree": [None, 7,
+                                         {"type": "blob", "path": "a.py", "size": 3},
+                                         {"type": "blob", "path": "d/b.py", "size": 4}]}
+                    if "trees/sub" in path:  # Forgejo per-subtree walk
+                        return {"tree": [{"type": "blob", "path": "b.py", "size": 4}]}
+                    return {"tree": [None, 7, {"type": "blob", "path": "a.py", "size": 3},
+                                     {"type": "tree", "sha": "sub", "path": "d"}]}
+                return {"sha": "c" * 40}  # GitHub commits/{branch} call
+
+            ad._call = fake_call
+            out, _trunc = ad.list_tree_files("o/r")
+            assert ("a.py", 3) in out
+            assert ("d/b.py", 4) in out, f"{cls.__name__} crashed or dropped the subtree"
+
+    def test_model_route_rejects_non_finite_and_non_positive(self):
+        from pydantic import ValidationError
+
+        raw = {"repo": "o/r",
+               "forges": {"github": {"role": "primary", "api_base": "https://api.github.com",
+                                     "token_env": "GHT"}},
+               "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"}}
+        for field, value in (("temperature", float("nan")),
+                             ("temperature", float("inf")),
+                             ("temperature", -0.1),
+                             ("max_tokens", 0),
+                             ("max_tokens", -5)):
+            m = {k: (dict(v) if isinstance(v, dict) else v) for k, v in raw.items()}
+            m["model"] = dict(raw["model"])
+            m["model"][field] = value
+            with pytest.raises(ValidationError):
+                cfg.RepoConfig.model_validate(m)
+
+    def test_cycle_budget_env_is_validated(self, monkeypatch, capsys):
+        from fl4write import cli as cli_mod
+
+        monkeypatch.setenv("FL4WRITE_CYCLE_BUDGET_S", "abc")
+        assert cli_mod._cycle_budget_s() is None
+        assert "must be an integer" in capsys.readouterr().err
+        monkeypatch.setenv("FL4WRITE_CYCLE_BUDGET_S", "-5")
+        assert cli_mod._cycle_budget_s() is None
+        assert "must be positive" in capsys.readouterr().err
+        monkeypatch.setenv("FL4WRITE_CYCLE_BUDGET_S", "0")
+        assert cli_mod._cycle_budget_s() is None
+        monkeypatch.delenv("FL4WRITE_CYCLE_BUDGET_S")
+        assert cli_mod._cycle_budget_s() == 840
+        monkeypatch.setenv("FL4WRITE_CYCLE_BUDGET_S", "120")
+        assert cli_mod._cycle_budget_s() == 120

@@ -44,8 +44,11 @@ class ModelRoute(_StrictModel):
     endpoint: str = Field(pattern=r"^https?://")  # http allowed: BYO-LLM localhost routers
     model: str
     key_env: str = ""  # empty = no auth header
-    temperature: float = 0.2
-    max_tokens: int = 4000
+    # MECE round-5 (luna F5-003): NaN/Infinity temperature serializes as
+    # invalid JSON and <=0 max_tokens is an unusable request — bound both
+    # (pydantic ge/le comparisons reject NaN by construction)
+    temperature: float = Field(default=0.2, ge=0.0, le=2.0)
+    max_tokens: int = Field(default=4000, ge=1, le=1_048_576)
     seed: int | None = None  # reproducibility for regression triage
 
 

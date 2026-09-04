@@ -169,6 +169,23 @@ def _unknown_flags(argv: list[str]) -> list[str]:
     return [a for a in argv[1:] if a.startswith("--") and a not in _KNOWN_FLAGS]
 
 
+def _cycle_budget_s() -> int | None:
+    """Parse FL4WRITE_CYCLE_BUDGET_S (default 840). None = invalid: the
+    error is printed and the caller must exit 2 — a raw ValueError traceback
+    or a silently already-expired (negative) deadline is a misconfiguration
+    (MECE round-5, luna F5-004)."""
+    raw = os.environ.get("FL4WRITE_CYCLE_BUDGET_S", "840")
+    try:
+        budget_s = int(raw)
+    except ValueError:
+        print(f"FL4WRITE_CYCLE_BUDGET_S must be an integer, got {raw!r}", file=sys.stderr)
+        return None
+    if budget_s <= 0:
+        print(f"FL4WRITE_CYCLE_BUDGET_S must be positive, got {budget_s}", file=sys.stderr)
+        return None
+    return budget_s
+
+
 def main() -> int:
     _install_sigterm_handler()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -238,7 +255,9 @@ def main() -> int:
             config = config.model_copy(update={"bot_login": "simongonzalezdc"})
     _org_model_keys()
     state_path = Path.home() / ".fl4write" / f"{config.repo.replace('/', '__')}.state.json"
-    budget_s = int(os.environ.get("FL4WRITE_CYCLE_BUDGET_S", "840"))
+    budget_s = _cycle_budget_s()
+    if budget_s is None:
+        return 2  # error already printed by the helper
     report = run_cycle(
         config,
         state_path,

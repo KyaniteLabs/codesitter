@@ -249,6 +249,10 @@ class ForgeAdapter:
             return None
         out = []
         for a in rows if isinstance(rows, list) else []:
+            if not isinstance(a, dict):  # MECE round-5 (luna F5-001): null /
+                # non-object rows from a shape-drifted forge must degrade here,
+                # not AttributeError past the adapter into the cycle
+                continue
             out.append({
                 "path": a.get("path") or "",
                 "start_line": a.get("start_line") or a.get("line") or 0,
@@ -282,10 +286,13 @@ class ForgeAdapter:
             if not sha:
                 return None
             tree = self._call("GET", f"/repos/{repo}/git/trees/{sha}?recursive=1")
+            # MECE round-5 (luna F5-002): malformed (non-object) tree entries
+            # must degrade — never AttributeError past the adapter into the
+            # cycle
             files = [
                 (e.get("path") or "", int(e.get("size") or 0))
                 for e in (tree.get("tree") or [])
-                if e.get("type") == "blob"
+                if isinstance(e, dict) and e.get("type") == "blob"
             ]
             return files, bool(tree.get("truncated"))
         except ForgeError:
@@ -566,6 +573,8 @@ class ForgejoAdapter(ForgeAdapter):
                 if t.get("truncated"):
                     truncated = True
                 for e in t.get("tree") or []:
+                    if not isinstance(e, dict):  # MECE round-5 (luna F5-002):
+                        continue  # malformed entry degrades, never crashes
                     if e.get("type") == "blob":
                         out.append((prefix + (e.get("path") or ""), int(e.get("size") or 0)))
                     elif e.get("type") == "tree":
@@ -573,6 +582,8 @@ class ForgejoAdapter(ForgeAdapter):
 
             root = self._call("GET", f"/repos/{repo}/git/trees/{branch_q}")
             for e in root.get("tree") or []:
+                if not isinstance(e, dict):  # MECE round-5 (luna F5-002)
+                    continue
                 if e.get("type") == "blob":
                     out.append(((e.get("path") or ""), int(e.get("size") or 0)))
                 elif e.get("type") == "tree":
