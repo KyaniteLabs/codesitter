@@ -13,6 +13,8 @@ regression could land without a red test:
 
 from __future__ import annotations
 
+import tempfile
+
 from fl4write import config as cfg
 from fl4write import fixlane, metrics
 from fl4write.forges import ForgeAdapter
@@ -77,11 +79,15 @@ class TestSandboxEnv:
 
         monkeypatch.setenv("CODESITTER_GITHUB_TOKEN", "ghs_secret")
         monkeypatch.setenv("CODESITTER_DEEPSEEK_KEY", "di_secret")
-        monkeypatch.setenv("HOME", "/home/simon")  # allowlisted (known open decision)
+        monkeypatch.setenv("HOME", "/home/simon")
+        monkeypatch.setenv("PYTHONPATH", "/custom")
         env = executor._sandbox_env()
         assert "CODESITTER_GITHUB_TOKEN" not in env and "CODESITTER_DEEPSEEK_KEY" not in env
-        assert env.get("HOME") == "/home/simon"
-        assert set(env) <= set(executor._TEST_ENV_ALLOW)
+        # MECE round-1 (luna F1-02): executed code must not see the real home
+        # (~/.sinter etc.) — HOME points at a throwaway sandbox dir
+        assert env.get("HOME") != "/home/simon"
+        assert env["HOME"].startswith(tempfile.gettempdir()) or "sandbox-home" in env["HOME"]
+        assert set(env) <= set(executor._TEST_ENV_ALLOW) | {"HOME", "PYTHONPATH"}
 
 
 class TestEscalate:

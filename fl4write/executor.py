@@ -60,10 +60,15 @@ PATCH_SYSTEM = (
     'requires. If you cannot fix it, reply {"fixed_content": null}.'
 )
 
-# Test subprocesses see a MINIMAL environment — model-generated patches are
-# executed code and must never reach tokens, keys, or the secret store (the
-# lethal trifecta: untrusted input + secrets access + network egress).
-_TEST_ENV_ALLOW = ("PATH", "LANG", "LC_ALL", "HOME", "TMPDIR", "PYTHONPATH", "SYSTEMROOT")
+# Test subprocesses see a MINIMAL environment — model-generated patches and
+# organic-PR tests are EXECUTED CODE and must never reach tokens, keys, or the
+# secret store (the lethal trifecta). MECE round-1 audit (luna F1-02): keeping
+# the real HOME let executed code read ~/.sinter/config.json (all org keys) —
+# HOME now points at a throwaway sandbox dir created per process.
+_TEST_ENV_ALLOW = ("PATH", "LANG", "LC_ALL", "TMPDIR", "PYTHONPATH", "SYSTEMROOT")
+_SANDBOX_HOME: str | None = None
+_SECRET_ENV_KEYS = ("GITHUB_TOKEN", "CODESITTER", "MINIMAX", "ANTHROPIC", "OPENAI",
+                    "AWS", "AZURE", "GOOGLE", "FL4WRITE_TELEMETRY", "GIT_ASKPASS")
 
 
 def _run(cmd: list[str], cwd: Path | None = None, timeout: int = 120,
@@ -79,8 +84,36 @@ def _run(cmd: list[str], cwd: Path | None = None, timeout: int = 120,
     )
 
 
+def _sandbox_home() -> str:
+    """One throwaway HOME per process for executed code. Residual boundary
+    (documented, MECE round 1): a determined same-user process can still read
+    ABSOLUTE paths (/Users/<runner>/.sinter/...) — true isolation needs OS
+    privilege separation (dedicated runner user), tracked for the sandbox
+    tranche. This closes every HOME-relative secret store (~/.sinter, ~/.ssh,
+    ~/.aws, ~/.codex/auth.json) and the env-var secret surface."""
+    global _SANDBOX_HOME
+    if _SANDBOX_HOME is None:
+        _SANDBOX_HOME = tempfile.mkdtemp(prefix="fl4write-sandbox-home-")
+    return _SANDBOX_HOME
+
+
 def _sandbox_env() -> dict[str, str]:
-    return {k: os.environ[k] for k in _TEST_ENV_ALLOW if k in os.environ}
+    out = {k: os.environ[k] for k in _TEST_ENV_ALLOW if k in os.environ}
+    out["HOME"] = _sandbox_home()
+    # user-site packages (e.g. pytest) live under the REAL home's .local —
+    # re-expose ONLY that library dir (never the secret stores in ~/.sinter)
+    try:
+        import site as _site
+        real_user = Path(_site.getusersitepackages())
+        if real_user.is_dir():
+            prev = out.get("PYTHONPATH")
+            out["PYTHONPATH"] = str(real_user) + (os.pathsep + prev if prev else "")
+    except Exception:
+        pass
+    for k in list(out):
+        if any(s in k.upper() for s in _SECRET_ENV_KEYS):
+            out.pop(k, None)
+    return out
 
 
 def _gh_api(method: str, path: str, data: dict | None = None) -> Any:
@@ -167,12 +200,14 @@ def _drop_askpass(env: dict[str, str]) -> None:
 
 def _pytest_evidence(argv: list[str], cwd: Path, timeout: int,
                      env: dict[str, str], junit_path: Path) -> tuple[bool, subprocess.CompletedProcess[str]]:
-    """Run a pytest-style suite and require HOST-CONTROLLED completion evidence:
-    a --junitxml file, which pytest writes only after the session genuinely
-    finishes (UltraQA round 3, Sol audit: output-text evidence is forgeable —
-    a hostile patch can flush a fake summary and os._exit(0); the junit file
-    cannot be produced by a killed process). Green = tests>0, failures=0,
-    errors=0. Returns (green, result)."""
+    """Run a pytest-style suite and require COMPLETION evidence: a --junitxml
+    file, which pytest writes only when the session genuinely finishes — this
+    defeats the accidental-kill and flush-then-exit classes (a killed process
+    never writes junit). Honest boundary (MECE round 1, luna F1-01): the
+    junit path is visible in argv to the same-user test process, so a
+    DETERMINED adversary in the executed code can forge the artifact; closing
+    that needs OS privilege separation (sandbox tranche), not argv secrets.
+    Green = tests>0, failures=0, errors=0. Returns (green, result)."""
     xml_argv = list(argv)
     if not any(a.startswith("--junitxml") for a in xml_argv):
         xml_argv += ["--junitxml", str(junit_path)]
@@ -210,11 +245,11 @@ def _run_tests(cwd: Path, config: RepoConfig) -> bool:
 
     UltraQA round 3 (P4 + Sol audit): rc 0 is a promise, output is forgeable —
     a hostile 'fix' can flush a fake summary then os._exit(0) at import time.
-    pytest-style cmds therefore require a --junitxml artifact written by the
-    runner after genuine completion. NON-pytest runners (vitest/pnpm/make)
-    have no host-controlled evidence yet: the fix gate FAILS CLOSED for them
-    with a clear reason until a per-runner evidence mapping lands (the fix
-    lane is GitHub-only v1 and 0 fixes have landed — blocking is free).
+    pytest-style cmds therefore require a --junitxml completion artifact.
+    NON-pytest runners (vitest/pnpm/make) have no completion evidence yet:
+    the fix gate FAILS CLOSED for them with a clear reason until a per-runner
+    evidence mapping lands (the fix lane is GitHub-only v1 and 0 fixes have
+    landed — blocking is free).
     """
     default = os.environ.get("CODESITTER_TEST_CMD", "python3 -m pytest tests/ -x -q --tb=line")
     if config.test_cmd and any(m in config.test_cmd for m in ("&&", ";", "|")):
