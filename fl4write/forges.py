@@ -150,6 +150,13 @@ class ForgeAdapter:
             out.extend(batch)
             if len(batch) < page_size:
                 break
+        else:
+            # MECE round-1 (luna F1-008): stopped at max_pages with every page
+            # full — rows past the cap exist and are silently invisible
+            import logging as _log
+            _log.getLogger("fl4write.forges").warning(
+                "paginated %s stopped at %d full pages (page_size=%d) — rows past "
+                "the cap are invisible to this call", path, max_pages, page_size)
         return out
 
     def reaction_summary(self, repo: str, comment_id: int) -> dict[str, dict[str, int]] | None:
