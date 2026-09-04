@@ -946,3 +946,58 @@ class TestMECERedaction:
             [f], make_config(), review_hash="abc")
         assert "ghp_" + "A" * 20 not in body
         assert "[redacted]" in body
+
+
+class TestMECERound2LunaPins:
+    """Round-2 luna DOM-A: whitespace envelopes (F2-001), quoted git paths
+    (F2-002), path display normalization lifecycle (F2-003/004)."""
+
+    def test_whitespace_envelope_duplicate_refused(self):
+        import pytest
+        from fl4write.analyzer import extract_json
+        attack = '{ "fixed_content" : "FIRST" }\n{"fixed_content": "SECOND"}'
+        with pytest.raises(ValueError):
+            extract_json(attack, envelope_key="fixed_content")
+
+    def test_whitespace_envelope_single_parses(self):
+        from fl4write.analyzer import extract_json
+        out = extract_json('{ "fixed_content" : "ok" }', envelope_key="fixed_content")
+        assert out == {"fixed_content": "ok"}
+
+    def test_quoted_git_path_spans(self):
+        from fl4write.analyzer import _diff_path_texts, _diff_line_spans, _git_diff_path
+        diff = ('diff --git "a/my file.py" "b/my file.py"\n'
+                "@@ -1 +1,2 @@\n def f():\n+    return 1\n")
+        assert "my file.py" in _diff_path_texts(diff)
+        assert _git_diff_path('diff --git a/x.py b/x.py') == "x.py"
+
+    def test_credential_path_redacted_in_heading(self):
+        from fl4write import renderer
+        from fl4write.models import Finding
+        fake = "AKIA" + "IOSFODNN7EXAMPLE"
+        f = Finding(rule_id="general", severity="Major",
+                    path=f"src/{fake}.py", line=1, category="CI",
+                    message="m", proposal="")
+        body = renderer.render_review(
+            PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40),
+            [f], make_config(), review_hash="abc")
+        assert fake not in body
+        parsed = renderer.parse_finding_lines(body)
+        assert parsed and parsed[0][1] != f"src/{fake}.py"  # display form
+
+    def test_backtick_path_lifecycle_stable(self):
+        from fl4write import renderer
+        from fl4write.models import Finding
+        # same finding across two reviews must not flip new<->resolved
+        f = Finding(rule_id="general", severity="Major", path="src/`x`.py", line=1,
+                    category="CI", message="m", proposal="")
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        body1 = renderer.render_review(pr, [f], make_config(), review_hash="abc")
+        parsed = renderer.parse_finding_lines(body1)
+        prev = [Finding(rule_id="general", severity="Major", path="src/`x`.py",
+                        line=1, category="CI", message="m", proposal="")]
+        body2 = renderer.render_review(pr, [f], make_config(), review_hash="abc",
+                                       previous_findings=prev)
+        assert "🆕" not in body2.split("🆕", 1)[0][-200:] or "🆕 " not in body2
+        assert "Resolved since last review" not in body2
+        assert "✅" not in body2

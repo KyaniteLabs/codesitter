@@ -42,6 +42,24 @@ log = logging.getLogger("fl4write.analyzer")
 MAX_DIFF_CHARS = 60_000
 
 
+def _git_diff_path(line: str) -> str | None:
+    """New-file path from a `diff --git a/.. b/..` header, handling git's
+    C-quoted paths for spaces/specials (MECE round-2, luna F2-002: quoted
+    headers used to yield no path, disabling grounding and per-path secret
+    anchoring for files with spaces)."""
+    m = re.search(r'(?: b/|"b/)(.+)$', line)  # quoted headers: `"b/path"`
+    if not m:
+        return None
+    raw = m.group(1).rstrip('"')
+    if raw.startswith('"') and raw.endswith('"'):
+        try:
+            raw = raw[1:-1].encode("utf-8").decode("unicode_escape")
+        except (UnicodeDecodeError, UnicodeError):
+            return raw[1:-1]
+        # decode("unicode_escape") mangles non-ascii utf-8 bytes; best effort:
+    return raw
+
+
 def _diff_path_texts(diff_text: str) -> dict[str, str]:
     """Split a unified diff into {path: its hunks} for per-path grounding."""
     out: dict[str, str] = {}
@@ -51,8 +69,7 @@ def _diff_path_texts(diff_text: str) -> dict[str, str]:
         if line.startswith("diff --git "):
             if cur is not None:
                 out[cur] = "\n".join(parts)
-            m = re.search(r" b/([^ \t]+)$", line)
-            cur = m.group(1) if m else None
+            cur = _git_diff_path(line)
             parts = []
         elif cur is not None:
             parts.append(line)
@@ -67,8 +84,7 @@ def _diff_line_spans(diff_text: str) -> dict[str, list[tuple[int, int]]]:
     cur: str | None = None
     for line in diff_text.splitlines():
         if line.startswith("diff --git "):
-            m = re.search(r" b/([^ \t]+)$", line)
-            cur = m.group(1) if m else None
+            cur = _git_diff_path(line)
             spans.setdefault(cur or "", [])
         elif cur is not None and line.startswith("@@"):
             m = re.search(r"\+(\d+)(?:,(\d+))? @@", line)
@@ -210,24 +226,32 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
         # fix aborted) instead of consuming attacker-chosen content.
         decoded: dict = {}
         unique: set[str] = set()
-        pos = 0
-        while True:
-            idx = content.find(marker, pos)
-            if idx == -1:
-                break
-            try:
-                parsed, _ = _json.JSONDecoder().raw_decode(content[idx:])
-            except ValueError:
-                pos = idx + 1
+        # MECE round-2 (luna F2-001): discovery must tolerate whitespace
+        # between the key and its quotes/colon — a literal '{"key"' scan
+        # skipped '{ "key" : ... }' envelopes, letting a trailing compact
+        # (injected) envelope win. Scan for the key token, decode from the
+        # nearest '{' before it.
+        key_pat = _re.compile(re.escape(f'"{envelope_key}"') + r"\s*:")
+        seen_spans: list[tuple[int, int]] = []
+        for m in key_pat.finditer(content):
+            brace = content.rfind("{", 0, m.start())
+            if brace == -1:
                 continue
-            if isinstance(parsed, dict) and envelope_key in parsed:
+            try:
+                parsed, end = _json.JSONDecoder().raw_decode(content[brace:])
+            except ValueError:
+                continue
+            if isinstance(parsed, dict) and envelope_key in parsed and m.start() > brace:
+                if any(s <= brace < e for s, e in seen_spans):
+                    continue  # same decoded object, key matched twice
+                seen_spans.append((brace, brace + end))
                 unique.add(_json.dumps(parsed, sort_keys=True))
                 decoded = parsed
-            pos = idx + 1
         if len(unique) > 1:
             raise ValueError(
-                f"ambiguous envelope: {len(unique)} distinct occurrences of {marker!r} "
-                "in one response — refusing (possible injected duplicate)")
+                f"ambiguous envelope: {len(unique)} distinct occurrences of "
+                f"'\"{envelope_key}\"': ' in one response — refusing "
+                "(possible injected duplicate)")
         if len(unique) == 1:
             return decoded
         for c in (cleaned, content):

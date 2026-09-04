@@ -79,13 +79,22 @@ def parse_finding_lines(body: str) -> list[tuple[str, str, int, str]]:
     ]
 
 
+def path_display(path: str) -> str:
+    """Display form of a repo-controlled path in rendered comments: structure
+    characters removed and credential-shaped runs redacted (terra F1-08,
+    luna F2-003). Lifecycle comparisons MUST go through this same transform
+    on both sides (F2-004) so identity survives display loss."""
+    return scrub.redact_credentials(
+        str(path).replace("`", "").replace("\n", " ").replace("\r", " "))
+
+
 def render_finding(f: Finding, tone: str, post_merge: bool = False) -> str:
     """One finding as a section with emoji badge + collapsible fix proposal."""
     emoji = _SEVERITY_EMOJI.get(f.severity, "⚪")
     urgency = (_URGENCY_POST_MERGE if post_merge else _URGENCY).get(f.severity, "")
-    # MECE round-1 (terra F1-08): repo-controlled paths are untrusted text —
-    # a backtick/newline in a filename must not break the heading structure
-    safe_path = str(f.path).replace("`", "").replace("\n", " ").replace("\r", " ")
+    # MECE rounds 1-2: paths are repo-controlled untrusted text — display form
+    # strips structure chars and redacts credential-shaped runs
+    safe_path = path_display(f.path)
     safe_rule = str(f.rule_id).replace("`", "")
     parts: list[str] = [
         FINDING_LINE_FMT.format(emoji=emoji, sev=f.severity, path=safe_path,
@@ -133,9 +142,13 @@ def render_review(
 ) -> str:
     """Full persistent-comment body with the design system applied."""
     tone = _tone_for(pr, config)
-    previous_keys = {(f.path, f.line, f.rule_id) for f in (previous_findings or [])}
-    current_keys = {(f.path, f.line, f.rule_id) for f in findings}
-    resolved = [f for f in (previous_findings or []) if (f.path, f.line, f.rule_id) not in current_keys]
+    # MECE round-2 (luna F2-004): identity comparisons use the DISPLAY path on
+    # both sides — previous findings parsed back from a comment already carry
+    # display forms; raw current paths are normalized to match
+    previous_keys = {(path_display(f.path), f.line, f.rule_id) for f in (previous_findings or [])}
+    current_keys = {(path_display(f.path), f.line, f.rule_id) for f in findings}
+    resolved = [f for f in (previous_findings or [])
+                if (path_display(f.path), f.line, f.rule_id) not in current_keys]
 
     head = "## 🔍 FL4WRITE review (post-merge)\n\n" if post_merge else "## 🔍 FL4WRITE review\n\n"
 
@@ -157,7 +170,8 @@ def render_review(
                 )
             )
         if resolved:
-            lines = "\n".join(f"- ✅ `~{f.path}:{f.line}` ({f.rule_id})" for f in resolved)
+            lines = "\n".join(f"- ✅ `~{path_display(f.path)}:{f.line}` ({f.rule_id})"
+                           for f in resolved)
             sections.append(f"### ✅ Resolved since last review\n\n{lines}")
         body = "\n\n---\n\n".join(sections)
     elif post_merge:
