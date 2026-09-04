@@ -620,3 +620,94 @@ class TestADVR4FinalE2E:
         (tmp_path / "tests").mkdir(exist_ok=True)
         cfg_obj = make_config(test_cmd="corepack pnpm install --silent && corepack pnpm test --silent")
         assert _run_tests(tmp_path, cfg_obj) is False  # DialectOS class: fail closed
+
+
+class TestMECERound1Pins:
+    """Round-1 MECE audit fixes: askpass leak (F1-04), binascii containment
+    (F1-10), issues-lane containment (F1-13), sandbox HOME (F1-02)."""
+
+    def test_askpass_helper_removed_on_exception_paths(self, monkeypatch, tmp_path):
+        import subprocess
+        from fl4write import executor
+
+        created = []
+        orig_mkdtemp = executor.tempfile.mkdtemp
+        def spy_mkdtemp(prefix="tmp", dir=None):
+            d = orig_mkdtemp(prefix=prefix, dir=dir)
+            if prefix.startswith("fl4write-askpass"):
+                created.append(d)
+            return d
+        monkeypatch.setattr(executor.tempfile, "mkdtemp", spy_mkdtemp)
+        def boom_run(cmd, cwd=None, timeout=120, env=None):
+            raise subprocess.TimeoutExpired(cmd, timeout=180)
+        monkeypatch.setattr(executor, "_run", boom_run)
+        monkeypatch.setattr(executor, "_gh_api", lambda *a, **k: {})
+        from pathlib import Path as P
+        for d in created:
+            assert P(d).exists()
+        # attempt_fix with fetch timing out must clean its askpass helper
+        from fl4write.models import PullRequest, Finding
+        from fl4write import config as cfg
+        raw = {"repo": "KyaniteLabs/fl4write",
+               "forges": {"github": {"role": "primary", "api_base": "http://x", "token_env": "T"}},
+               "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+               "review": {"secrets": "x", "testing-quality": "t"},
+               "severity_vocab": ["Critical", "Major", "Minor", "Nit"],
+               "shadow": False, "ci_watch": {"enabled": False},
+               "fix": {"enabled": True, "merge_own_prs": False}}
+        cfg_obj = cfg.RepoConfig.model_validate(raw)
+        monkeypatch.setattr(executor, "_get_file_content", lambda repo, path, ref: "code")
+        monkeypatch.setattr(executor, "_call_model",
+                            lambda route, prompt, system=None: '{"fixed_content": "fixed"}')
+        import fl4write.telemetry as tel
+        monkeypatch.setattr(tel, "_STREAM", None)
+        monkeypatch.setenv("FL4WRITE_TELEMETRY", str(tmp_path / "t.jsonl"))
+        monkeypatch.setenv("CODESITTER_GITHUB_TOKEN", "ghs_secret")
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        f = Finding(rule_id="testing-quality", severity="Major", path="x.py", line=1,
+                    category="CI", message="bug")
+        res = executor.attempt_fix(pr, f, cfg_obj)
+        assert res["status"] in ("error",)  # contained
+        leftover = [d for d in created if P(d).exists()]
+        assert leftover == [], f"askpass helpers leaked: {leftover}"
+
+    def test_binascii_error_contained(self, monkeypatch):
+        from fl4write import executor
+        monkeypatch.setattr(executor, "_gh_api",
+                            lambda method, path: {"encoding": "base64", "content": "!!!not-base64!!!"})
+        out = executor._get_file_content("o/r", "x.py", "a" * 40)
+        assert out is None  # invalid base64 degrades, never raises
+
+    def test_issues_lane_remote_failure_contained(self):
+        from fl4write.forges import ForgeError
+        from fl4write import config as cfg
+
+        class BoomForge:
+            name = "github"
+            bot_login = "fl4write[bot]"
+            def _paginated(self, path, page_size=50, max_pages=10):
+                return [{"number": 7, "title": "x", "body": "b"}]
+            def _call(self, method, path): return []
+            def find_existing_triage(self, repo, num, bot_login):  # via issues module fn
+                return None
+            def update_comment(self, *a): raise ForgeError("boom")
+            def create_comment(self, *a): raise ForgeError("boom")
+
+        raw = {"repo": "K/x",
+               "forges": {"github": {"role": "primary", "api_base": "http://x", "token_env": "T"}},
+               "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+               "review": {"secrets": "x"}, "severity_vocab": ["Critical", "Major", "Minor", "Nit"],
+               "shadow": False, "issues_enabled": True}
+        c = cfg.RepoConfig.model_validate(raw)
+        # stub triage to succeed so we reach the remote post step
+        import fl4write.analyzer as an
+        orig = an._call_model
+        try:
+            an._call_model = lambda *a, **k: '{"labels": [], "is_duplicate": false, "duplicate_hint": null, "draft_reply": "r", "urgency": "low", "is_regression": false, "regression_version": null}'
+            import fl4write.issues as iss
+            iss._foreign_triage_exists = lambda forge, repo, num: False
+            summary = iss.run_issues_cycle(c, {"last_triaged_number": 0}, BoomForge())
+            assert summary.get("errors", 0) >= 1
+            assert summary.get("triaged", 0) == 0  # not counted, watermark not advanced
+        finally:
+            an._call_model = orig

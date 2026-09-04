@@ -168,7 +168,8 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
             # SHADOW NEVER ADVANCES THE WATERMARK (LEARNINGS #2 class): a
             # shadow-triaged issue must still get its live triage later.
             continue
-        else:
+        try:  # MECE round-1 (luna F1-13): remote ops must never escape the
+            # lane — a forge hiccup degrades THIS issue, not the whole cycle
             body = render_triage_comment(num, triage, config)
             existing = find_existing_triage(forge, config.repo, num, config.bot_login)
             if existing:
@@ -186,6 +187,10 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
             else:
                 forge.create_comment(config.repo, num, body)
             summary["triaged"] += 1
+        except (ForgeError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            log.warning("issues triage post failed for #%s (contained): %s", num, exc)
+            summary["errors"] += 1
+            continue  # watermark NOT advanced — the issue retries next cycle
 
         st["last_triaged_number"] = max(st.get("last_triaged_number", 0), num)
 

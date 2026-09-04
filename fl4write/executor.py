@@ -31,6 +31,7 @@ Audit 2026-09-01 (lanes B/C) — the fix lane was 100% dead AND dangerous:
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import logging
 import os
@@ -145,7 +146,9 @@ def _get_file_content(repo: str, path: str, ref: str) -> str | None:
                         path, ref[:8], data.get("encoding"))
             return None
         return base64.b64decode(data["content"]).decode("utf-8")
-    except (urllib.error.HTTPError, urllib.error.URLError, UnicodeDecodeError) as exc:
+    except (urllib.error.HTTPError, urllib.error.URLError, UnicodeDecodeError,
+            binascii.Error) as exc:  # binascii: forged/invalid base64 payloads
+        # (MECE round-1, luna F1-10)
         log.warning("file fetch failed for %s@%s: %s", path, ref[:8], exc)
         return None
 
@@ -340,6 +343,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
 
     token = os.environ.get("CODESITTER_GITHUB_TOKEN", "")
     workdir = Path(tempfile.mkdtemp(prefix="fl4write-fix-"))
+    askpass_envs: list[dict[str, str]] = []
     try:
         # Fetch the EXACT PR head into a fresh workdir (clone -b HEAD was an
         # invalid ref; cloning the default branch reverted main-side changes).
@@ -347,6 +351,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         if _run(["git", "init", "-q"], cwd=workdir).returncode != 0:
             return {"status": "error", "reason": "git init failed"}
         pull_env = _push_token_env(workdir, token)
+        askpass_envs.append(pull_env)
         fetch = _run(
             ["git", "fetch", "-q", "--depth", "1", fetch_url, pr.head_sha],
             cwd=workdir, timeout=180, env=pull_env,
@@ -385,6 +390,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         branch = f"fl4write/fix-{pr.number}-{finding.rule_id[:20]}"
         _run(["git", "branch", "-M", branch], cwd=workdir)
         push_env = _push_token_env(workdir, token)
+        askpass_envs.append(push_env)
         push = _run(
             ["git", "push", "-q", fetch_url, f"HEAD:refs/heads/{branch}"],
             cwd=workdir, timeout=120, env=push_env,
@@ -414,6 +420,11 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
 
         return {"status": "error", "reason": str(exc)[:200]}
     finally:
+        # MECE round-1 (luna F1-04): token-bearing askpass helpers lived in
+        # sibling temp dirs and survived EXCEPTION paths (timeouts etc.) —
+        # always drop every helper created this attempt, then the workdir.
+        for e in askpass_envs:
+            _drop_askpass(e)
         shutil.rmtree(workdir, ignore_errors=True)
 
 
@@ -429,10 +440,12 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
     token = os.environ.get("CODESITTER_GITHUB_TOKEN", "")
     workdir = Path(tempfile.mkdtemp(prefix="fl4write-verify-"))
     try:
+        verify_askpass: list[dict[str, str]] = []
         fetch_url = f"https://github.com/{pr.repo}.git"
         if _run(["git", "init", "-q"], cwd=workdir).returncode != 0:
             return None
         pull_env = _push_token_env(workdir, token)
+        verify_askpass.append(pull_env)
         if _run(["git", "fetch", "-q", "--depth", "1", fetch_url, pr.head_sha],
                 cwd=workdir, timeout=180, env=pull_env).returncode != 0:
             return None
@@ -501,6 +514,8 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
         log.warning("verify_diff_tests infra failure for %s#%s: %s", pr.repo, pr.number, exc)
         return None
     finally:
+        for e in verify_askpass:  # MECE round-1 (luna F1-04): drop on every path
+            _drop_askpass(e)
         shutil.rmtree(workdir, ignore_errors=True)
 
 
