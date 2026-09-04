@@ -91,8 +91,17 @@ def triage_issue(issue: dict[str, Any], config: RepoConfig) -> dict[str, Any] | 
         labels = raw.get("labels")
         raw["labels"] = [str(lb)[:60] for lb in labels if isinstance(lb, (str, int))][:8] \
             if isinstance(labels, list) else []
-        raw["is_duplicate"] = bool(raw.get("is_duplicate"))
-        raw["is_regression"] = bool(raw.get("is_regression"))
+        def _as_bool(v) -> bool:
+            # MECE round-3 (sol F3-004): Python truthiness turned the STRING
+            # "false" into True — only real booleans and "true"/"false"
+            # literals are accepted; anything else defaults False
+            if isinstance(v, bool):
+                return v
+            if isinstance(v, str) and v.strip().lower() in ("true", "1"):
+                return True
+            return False
+        raw["is_duplicate"] = _as_bool(raw.get("is_duplicate"))
+        raw["is_regression"] = _as_bool(raw.get("is_regression"))
         for key in ("duplicate_hint", "draft_reply", "regression_version"):
             v = raw.get(key)
             raw[key] = scrub.scrub(str(v))[:500] if v is not None else None
@@ -108,7 +117,15 @@ def render_triage_comment(issue_num: int, triage: dict[str, Any], config: RepoCo
     """Render the triage comment body."""
     urgency = triage.get("urgency", "low")
     marker = _URGENCY_MARKER.get(urgency, "")
-    labels = ", ".join(f"`{lbl}`" for lbl in triage.get("labels", [])) or "none suggested"
+    from .renderer import _md_escape_block
+    # MECE round-3 (sol F3-005/006): triage text is model-controlled and lands
+    # on a PUBLIC comment — single-line labels, markdown-escaped + credential-
+    # redacted free text (scrub() alone never redacts)
+    def _safe(value, single_line=False):
+        s = scrub.redact_credentials(scrub.scrub(str(value)))
+        return scrub.inline(s) if single_line else _md_escape_block(s)
+    labels = ", ".join(f"`{_safe(lb, single_line=True)}`"
+                       for lb in triage.get("labels", [])) or "none suggested"
 
     parts = [
         f"## FL4WRITE triage — issue #{issue_num}",
@@ -118,11 +135,11 @@ def render_triage_comment(issue_num: int, triage: dict[str, Any], config: RepoCo
     ]
 
     if triage.get("is_duplicate"):
-        parts.append(f"**Possible duplicate:** {triage.get('duplicate_hint', 'check similar issues')}")
+        parts.append(f"**Possible duplicate:** {_safe(triage.get('duplicate_hint', 'check similar issues'))}")
     if triage.get("is_regression"):
-        parts.append(f"**⚠️ Regression suspected** in: {triage.get('regression_version', 'unknown version')}")
+        parts.append(f"**⚠️ Regression suspected** in: {_safe(triage.get('regression_version', 'unknown version'))}")
 
-    draft = scrub.scrub(triage.get("draft_reply", ""))
+    draft = _safe(triage.get("draft_reply", ""))
     if draft:
         parts.append(f"\n> {draft}")
 

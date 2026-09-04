@@ -460,6 +460,9 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
         if _run(["git", "fetch", "-q", "--depth", "1", fetch_url, pr.head_sha],
                 cwd=workdir, timeout=180, env=pull_env).returncode != 0:
             return None
+        _drop_askpass(pull_env)  # MECE round-3 (sol F3-002): the token helper
+        # must be gone BEFORE untrusted test code executes — it used to live
+        # until finally, readable by same-user tests during the run
         if _run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], cwd=workdir).returncode != 0:
             return None
         # ONLY the diff's own test files — the whole-suite default would
@@ -545,8 +548,19 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
     """
     merged: list[dict] = []
     owner = config.repo.split("/")[0]
+    prs: list = []
     try:
-        prs = _gh_api("GET", f"/repos/{config.repo}/pulls?state=open&per_page=100")
+        page = 1
+        while True:  # MECE round-3 (sol F3-007): paginate — fix PRs past the
+            # first page were never evaluated or merged
+            batch = _gh_api("GET",
+                            f"/repos/{config.repo}/pulls?state=open&per_page=100&page={page}")
+            if not isinstance(batch, list):
+                break
+            prs += batch
+            if len(batch) < 100:
+                break
+            page += 1
     except Exception as exc:
 
         log.warning("own-PR scan failed for %s: %s", config.repo, exc)

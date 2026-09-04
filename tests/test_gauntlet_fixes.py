@@ -1081,3 +1081,57 @@ class TestMECERound3GlmPins:
         # the retro loop carries a ForgeError except now
         src = open("/Users/simongonzalezdecruz/workspaces/fl4write/fl4write/engine.py").read()
         assert "retro #" in src and "forge error contained" in src
+
+
+class TestMECERound3SolPins:
+    """Round-3 sol DOM-B: strict triage bools (F3-004), triage render
+    escaping+redaction (F3-005/006), verify helper dropped pre-tests
+    (F3-002), own-PR scan pagination (F3-007)."""
+
+    def test_string_false_is_not_truthy(self):
+        from fl4write import issues
+        # drive triage_issue validation via the parse+validate path by stubbing
+        # the model call returning string booleans
+        import fl4write.analyzer as an
+        import json as _json
+        from fl4write import config as cfg
+        raw = {"repo": "o/r",
+               "forges": {"github": {"role": "primary", "api_base": "http://x", "token_env": "T"}},
+               "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+               "review": {"secrets": "x"}, "severity_vocab": ["Critical","Major","Minor","Nit"]}
+        c = cfg.RepoConfig.model_validate(raw)
+        import fl4write.issues as iss
+        orig = iss._call_model  # issues binds its own reference at import
+        try:
+            iss._call_model = lambda *a, **k: _json.dumps(
+                {"labels": ["ok"], "is_duplicate": "false", "is_regression": "false",
+                 "duplicate_hint": None, "draft_reply": "fine", "urgency": "low"})
+            triage = iss.triage_issue({"number": 1, "title": "t", "body": "b"}, c)
+            assert triage is not None
+            assert triage["is_duplicate"] is False and triage["is_regression"] is False
+        finally:
+            iss._call_model = orig
+
+    def test_triage_render_escapes_and_redacts(self):
+        from fl4write import issues
+        hostile = {"urgency": "high",
+                   "labels": ["a`b\n## 🔍 fake heading", "x"],
+                   "duplicate_hint": "ghp_" + "A" * 20,
+                   "is_duplicate": True,
+                   "is_regression": False,
+                   "draft_reply": "note\n## spoof"}
+        body = issues.render_triage_comment(7, hostile, make_config())
+        assert "ghp_" + "A" * 20 not in body
+        # no line after the first may start a real heading (escaped only)
+        assert not any(line.startswith("##") for line in body.splitlines()[1:])
+        assert "\\## spoof" in body  # the spoof survives only as literal text
+
+    def test_verify_drop_before_tests(self):
+        src = open("/Users/simongonzalezdecruz/workspaces/fl4write/fl4write/executor.py").read()
+        i = src.find("def verify_diff_tests")
+        j = src.find("def open_issue")
+        seg = src[i:j]
+        assert "_drop_askpass(pull_env)" in seg
+        drop_at = seg.find("_drop_askpass(pull_env)")
+        checkout_at = seg.find("git\", \"checkout")
+        assert 0 <= drop_at < checkout_at
