@@ -151,8 +151,13 @@ def _review_pr(
             report.alerts.append(
                 f"#{pr.number}: diff's own tests FAIL at head — deterministic Critical filed"
             )
-        elif deadline is not None:
-            pass  # budget consumed; the deadline gate below re-checks anyway
+        elif deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S + 5:
+            # MECE round-3 (glm F3-3): verify_tests can consume ~500s of a
+            # ~90s review budget — defer the analyze rather than overrun the
+            # whole cycle on one PR (the old comment claimed a later gate
+            # that never existed)
+            report.alerts.append(f"#{pr.number}: verify consumed the review budget — deferred")
+            return "deferred"
 
     try:
         doc = analyze(pr, diff_files, diff_text, config)
@@ -479,7 +484,10 @@ def _omni_fix_phase(
     for f in st.get("omni_findings", []):
         if attempts >= _OMNI_FIX_ATTEMPTS_PER_CYCLE:
             break
-        if f.get("fix_attempted") or f.get("fix_stale") or config.severity_vocab.index(f["sev"]) > sev_floor:
+        sev = f.get("sev")
+        if sev not in config.severity_vocab:
+            continue  # MECE round-3 (glm F3-2): vocab-drifted persisted rows
+        if f.get("fix_attempted") or f.get("fix_stale") or config.severity_vocab.index(sev) > sev_floor:
             continue
         from .models import Finding as _Finding
 
@@ -768,9 +776,18 @@ def _retro_sweep(
         if not state.needs_review(st, pr.number, pr.head_sha):
             oldest_processed = pr.merged_at
             continue  # already reviewed at this SHA while it was open — nothing to catch
-        outcome = _retro_review_pr(
-            pr, config, primary, get_diff, shadow_sink, st, report,
-        )
+        try:
+            outcome = _retro_review_pr(
+                pr, config, primary, get_diff, shadow_sink, st, report,
+            )
+        except ForgeError as exc:
+            # MECE round-3 (glm F3-1): per-PR containment like post-merge —
+            # a forge hiccup defers THIS PR, never crashes the cycle
+            report.alerts.append(f"retro #{pr.number}: forge error contained: {exc}")
+            seen.discard(pr.number)
+            st["retro_seen"] = {int(n): True for n in seen}
+            state.save_state(state_path, st)
+            break
         state.save_state(state_path, st)
         if outcome == "deferred":
             seen.discard(pr.number)  # retry next cycle

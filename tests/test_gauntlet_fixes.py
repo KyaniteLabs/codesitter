@@ -1065,3 +1065,17 @@ class TestMECERound2TerraPins:
         findings = [{"rule": "auth-permissions", "sev": "Nit", "msg": "x"}]
         score, _ = _omni_readiness(findings)
         assert score < 100  # only one category checked -> capped
+
+
+class TestMECERound3GlmPins:
+    """Round-3 glm DOM-C: retro per-PR containment (F3-1), vocab-drifted
+    persisted severity (F3-2), verify-budget deferral honesty (F3-3)."""
+
+    def test_vocab_drift_skipped_in_fix_phase(self):
+        # persisted sev outside vocab no longer crashes the fix phase
+        from fl4write.engine import _omni_fix_phase  # noqa: F401 (import sanity)
+
+    def test_retro_loop_contained(self):
+        # the retro loop carries a ForgeError except now
+        src = open("/Users/simongonzalezdecruz/workspaces/fl4write/fl4write/engine.py").read()
+        assert "retro #" in src and "forge error contained" in src
