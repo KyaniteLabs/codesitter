@@ -354,3 +354,16 @@ shape-error tuples at open/merged listing, acceptance, comment-signals and retro
 ci_watch annotation scrub + line hardening, structural raw-HTML scrub (h1-h6/tables/divs),
 fix-PR proposal heading-escape, testing-quality "fail to adequately cover" wording. Sol
 audit round 2: GO-WITH-CHANGES, all 5 items closed with regression pins. 374 tests green.
+
+## 42. Test gates need execution evidence, not exit codes (2026-09-03, UltraQA round 3)
+Comorbidity #9's top predictions all CONFIRMED by probes: (P1) adapter shape errors crashed
+cycles at post-merge listing, omnisweep tree shape/rows, issues-lane rows, ci_watch check-run
+fields (numeric name, dict conclusion = unhashable against the benign set, numeric summary);
+(P4) the fix-lane test gate was gameable — a hostile "fix" calling os._exit(0) at import time
+kills pytest with rc 0 before any test runs, a false green that would push a process-killing
+patch as a fix PR (sys.exit is caught by pytest; os._exit is not). Fix: _test_run_evidence —
+green requires execution evidence: non-empty output (os._exit skips all flushing) and a
+pytest summary line for pytest cmds; the verifier turns no-evidence rc-0 into a Critical
+"UNVERIFIED" finding instead of a clean verdict. **Law: exit codes are a promise, output is
+evidence — any auto-landing gate on a code-executing step (fix lane, verifier, CI-mimic) must
+require both.** 378 tests green. Sol audit round 3 in flight.

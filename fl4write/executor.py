@@ -165,23 +165,78 @@ def _drop_askpass(env: dict[str, str]) -> None:
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _pytest_evidence(argv: list[str], cwd: Path, timeout: int,
+                     env: dict[str, str], junit_path: Path) -> tuple[bool, subprocess.CompletedProcess[str]]:
+    """Run a pytest-style suite and require HOST-CONTROLLED completion evidence:
+    a --junitxml file, which pytest writes only after the session genuinely
+    finishes (UltraQA round 3, Sol audit: output-text evidence is forgeable —
+    a hostile patch can flush a fake summary and os._exit(0); the junit file
+    cannot be produced by a killed process). Green = tests>0, failures=0,
+    errors=0. Returns (green, result)."""
+    xml_argv = list(argv)
+    if not any(a.startswith("--junitxml") for a in xml_argv):
+        xml_argv += ["--junitxml", str(junit_path)]
+    result = _run(xml_argv, cwd=cwd, timeout=timeout, env=env)
+    if result.returncode != 0:
+        return False, result
+    try:
+        import xml.etree.ElementTree as ET
+        if not junit_path.exists():
+            log.warning("pytest exited 0 but wrote no junit evidence — treating as "
+                        "failure (killed-suite class, UltraQA P4)")
+            return False, result
+        root = ET.parse(junit_path).getroot()
+        # pytest emits <testsuites><testsuite tests=.. failures=.. errors=..>
+        suite = root if root.tag == "testsuite" else root.find("testsuite")
+        if suite is None:
+            log.warning("pytest junit evidence has no testsuite element — failure")
+            return False, result
+        tests = int(suite.get("tests", "0") or 0)
+        failures = int(suite.get("failures", "0") or 0)
+        errors = int(suite.get("errors", "0") or 0)
+        if tests <= 0 or failures or errors:
+            log.warning("pytest junit evidence not green (tests=%s failures=%s errors=%s)",
+                        tests, failures, errors)
+            return False, result
+        return True, result
+    except Exception as exc:  # noqa: BLE001 — evidence failure is a gate failure
+        log.warning("pytest junit evidence unreadable (%s) — treating as failure", exc)
+        return False, result
+
+
 def _run_tests(cwd: Path, config: RepoConfig) -> bool:
-    """Run the repo's test suite in the sandbox env; True if green."""
+    """Run the repo's test suite in the sandbox env; True only on a genuine
+    green with host-controlled evidence.
+
+    UltraQA round 3 (P4 + Sol audit): rc 0 is a promise, output is forgeable —
+    a hostile 'fix' can flush a fake summary then os._exit(0) at import time.
+    pytest-style cmds therefore require a --junitxml artifact written by the
+    runner after genuine completion. NON-pytest runners (vitest/pnpm/make)
+    have no host-controlled evidence yet: the fix gate FAILS CLOSED for them
+    with a clear reason until a per-runner evidence mapping lands (the fix
+    lane is GitHub-only v1 and 0 fixes have landed — blocking is free).
+    """
     default = os.environ.get("CODESITTER_TEST_CMD", "python3 -m pytest tests/ -x -q --tb=line")
     if config.test_cmd and any(m in config.test_cmd for m in ("&&", ";", "|")):
-        # A committed config may chain setup+test (e.g. corepack/pnpm
-        # install before the suite); bash -lc keeps it one argv. The
-        # string comes from our config repo (reviewed commits), never
-        # from the repo under test.
         argv = ["bash", "-lc", config.test_cmd]
-    else:
-        cmd = config.test_cmd or default
-        argv = cmd.split()
-        if "pytest" in cmd:
-            for excl in config.known_env_failures:
-                argv += ["--deselect", excl]
-    result = _run(argv, cwd=cwd, timeout=config.test_timeout, env=_sandbox_env())
-    return result.returncode == 0
+        log.warning("fix-gate fail-closed: chained test_cmd %r has no host-controlled "
+                    "runner evidence (UltraQA P4)", config.test_cmd)
+        return False
+    cmd = config.test_cmd or default
+    argv = cmd.split()
+    if "pytest" in cmd:
+        for excl in config.known_env_failures:
+            argv += ["--deselect", excl]
+        junit = Path(tempfile.mkdtemp(prefix="fl4write-junit-")) / "results.xml"
+        try:
+            green, _ = _pytest_evidence(argv, cwd, config.test_timeout, _sandbox_env(), junit)
+            return green
+        finally:
+            shutil.rmtree(junit.parent, ignore_errors=True)
+    # Non-pytest runner: no host-controlled evidence -> fail closed (see docstring)
+    log.warning("fix-gate fail-closed: non-pytest test_cmd %r has no host-controlled "
+                "runner evidence (UltraQA P4)", cmd)
+    return False
 
 
 def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[str, Any]:
@@ -366,12 +421,31 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
         _drop_askpass(env)  # tests never see the helper (A1)
         import time as _time
         _t0 = _time.time()
-        result = _run(argv, cwd=workdir, timeout=config.test_timeout, env=env)
         from . import telemetry as _tel
+        if "pytest" in cmd and not any(m in cmd for m in ("&&", ";", "|")):
+            # host-controlled evidence (UltraQA P4/Sol): junit is written only
+            # by a suite that genuinely completed; os._exit(0) at import can
+            # fake rc and text, never the junit artifact.
+            if config.test_cmd and "pytest" in config.test_cmd:
+                for excl in config.known_env_failures:
+                    argv += ["--deselect", excl]
+            junit_dir = Path(tempfile.mkdtemp(prefix="fl4write-verify-junit-"))
+            junit = junit_dir / "results.xml"
+            try:
+                green, result = _pytest_evidence(argv, workdir, config.test_timeout, env, junit)
+            finally:
+                shutil.rmtree(junit_dir, ignore_errors=True)
+        else:
+            # chained or non-pytest runner: no host-controlled evidence yet —
+            # rc is the only signal; a zero-exit with NO output is treated as
+            # UNPROVEN (never a clean claim, never a false "did not run")
+            result = _run(argv, cwd=workdir, timeout=config.test_timeout, env=env)
+            green = result.returncode == 0
+            if green and not f"{result.stdout}\n{result.stderr}".strip():
+                green = False
         _tel.emit("verify_tests", repo=pr.repo, head=pr.head_sha[:10], cmd=cmd,
-                  files=test_files, ok=result.returncode == 0,
-                  latency_s=round(_time.time() - _t0, 1))
-        if result.returncode == 0:
+                  files=test_files, ok=green, latency_s=round(_time.time() - _t0, 1))
+        if green:
             return None
         tail = (result.stdout + "\n" + result.stderr).strip().splitlines()
         # Sol-B2: the verifier records the EXACT evidence it ran — command,
@@ -383,7 +457,7 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
             line=1,
             category="CI",
             message=(
-                f"The diff's own tests FAIL (verified: cmd={cmd!r}; "
+                f"The diff's own tests FAIL or did not run (verified: cmd={cmd!r}; "
                 f"files={test_files!r}; head={pr.head_sha[:10]}): "
                 + " | ".join(tail[-3:])[:240]
             ),

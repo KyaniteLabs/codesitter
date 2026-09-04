@@ -50,7 +50,12 @@ def collect_new_issues(forge: ForgeAdapter, repo: str, last_number: int) -> list
     except ForgeError:
         all_issues = forge._call("GET", f"/repos/{repo}/issues?state=open&per_page=100")
         all_issues = all_issues if isinstance(all_issues, list) else []
-    fresh = [i for i in all_issues if i.get("number", 0) > last_number and "pull_request" not in i]
+    # UltraQA round 3: row-shape guard — garbage rows from a half-parsed forge
+    # response must not crash the issues lane
+    fresh = [i for i in all_issues
+             if isinstance(i, dict)
+             and isinstance(i.get("number"), int)
+             and i["number"] > last_number and "pull_request" not in i]
     return sorted(fresh, key=lambda i: i.get("number", 0))
 
 

@@ -326,6 +326,11 @@ def _post_merge_sweep(
         report.alerts.append(f"post-merge listing failed (skipped this cycle): {exc}")
         log.warning("merged-PR listing failed for %s: %s", config.repo, exc)
         return set()
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        # UltraQA round 3: shape drift degrades the lane, never crashes
+        report.alerts.append(f"post-merge listing degraded (skipped this cycle): {exc}")
+        return set()
+    merged_prs = [p for p in merged_prs if isinstance(p, PullRequest)]
 
     # The cap bounds MODEL WORK (reviews), not list position: PRs already
     # terminal at this SHA (reviewed while open, dependency-skipped) pass
@@ -528,9 +533,21 @@ def _omnisweep_step(
     if tree is None:
         report.alerts.append("omnisweep: tree listing unqueryable (skipped this cycle)")
         return
+    if not (isinstance(tree, (tuple, list)) and len(tree) == 2):
+        # UltraQA round 3: wrong-shape tree response degrades, never crashes
+        report.alerts.append(f"omnisweep: tree listing wrong shape ({type(tree).__name__}, skipped)")
+        return
     files, truncated = tree
+    if not isinstance(files, list):
+        report.alerts.append("omnisweep: tree files not a list (skipped this cycle)")
+        return
     if truncated:
         report.alerts.append("omnisweep: tree listing TRUNCATED by the forge — sweep may miss files")
+    # row-shape guard: (path, size) pairs only; one garbage row must not abort
+    files = [row for row in files
+             if isinstance(row, (tuple, list)) and len(row) == 2
+             and isinstance(row[0], str) and isinstance(row[1], int)
+             and row[1] >= 0]
 
     excludes = config.omnisweep.exclude + (config.path_filters or {}).get("ignore", [])
     scan = sorted(
@@ -571,7 +588,14 @@ def _omnisweep_step(
         if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
             report.alerts.append("omnisweep deferred — cycle deadline reached")
             break
-        content = primary.get_file(config.repo, path, st.get("omni_head", "") or "HEAD")
+        try:
+            content = primary.get_file(config.repo, path, st.get("omni_head", "") or "HEAD")
+        except (ForgeError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            # UltraQA round 3: per-file fetch failure skips the file, never
+            # aborts the sweep
+            report.alerts.append(f"omnisweep: file fetch failed for {path}: {exc}")
+            st["omni_cursor"] = path
+            continue
         if content is None:
             st["omni_cursor"] = path  # unfetchable files are skipped, not retried forever
             continue
@@ -702,7 +726,7 @@ def _retro_sweep(
 
     # row-shape guard (UltraQA round 2): one malformed merged row must not
     # abort the sweep
-    listed = [p for p in listed if getattr(p, "number", None) is not None]
+    listed = [p for p in listed if isinstance(p, PullRequest)]
 
     seen: set[int] = set(st.get("retro_seen", {}))
     pending = sorted(
@@ -848,11 +872,37 @@ def _ci_watch_step(
     if queried is None:
         log.info("ci_watch: head check-runs unqueryable for %s (degraded this cycle)", config.repo)
         return
+    if not isinstance(queried, (tuple, list)) or len(queried) != 2:
+        report.alerts.append("ci_watch: head_check_runs wrong shape (degraded this cycle)")
+        return
     head, runs = queried
-    failing = [
-        r for r in runs
-        if r.get("status") == "completed" and r.get("conclusion") not in _CI_BENIGN
-    ][: config.ci_watch.max_checks]
+    if not isinstance(head, str) or not head:
+        report.alerts.append("ci_watch: head value unusable (degraded this cycle)")
+        return
+    if not isinstance(runs, list):
+        report.alerts.append("ci_watch: check-runs wrong shape (degraded this cycle)")
+        return
+    # UltraQA round 3 (P2): check-run fields are forge-external — coerce types
+    # so a numeric name or dict conclusion degrades instead of crashing
+    # (a dict is unhashable against the benign set).
+    failing = []
+    for r in runs:
+        if not isinstance(r, dict):
+            continue
+        if r.get("status") != "completed":
+            continue
+        conclusion = r.get("conclusion")
+        if not isinstance(conclusion, str):
+            conclusion = "?"
+        name = r.get("name")
+        if not isinstance(name, str):
+            name = "unnamed check"
+        run_id = r.get("id")
+        if not isinstance(run_id, (str, int)):
+            continue  # unusable run identity: skip, never crash (UltraQA P2)
+        if conclusion not in _CI_BENIGN:
+            failing.append(dict(r, conclusion=conclusion, name=name, id=run_id))
+    failing = failing[: config.ci_watch.max_checks]
     if not failing:
         st.pop("ci_red_sha", None)
         return
@@ -864,9 +914,15 @@ def _ci_watch_step(
     findings: list[Finding] = []
     summaries: list[str] = []
     for run in failing:
-        name = run.get("name") or "unnamed check"
+        name = run.get("name")
+        if not isinstance(name, str):
+            name = "unnamed check"
         conclusion = run.get("conclusion") or "?"
-        summary = ((run.get("output") or {}).get("summary") or "").strip()
+        if not isinstance(conclusion, str):
+            conclusion = "?"
+        out = run.get("output")
+        summary = out.get("summary") if isinstance(out, dict) else None
+        summary = summary.strip() if isinstance(summary, str) else ""
         # CI check text is forge-external: single-line it before it lands in an
         # escalation body (UltraQA round 2, P2 — annotations/summaries bypass
         # the analyzer, so the scrub that protects posted findings doesn't run)

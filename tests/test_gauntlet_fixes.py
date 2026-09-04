@@ -393,3 +393,147 @@ class TestSolAudit2Pins:
         assert "<h1" not in out and "<table" not in out and "<div" not in out
         # <b>/inline code comparisons still survive as plain text
         assert scrub("a < b and c > d") == "a < b and c > d"
+
+
+class TestADVP4TestGaming:
+    """UltraQA round 3, P4 (junit-evidence semantics): a hostile diff/fix that
+    kills the suite with rc 0 (os._exit at import time) must not produce a
+    false green; host-controlled junit evidence is required for pytest."""
+
+    def _repo(self, tmp_path, patched_body):
+        (tmp_path / "tests").mkdir(exist_ok=True)
+        (tmp_path / "bug.py").write_text("def bug():\n    return 1\n")
+        (tmp_path / "tests" / "test_bug.py").write_text(
+            "import sys\nfrom pathlib import Path\n"
+            "sys.path.insert(0, str(Path(__file__).resolve().parent.parent))\n"
+            "import bug\n\ndef test_bug():\n    assert bug.bug() == 2\n")
+        (tmp_path / "bug.py").write_text(patched_body)
+
+    def test_honest_fix_passes(self, tmp_path):
+        from fl4write.executor import _run_tests
+        self._repo(tmp_path, "def bug():\n    return 2\n")
+        assert _run_tests(tmp_path, make_config(test_cmd="python3 -m pytest tests/ -q"))
+
+    def test_os_exit_kill_fails_the_gate(self, tmp_path):
+        from fl4write.executor import _run_tests
+        self._repo(tmp_path, "def bug():\n    return 2\nimport os\nos._exit(0)\n")
+        assert _run_tests(tmp_path, make_config(test_cmd="python3 -m pytest tests/ -q")) is False
+
+    def test_flush_then_exit_fails_the_gate(self, tmp_path):
+        # Sol round-3: flushed fake output before os._exit(0) must STILL fail —
+        # junit evidence cannot be forged by a killed process
+        from fl4write.executor import _run_tests
+        self._repo(tmp_path, "def bug():\n    return 2\nimport os\n"
+                             "print('1 passed in 0.01s', flush=True)\nos._exit(0)\n")
+        assert _run_tests(tmp_path, make_config(test_cmd="python3 -m pytest tests/ -q")) is False
+
+    def test_failing_suite_fails_the_gate(self, tmp_path):
+        from fl4write.executor import _run_tests
+        self._repo(tmp_path, "def bug():\n    return 999\n")
+        assert _run_tests(tmp_path, make_config(test_cmd="python3 -m pytest tests/ -q")) is False
+
+    def test_non_pytest_runner_fails_closed(self, tmp_path):
+        from fl4write.executor import _run_tests
+        (tmp_path / "tests").mkdir(exist_ok=True)
+        assert _run_tests(tmp_path, make_config(test_cmd="node test.js")) is False
+
+    def test_verifier_no_evidence_is_a_finding(self, monkeypatch, tmp_path):
+        from fl4write.executor import verify_diff_tests
+        import subprocess
+
+        def fake_run(cmd, cwd=None, timeout=120, env=None):
+            if "git" in cmd:
+                out = "a" * 40 if "rev-parse" in cmd else ""
+                return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+            # pytest "runs" but the killed suite never writes junit: rc 0
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        monkeypatch.setattr("fl4write.executor._run", fake_run)
+        from fl4write.models import PullRequest
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        cfg_obj = make_config(test_cmd="python3 -m pytest tests/ -q")
+        finding = verify_diff_tests(pr, cfg_obj, test_files=["tests/test_x.py"])
+        assert finding is not None and finding.severity == "Critical"
+
+
+class TestSolAudit3Pins:
+    """Round-3 Sol audit items 2/3/5: ci_watch envelope normalization, strict
+    PR row guards, omnisweep files guard, issues int numbers."""
+
+    def _cfg(self, **over):
+        raw = {"repo": "KyaniteLabs/fl4write",
+               "forges": {"github": {"role": "primary", "api_base": "https://api.github.com",
+                                     "token_env": "GHT"}},
+               "model": {"endpoint": "http://model/v1", "model": "test", "key_env": "MK"},
+               "review": {"secrets": "x"},
+               "severity_vocab": ["Critical", "Major", "Minor", "Nit"],
+               "shadow": False,
+               "ci_watch": {"enabled": False},
+               "fix": {"enabled": False, "merge_own_prs": False}}
+        raw.update(over)
+        return cfg.RepoConfig.model_validate(raw)
+
+    def test_ciwatch_envelope_garbage_degrades(self, monkeypatch, tmp_path):
+        from fl4write import engine
+
+        class EnvBoom:
+            name = "github"
+            bot_login = "fl4write[bot]"
+            def head_check_runs(self, repo): return ("head",)  # wrong shape
+            def list_open_prs(self, repo): return []
+            def list_merged_prs(self, repo, since_iso): return []
+            def get_persistent_comment(self, repo, number): return None
+
+        monkeypatch.setattr(engine, "adapter_for", lambda b: EnvBoom())
+        rep = engine.run_cycle(self._cfg(ci_watch={"enabled": True, "escalate_issues": False}),
+                               tmp_path / "s.json", get_diff=lambda pr: (set(), ""))
+        assert any("wrong shape" in a or "degraded" in a for a in rep.alerts)
+
+    def test_ciwatch_dict_name_and_id_normalized(self, monkeypatch, tmp_path):
+        from fl4write import engine
+
+        class Weird:
+            name = "github"
+            bot_login = "fl4write[bot]"
+            def head_check_runs(self, repo):
+                return "f" * 40, [{"id": {"nested": 1}, "name": {"x": 1},
+                                   "status": "completed", "conclusion": "failure",
+                                   "output": {"summary": 42}},
+                                  {"id": 2, "name": ["list"], "status": "completed",
+                                   "conclusion": "success"}]
+            def check_annotations(self, repo, run_id): return None
+            def list_open_prs(self, repo): return []
+            def list_merged_prs(self, repo, since_iso): return []
+            def get_persistent_comment(self, repo, number): return None
+
+        monkeypatch.setattr(engine, "adapter_for", lambda b: Weird())
+        rep = engine.run_cycle(self._cfg(ci_watch={"enabled": True, "escalate_issues": False}),
+                               tmp_path / "s.json", get_diff=lambda pr: (set(), ""))
+        # run 1: dict id skipped, dict name -> unnamed; run 2 benign. No crash.
+        assert rep.ci_red_heads == 0  # only the malformed-id run was failing; it was skipped
+
+    def test_omnisweep_files_not_list_degrades(self, monkeypatch, tmp_path):
+        from fl4write import engine
+
+        class TreeBoom:
+            name = "github"
+            bot_login = "fl4write[bot]"
+            def list_tree_files(self, repo): return ({"not": "a list"}, False)
+            def list_open_prs(self, repo): return []
+            def list_merged_prs(self, repo, since_iso): return []
+            def get_persistent_comment(self, repo, number): return None
+
+        monkeypatch.setattr(engine, "adapter_for", lambda b: TreeBoom())
+        rep = engine.run_cycle(self._cfg(omnisweep={"enabled": True, "max_total_files": 2000}),
+                               tmp_path / "s.json", get_diff=lambda pr: (set(), ""))
+        assert any("not a list" in a for a in rep.alerts)
+
+    def test_issues_lane_rejects_non_int_numbers(self):
+        from fl4write import issues
+
+        class F:
+            def _paginated(self, path, page_size, max_pages=10):
+                return [{"number": "1", "title": "x"}, {"number": 2, "title": "y"}, None]
+            def _call(self, method, path): return []
+
+        out = issues.collect_new_issues(F(), "o/r", 1)
+        assert [i["number"] for i in out] == [2]
