@@ -95,6 +95,10 @@ def _sandbox_home() -> str:
     global _SANDBOX_HOME
     if _SANDBOX_HOME is None:
         _SANDBOX_HOME = tempfile.mkdtemp(prefix="fl4write-sandbox-home-")
+        # MECE round-4 (glm F4-8): one throwaway HOME per process leaked on
+        # the runner host — remove it at exit
+        import atexit as _atexit
+        _atexit.register(shutil.rmtree, _SANDBOX_HOME, True)
     return _SANDBOX_HOME
 
 
@@ -167,12 +171,13 @@ def _write_contained(workdir: Path, rel_path: str, content: str) -> str | None:
     target = workdir / rel_path
     if target.is_symlink():
         return f"refusing symlink path {rel_path!r}"
-    resolved = target.resolve()
+    resolved = target.resolve()  # dereferences symlinks; escape guard below
     if not str(resolved).startswith(str(workdir.resolve()) + os.sep):
         return f"path escapes workdir: {rel_path!r}"
     resolved.parent.mkdir(parents=True, exist_ok=True)
-    if resolved.exists() and resolved.is_symlink():
-        return f"refusing symlink path {rel_path!r}"
+    # MECE round-4 (glm F4-5): the post-resolve is_symlink() re-check was
+    # dead — resolve() already followed any symlink; containment is proven
+    # by the startswith guard above
     resolved.write_text(content, encoding="utf-8")
     return None
 
@@ -225,13 +230,15 @@ def _pytest_evidence(argv: list[str], cwd: Path, timeout: int,
             return False, result
         root = ET.parse(junit_path).getroot()
         # pytest emits <testsuites><testsuite tests=.. failures=.. errors=..>
-        suite = root if root.tag == "testsuite" else root.find("testsuite")
-        if suite is None:
+        suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+        if not suites:
             log.warning("pytest junit evidence has no testsuite element — failure")
             return False, result
-        tests = int(suite.get("tests", "0") or 0)
-        failures = int(suite.get("failures", "0") or 0)
-        errors = int(suite.get("errors", "0") or 0)
+        # MECE round-4 (glm F4-1): aggregate every testsuite (some runners
+        # emit several) — reading only the first could bless hidden failures
+        tests = sum(int(s.get("tests", "0") or 0) for s in suites)
+        failures = sum(int(s.get("failures", "0") or 0) for s in suites)
+        errors = sum(int(s.get("errors", "0") or 0) for s in suites)
         if tests <= 0 or failures or errors:
             log.warning("pytest junit evidence not green (tests=%s failures=%s errors=%s)",
                         tests, failures, errors)
@@ -256,7 +263,6 @@ def _run_tests(cwd: Path, config: RepoConfig) -> bool:
     """
     default = os.environ.get("CODESITTER_TEST_CMD", "python3 -m pytest tests/ -x -q --tb=line")
     if config.test_cmd and any(m in config.test_cmd for m in ("&&", ";", "|")):
-        argv = ["bash", "-lc", config.test_cmd]
         log.warning("fix-gate fail-closed: chained test_cmd %r has no host-controlled "
                     "runner evidence (UltraQA P4)", config.test_cmd)
         return False

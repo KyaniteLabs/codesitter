@@ -88,9 +88,10 @@ def record_route(model: str, ok: bool, latency_s: float, parse_ok: bool,
 
 
 def calibration_snapshot(recent: int = 500) -> dict[str, Any]:
-    """L3 (GLM-B4): the feedback loop CONSUMES the stream — per-model parse
-    health and per-route severity mix over the last N review events, computed
-    from telemetry instead of asserted. Returns {} when the stream is empty."""
+    """L3 (GLM-B4): the feedback loop CONSUMES the stream — per-model call
+    health over the last N model_call events (MECE round-4 F4-4: the
+    docstring promised a per-route severity mix this aggregation never
+    computed — body now matches the promise). Returns {} when empty."""
     try:
         lines = _path().read_text(encoding="utf-8").strip().splitlines()[-recent * 3:]
     except OSError:
