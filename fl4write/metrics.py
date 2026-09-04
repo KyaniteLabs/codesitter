@@ -42,7 +42,11 @@ def comment_signals(forge: ForgeAdapter, repo: str, pr_number: int) -> dict[str,
     if not isinstance(body, str):
         return None
     current = parse_finding_lines(body)
-    resolved = body.count("- ✅ `~")
+    # MECE round-6 (luna-max F6-C014): count resolved markers ONLY at line
+    # starts — a model-quoted message containing the marker substring used to
+    # inflate resolved/acceptance counts
+    import re as _re
+    resolved = len(_re.findall(r"(?m)^- ✅ `~", body))
     reactions = 0
     summary = getattr(forge, "reaction_summary", None)
     if summary is not None:

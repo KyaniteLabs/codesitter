@@ -67,26 +67,15 @@ def make_get_diff(repo: str):
         try:
             text = _gh("pr", "diff", str(pr.number), "--repo", repo)
         except RuntimeError:
-            # Oversized diffs (GitHub 406 >20k lines) — fall back to the FULL
-            # file list via the API (paginated, not just page one).
-            try:
-                names: set[str] = set()
-                page = 1
-                while True:
-                    files_json = _gh("api", f"repos/{repo}/pulls/{pr.number}/files?per_page=100&page={page}")
-                    batch = json.loads(files_json)
-                    if not isinstance(batch, list) or not batch:
-                        break
-                    names |= {f["filename"] for f in batch if isinstance(f, dict) and f.get("filename")}
-                    if len(batch) < 100:
-                        break
-                    page += 1
-                if not names:
-                    return None
-                return names, "(diff too large for API; reviewed from file list only)"
-            except (RuntimeError, json.JSONDecodeError) as exc:
-                log.warning("diff unavailable for %s#%s: %s", repo, pr.number, exc)
-                return None
+            # Oversized diffs (GitHub 406 >20k lines). MECE round-6 (luna-max
+            # F6-302): the old fallback returned file NAMES plus a literal
+            # sentence as the 'diff' — the analyzer then reviewed names
+            # without content (vacuous premise, LEARNINGS #3 class) and the
+            # SHA got marked reviewed. Honest: defer (the engine retries and
+            # alerts); no pseudo-diff, no reviewed-on-nothing.
+            log.warning("diff unavailable for %s#%s: oversized (>20k lines) — deferred",
+                        repo, pr.number)
+            return None
         files = set(re.findall(r"^\+\+\+ b/(.+)$", text, re.MULTILINE))
         return files, text
 
@@ -156,9 +145,11 @@ def _probe_adoption(config, forge_adapter=None) -> None:
 
 
 _KNOWN_FLAGS = ("--live", "--fixes", "--issues", "--omni")
-# MECE round-3 (terra F3-004): shadow is the DEFAULT (log-only) mode and
-# --live flips it off — a whitelisted --shadow flag was a fake-safety trap
-# (--live --shadow ran LIVE). Only flags the CLI actually acts on are known.
+# MECE round-3 (terra F3-004): a whitelisted --shadow flag was a fake-safety
+# trap (--live --shadow ran LIVE). Only flags the CLI actually acts on are
+# known. MECE round-6 (luna-max F6-301): shadow is CONFIGURED per repo
+# (schema default false; the fleet sets it explicitly) — --live is the
+# explicit live belt, never implied by the absence of a flag.
 
 
 def _unknown_flags(argv: list[str]) -> list[str]:

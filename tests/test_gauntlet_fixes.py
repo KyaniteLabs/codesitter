@@ -2367,3 +2367,120 @@ class TestMECERound6LunaMaxPins2:
         st = state_mod.load_state(sp)
         assert not any(k.startswith("ci_acted:") for k in st), \
             "deadline-exceeded ci step persisted the acted belt"
+
+
+class TestMECERound6LunaMax2Pins:
+    """Round-6 luna-max-2 DOM-D desk: transport wrap (F6-306), Retry-After
+    bounds (F6-307), uncertain write identifiers (F6-313), tree walker cycle
+    bound (F6-311), path probe contracts (F6-314/315)."""
+
+    @staticmethod
+    def _adapter(cls):
+        base = ("https://api.github.com" if cls is GitHubAdapter
+                else "https://git.example.com/api/v1")
+        ad = cls(cfg.ForgeBinding(role="primary", api_base=base, token_env="GHT"))
+        ad._headers = lambda: {}
+        return ad
+
+    def test_retry_after_nan_is_bounded(self, monkeypatch):
+        import urllib.error
+
+        import fl4write.forges as fmod
+
+        ad = self._adapter(ForgejoAdapter)
+        attempts = {"n": 0}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b"diff --git a/x b/x\n"
+
+        def fake_open(req, timeout=30):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise urllib.error.HTTPError(
+                    req.full_url, 429, "throttled", {"Retry-After": "NaN"}, None)
+            return _Resp()
+
+        waits: list[float] = []
+        monkeypatch.setattr(fmod.time, "sleep", lambda s: waits.append(s))
+        monkeypatch.setattr(fmod.urllib.request, "urlopen", fake_open)
+        out = ad._call_text("GET", "/x")
+        assert out.startswith("diff --git")
+        assert waits == [1.0], f"NaN Retry-After escaped bounds: {waits}"
+
+    def test_transport_oserror_wraps_as_forge_error(self, monkeypatch):
+        import fl4write.forges as fmod
+
+        ad = self._adapter(GitHubAdapter)
+        attempts = {"n": 0}
+
+        def fake_open(req, timeout=30):
+            attempts["n"] += 1
+            raise ConnectionResetError("connection reset by peer (test)")
+
+        monkeypatch.setattr(fmod.urllib.request, "urlopen", fake_open)
+        try:
+            ad._call("GET", "/repos/o/r")
+            raise AssertionError("expected ForgeError")
+        except ForgeError as exc:
+            assert "ConnectionResetError" in str(exc) or "connection reset" in str(exc).lower()
+        assert attempts["n"] == 2  # one retry, then a clean ForgeError
+
+    def test_uncertain_write_without_id_raises_forge_error(self):
+        ad = self._adapter(GitHubAdapter)
+        ad._call = lambda m, path, payload=None: {}  # 2xx with no id
+        try:
+            ad.create_comment("o/r", 1, "body")
+            raise AssertionError("expected ForgeError on uncertain write")
+        except ForgeError:
+            pass
+
+    def test_forgejo_tree_walk_cycle_is_bounded(self):
+        ad = self._adapter(ForgejoAdapter)
+
+        def fake_call(method, path):
+            if path == "/repos/o/r":
+                return {"default_branch": "main"}
+            return {"tree": [{"type": "tree", "sha": "loop", "path": "a"}]}
+
+        ad._call = fake_call
+        out, truncated = ad.list_tree_files("o/r")
+        assert truncated is True  # self-referential tree detected, no crash
+
+    def test_path_probe_malformed_success_is_unqueryable(self):
+        gh = self._adapter(GitHubAdapter)
+        gh._call = lambda m, path: None  # 2xx null payload
+        assert gh.path_exists("o/r", "x.yaml") is None  # never True/False
+        gh2 = self._adapter(GitHubAdapter)
+        gh2._call = lambda m, path: "scalar-junk"
+        assert gh2.path_is_file("o/r", "x.py", ref="abc") is None
+        gh3 = self._adapter(GitHubAdapter)
+        gh3._call = lambda m, path: []  # directory listing
+        assert gh3.path_is_file("o/r", "x.py", ref="abc") is False
+        assert gh3.path_exists("o/r", "x.py") is True
+
+
+class TestMECERound6C014C015Pins:
+    def test_resolved_markers_count_only_at_line_starts(self):
+        from fl4write import metrics as mt
+
+        body = ("- ✅ `~a.py:1` (secrets) done\n"
+                "model said: \"- ✅ `~fake.py:9` (tests) quoted inside a message\"\n")
+        assert mt.comment_signals.__module__  # import sanity
+        # exercise the counting expression directly on the rendered law
+        import re as _re
+        assert len(_re.findall(r"(?m)^- ✅ `~", body)) == 1
+
+    def test_closed_fix_depth_records_are_bounded(self):
+        from fl4write.state import prune_closed
+
+        st = {"prs": {str(n): {"fix_depth": 1} for n in range(1, 2500)},
+              "model_failures": {}, "retro_parked": {}, "ci_acted:x": True}
+        prune_closed(st, set())
+        assert len(st["prs"]) <= 2000

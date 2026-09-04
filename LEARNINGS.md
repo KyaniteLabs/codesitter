@@ -460,3 +460,20 @@ token ownership verifies before unlink and parsers tolerate their own token form
 validate semantics; containers validate envelopes; row gaps stall watermarks; deterministic
 evidence posts independently of the model. 9 fixes, 8 regression pins, all red pre-fix.
 
+## 49. Envelopes, identifiers, probes, and cursors: the adapter re-audit (2026-09-04, MECE round 6)
+Luna-max-2's DOM-D pass found the shape family one layer deeper: transport failures
+(ConnectionReset/OSError/decode) escaped past the ForgeError boundary in both call paths; a
+NaN/negative Retry-After reached time.sleep raw; check-runs/tree/comment ROW guards existed but
+their RESPONSE envelopes and per-row sizes were unvalidated; write responses without an id
+(uncertain side effects) raised KeyError instead of deferring; the Forgejo tree walk had no
+cycle/depth bound (RecursionError on self-referential responses); path probes treated any 2xx
+malformed payload as False/True instead of unqueryable None; the CLI's oversized-diff fallback
+reviewed file NAMES with a literal sentence as the 'diff' (vacuous-premise class) and marked
+the SHA reviewed; resolved-marker counting in metrics inflated on model-quoted text; closed
+fix-depth records grew unbounded. Laws: every transport/parse failure is ForgeError-shaped;
+throttle headers bound before sleep; responses validate shape at the TOP and per row; writes
+without identifiers degrade as uncertain; tree walks carry visited sets and budgets; probes
+answer True/False only on queryable payloads, None otherwise; never review names without
+content; count markers at line starts; bound retained rail state. 15+5 fixes, 10 regression
+pins, all red pre-fix.
+

@@ -102,13 +102,23 @@ class ForgeAdapter:
                 wait = 0.0
                 if exc.headers and exc.headers.get("Retry-After"):
                     try:
-                        wait = min(float(exc.headers["Retry-After"]), 30.0)
+                        _raw = float(exc.headers["Retry-After"])
                     except ValueError:
-                        pass
+                        _raw = float("nan")
+                    # F6-307: NaN/negative Retry-After -> bounded 1s, never
+                    # time.sleep(raw) crashes or instant-spin
+                    wait = min(_raw, 30.0) if _raw >= 0 and _raw == _raw else 1.0
                 time.sleep(wait)
                 return self._call(method, path, payload, _retry=False)
             raise ForgeError(f"{self.name} {method} {path}: HTTP {exc.code}") from exc
         except (urllib.error.URLError, TimeoutError) as exc:
+            if method == "GET" and _retry:
+                time.sleep(1)
+                return self._call(method, path, payload, _retry=False)
+            raise ForgeError(f"{self.name} {method} {path}: {exc}") from exc
+        except (OSError, UnicodeDecodeError) as exc:
+            # F6-306: ConnectionReset/other OSErrors and decode failures used
+            # to escape as raw exceptions past the ForgeError boundary
             if method == "GET" and _retry:
                 time.sleep(1)
                 return self._call(method, path, payload, _retry=False)
@@ -129,13 +139,21 @@ class ForgeAdapter:
                 wait = 0.0
                 if exc.headers and exc.headers.get("Retry-After"):
                     try:
-                        wait = min(float(exc.headers["Retry-After"]), 30.0)
+                        _raw = float(exc.headers["Retry-After"])
                     except ValueError:
-                        pass
+                        _raw = float("nan")
+                    # F6-307: NaN/negative Retry-After -> bounded 1s
+                    wait = min(_raw, 30.0) if _raw >= 0 and _raw == _raw else 1.0
                 time.sleep(wait)
                 return self._call_text(method, path, _retry=False)
             raise ForgeError(f"{self.name} {method} {path}: HTTP {exc.code}") from exc
         except (urllib.error.URLError, TimeoutError) as exc:
+            if method == "GET" and _retry:
+                time.sleep(1)
+                return self._call_text(method, path, _retry=False)
+            raise ForgeError(f"{self.name} {method} {path}: {exc}") from exc
+        except (OSError, UnicodeDecodeError) as exc:
+            # F6-306: same wrap as _call
             if method == "GET" and _retry:
                 time.sleep(1)
                 return self._call_text(method, path, _retry=False)
@@ -209,12 +227,19 @@ class ForgeAdapter:
         from urllib.parse import quote
 
         try:
-            self._call("GET", f"/repos/{repo}/contents/{quote(path, safe='')}")
-            return True
+            data = self._call("GET", f"/repos/{repo}/contents/{quote(path, safe='')}")
         except ForgeError as exc:
             if "HTTP 404" in str(exc):
                 return False
             return None
+        # F6-315: a 2xx response that is NOT a contents object (null, scalar,
+        # error-shaped JSON) proves nothing — None (unqueryable), so the
+        # adoption-loss alert is never suppressed by a malformed success
+        if isinstance(data, dict) and ("type" in data or "content" in data or "sha" in data):
+            return True
+        if isinstance(data, list):
+            return True  # directory listing: the path exists
+        return None
 
     def path_is_file(self, repo: str, path: str, ref: str | None = None) -> bool | None:
         """Is `path` a FILE (not a directory) at `ref` (default branch when
@@ -238,8 +263,13 @@ class ForgeAdapter:
         # MECE round-1 (sol F1-004): a valid ZERO-BYTE file has empty content
         # but is still a file — judge by the base64 encoding marker, not by
         # content truthiness; directories answer with a LIST.
-        return (isinstance(data, dict) and data.get("encoding") == "base64"
-                and "content" in data)
+        if isinstance(data, dict):
+            return data.get("encoding") == "base64" and "content" in data
+        if isinstance(data, list):
+            return False  # directory: queryable answer, not a file
+        # F6-314: any other malformed-success payload is UNQUERYABLE (None),
+        # never False — the ci_watch contract keeps findings on None
+        return None
 
     def check_annotations(self, repo: str, check_run_id: int) -> list[dict] | None:
         """Annotations for one check-run: [{path, start_line, message, level}]."""
@@ -286,14 +316,20 @@ class ForgeAdapter:
             if not sha:
                 return None
             tree = self._call("GET", f"/repos/{repo}/git/trees/{sha}?recursive=1")
+            if not isinstance(tree, dict) or not isinstance(tree.get("tree"), list):
+                # F6-309: response-level shape validation
+                raise ForgeError(f"{self.name} tree response shape drift on {repo}")
             # MECE round-5 (luna F5-002): malformed (non-object) tree entries
             # must degrade — never AttributeError past the adapter into the
-            # cycle
-            files = [
-                (e.get("path") or "", int(e.get("size") or 0))
-                for e in (tree.get("tree") or [])
-                if isinstance(e, dict) and e.get("type") == "blob"
-            ]
+            # cycle. F6-309: sizes coerce-or-drop per row.
+            files = []
+            for e in tree.get("tree") or []:
+                if not isinstance(e, dict) or e.get("type") != "blob":
+                    continue
+                try:
+                    files.append(((e.get("path") or ""), int(e.get("size") or 0)))
+                except (TypeError, ValueError):
+                    continue  # non-numeric size: drop the row
             return files, bool(tree.get("truncated"))
         except ForgeError:
             return None
@@ -399,6 +435,8 @@ class GitHubAdapter(ForgeAdapter):
         for c in self._paginated(
             f"/repos/{repo}/issues/{number}/comments", page_size=100, max_pages=100
         ):
+            if not isinstance(c, dict):  # F6-312: row-shape guard
+                continue
             body = c.get("body") or ""
             author = ((c.get("user") or {}).get("login") or "").lower()
             # Marker substring alone is hijackable by any commenter (review
@@ -410,7 +448,12 @@ class GitHubAdapter(ForgeAdapter):
         return None
 
     def create_comment(self, repo: str, number: int, body: str) -> int:
-        return self._call("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})["id"]
+        resp = self._call("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
+        if not isinstance(resp, dict) or "id" not in resp:
+            # F6-313: a 2xx without the comment id is an UNCERTAIN side effect
+            # — refuse (ForgeError defers the PR; at-most-once markers win)
+            raise ForgeError(f"{self.name} POST comment {repo}#{number}: no id in response")
+        return resp["id"]
 
     def update_comment(self, repo: str, number: int, comment_id: int, body: str) -> None:
         self._call("PATCH", f"/repos/{repo}/issues/comments/{comment_id}", {"body": body})
@@ -440,7 +483,13 @@ class GitHubAdapter(ForgeAdapter):
                 runs = self._call(
                     "GET",
                     f"/repos/{repo}/commits/{sha}/check-runs?per_page=100&page={page}")
-                batch = list((runs or {}).get("check_runs") or [])
+                if not isinstance(runs, dict):
+                    # F6-308: non-mapping envelope -> cannot trust the page
+                    raise ForgeError(f"{self.name} check-runs shape drift on {repo}")
+                _cr = runs.get("check_runs")
+                if not isinstance(_cr, list):
+                    raise ForgeError(f"{self.name} check_runs not a list on {repo}")
+                batch = list(_cr)
                 check_runs += batch
                 if len(batch) < 100:
                     break
@@ -535,6 +584,8 @@ class ForgejoAdapter(ForgeAdapter):
         for c in self._paginated(
             f"/repos/{repo}/issues/{number}/comments", page_size=50, max_pages=100
         ):
+            if not isinstance(c, dict):  # F6-312: row-shape guard
+                continue
             body = c.get("body") or ""
             author = ((c.get("user") or {}).get("login") or "").lower()
             if any(prefix in body for prefix in renderer.LEGACY_MARKER_PREFIXES) and is_own_identity(
@@ -544,7 +595,11 @@ class ForgejoAdapter(ForgeAdapter):
         return None
 
     def create_comment(self, repo: str, number: int, body: str) -> int:
-        return self._call("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})["id"]
+        resp = self._call("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
+        if not isinstance(resp, dict) or "id" not in resp:
+            # F6-313: uncertain write — degrade as ForgeError
+            raise ForgeError(f"{self.name} POST comment {repo}#{number}: no id in response")
+        return resp["id"]
 
     def update_comment(self, repo: str, number: int, comment_id: int, body: str) -> None:
         self._call("PATCH", f"/repos/{repo}/issues/comments/{comment_id}", {"body": body})
@@ -567,16 +622,34 @@ class ForgejoAdapter(ForgeAdapter):
             out: list[tuple[str, int]] = []
             truncated = False
 
+            visited: set[str] = set()
+            _walk_budget = {"n": 0}
+
             def walk(sha: str, prefix: str) -> None:
                 nonlocal truncated
+                if sha in visited:
+                    truncated = True  # F6-311: self-referential response
+                    return
+                visited.add(sha)
+                _walk_budget["n"] += 1
+                if _walk_budget["n"] > 2000:
+                    truncated = True  # F6-311: bounded walk, never RecursionError
+                    return
                 t = self._call("GET", f"/repos/{repo}/git/trees/{sha}")
+                if not isinstance(t, dict) or not isinstance(t.get("tree"), list):
+                    truncated = True
+                    return
                 if t.get("truncated"):
                     truncated = True
                 for e in t.get("tree") or []:
                     if not isinstance(e, dict):  # MECE round-5 (luna F5-002):
                         continue  # malformed entry degrades, never crashes
                     if e.get("type") == "blob":
-                        out.append((prefix + (e.get("path") or ""), int(e.get("size") or 0)))
+                        try:
+                            out.append((prefix + (e.get("path") or ""),
+                                        int(e.get("size") or 0)))
+                        except (TypeError, ValueError):
+                            continue
                     elif e.get("type") == "tree":
                         walk(e.get("sha"), prefix + (e.get("path") or "") + "/")
 

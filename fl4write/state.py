@@ -294,6 +294,15 @@ def prune_closed(state: dict[str, Any], open_numbers: set[int]) -> None:
         for n, rec in state["prs"].items()
         if int(n) in open_numbers or "fix_depth" in rec or "model_failures" in rec
     }
+    # MECE round-6 (luna-max F6-C015): fix-depth/model-failure records of
+    # CLOSED PRs are kept for the depth rails while open, but a closed record
+    # can never become open again — bound the retained history (insertion
+    # order: the newest 2000 survive)
+    closed_kept = [n for n, rec in state["prs"].items()
+                   if int(n) not in open_numbers]
+    if len(closed_kept) > 2000:
+        for n in closed_kept[: len(closed_kept) - 2000]:
+            state["prs"].pop(n, None)
     mf = state.get("model_failures")
     if isinstance(mf, dict):  # keys "{pr}:{sha10}"
         state["model_failures"] = {
