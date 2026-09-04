@@ -3099,12 +3099,17 @@ class TestMECERound9Pins:
         out = _sp.run([_sys.executable, "-m", "pytest", "tests/", "-q"],
                       capture_output=True, text=True, cwd=str(REPO_ROOT),
                       env=env, timeout=900)
+        # F14-E001: a RED nested run must never satisfy the claim — the
+        # README says 'tests green'; only a rc-0 run with zero failures does
+        assert out.returncode == 0, f"nested suite failed:\n{out.stdout[-400:]}{out.stderr[-400:]}"
         m = None
         for ln in reversed(out.stdout.splitlines()):
             m = _re.search(r"(\d+) passed, (\d+) skipped", ln)
             if m:
                 break
         assert m, f"unparseable nested suite summary: {out.stdout[-200:]!r}"
+        if _re.search(r"\b[1-9]\d* failed\b", out.stdout):
+            raise AssertionError(f"nested suite has failures:\n{out.stdout[-300:]!r}")
         claim = f"{m.group(1)} passing + {m.group(2)} skipped"
         assert claim in readme, f"README must state the live count {claim!r}"
 

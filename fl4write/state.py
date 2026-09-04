@@ -189,19 +189,23 @@ def load_state(path: Path) -> dict[str, Any]:
 
 
 def _valid_iso(value: str) -> bool:
-    """MECE round-6 (luna-max F6-C011): ISO-8601-ish UTC stamp check for the
-    persisted watermarks/cursors. Accepts 'YYYY-...T..Z' and '+00:00' forms
-    the engine writes; rejects arbitrary strings like '0000'."""
+    """MECE round-6 (luna-max F6-C011): ISO-8601 stamp check for the persisted
+    watermarks/cursors. F14-C007: DATE-ONLY values ('2026-09-01') used to
+    pass and then compare lexically against full timestamps, permanently
+    skipping every merge on that date — a cursor needs the TIME and a
+    timezone."""
     import datetime as _dt
 
     v = value.strip()
-    if not v:
+    if len(v) < 19 or "T" not in v:
         return False
     try:
-        _dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
-        return True
+        parsed = _dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
     except ValueError:
         return False
+    if parsed.tzinfo is None:
+        return False  # naive stamps cannot compare with aware watermarks
+    return True
 
 
 def _normalize_aux(data: dict[str, Any]) -> dict[str, Any]:
@@ -236,14 +240,26 @@ def _normalize_aux(data: dict[str, Any]) -> dict[str, Any]:
                                            and not isinstance(r.get("id"), bool)
                                            and isinstance(r.get("line"), int))]
             if bad:
-                # F13-C005: malformed findings mean the sweep's own records
-                # are untrustworthy — completion/publication ride with them
+                # F13-C005/F14-C002: malformed findings mean the sweep's own
+                # records are untrustworthy — the FULL reset set (matching
+                # engine._omni_reset_sweep) so a stale head/failure maps can
+                # never ride the restart
                 log.warning("state omni_findings: dropping %d malformed rows — "
-                            "sweep completion reset (bounded reconcile)", len(bad))
+                            "sweep state reset (bounded reconcile)", len(bad))
                 out["omni_findings"] = [r for r in omni if r not in bad]
-                for key in ("omni_complete", "omni_published", "omni_fp",
-                            "omni_cursor", "omni_next_id", "omni_scanned_total"):
+                for key in ("omni_complete", "omni_published", "omni_cursor",
+                            "omni_head", "omni_fp", "omni_next_id", "omni_total",
+                            "omni_scanned_total", "omni_file_fails",
+                            "omni_unscannable", "omni_unfetchable",
+                            "omni_truncated_seen"):
                     out.pop(key, None)
+                # F14-C003: optional per-row fix flags are truthiness-READ —
+                # a persisted "false" string would suppress eligible fixes
+                out["omni_findings"] = [
+                    {k: v for k, v in _r.items()
+                     if k not in ("fix_attempted", "fix_stale")
+                     or isinstance(v, bool)}
+                    for _r in out.get("omni_findings", [])]
     # F13-C004: the publication-retry counter is consumed by raw int()
     v = out.get("omni_pub_fail")
     if v is not None:

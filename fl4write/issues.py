@@ -63,10 +63,12 @@ def collect_new_issues(forge: ForgeAdapter, repo: str, last_number: int,
                 batch = forge._call(
                     "GET", f"/repos/{repo}/issues?state=open&per_page=100&page={page}")
                 if not isinstance(batch, list):
-                    break
+                    return []  # F14-B001: shape drift = no intake (watermark holds)
                 all_issues += batch
                 if len(batch) < 100:
                     break
+            else:
+                return []  # F14-B001: ten FULL pages = incomplete intake
         except ForgeError:
             return []
     # UltraQA round 3: row-shape guard — garbage rows from a half-parsed forge
@@ -276,6 +278,23 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
             log.warning("issues cycle deadline reached — %d issue(s) deferred", len(new_issues))
             break
         num = issue.get("number", 0)
+        # F14-B004: an attacker-planted marker must not schedule recurring
+        # MODEL triage — quarantine before the LLM call (own-marker issues
+        # still flow to the normal update path below)
+        if not config.shadow and num > 0 and _foreign_triage_exists(forge, config.repo, num) \
+                and find_existing_triage(forge, config.repo, num, config.bot_login) is None:
+            summary["quarantined"] += 1
+            log.warning(
+                "issue #%s: foreign triage marker quarantined pre-triage "
+                "(no model spend)", num)
+            q = st.setdefault("issues_foreign_quarantined", [])
+            if num not in q:
+                q.append(num)
+                if len(q) > 200:
+                    q.pop(0)
+            if not config.shadow:
+                retry.add(num)
+            continue
         try:
             triage = triage_issue(issue, config)
         except Exception as exc:  # noqa: BLE001 - F11-B003 belt: one hostile

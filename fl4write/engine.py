@@ -764,7 +764,9 @@ def _omnisweep_step(
     rows_bad = False
     if len(files) != sum(1 for row in files
                          if isinstance(row, (tuple, list)) and len(row) == 2
-                         and isinstance(row[0], str) and isinstance(row[1], int)
+                         and isinstance(row[0], str)
+                         and isinstance(row[1], int)
+                         and not isinstance(row[1], bool)  # F14-C005
                          and row[1] >= 0):
         rows_bad = True
         report.alerts.append(
@@ -772,7 +774,9 @@ def _omnisweep_step(
             "(retry next cycle)")
     files = [row for row in files
              if isinstance(row, (tuple, list)) and len(row) == 2
-             and isinstance(row[0], str) and isinstance(row[1], int)
+             and isinstance(row[0], str)
+             and isinstance(row[1], int)
+             and not isinstance(row[1], bool)
              and row[1] >= 0]
 
     excludes = config.omnisweep.exclude + (config.path_filters or {}).get("ignore", [])
@@ -803,14 +807,14 @@ def _omnisweep_step(
     # scan list; when the tree changes mid-sweep, restart from scratch (the
     # alert is the audit trail; completed findings belong to an older HEAD)
     _anchor0 = _probe_head(primary, config.repo)
-    if _anchor0 is None and not config.shadow and not truncated \
-            and (st.get("omni_cursor") or st.get("omni_fp")):
-        # F13-C008 (reopened F9-C003): with NO trusted HEAD anchor, a
-        # multi-cycle sweep cannot detect same-size content edits — fail
-        # closed and defer until an anchor exists (never certify unanchored)
+    if _anchor0 is None and not config.shadow and not truncated:
+        # F13-C008/F14-C004: with NO trusted HEAD anchor a sweep cannot
+        # detect same-size content edits NOR persist a defensible completion
+        # (a fresh scan used to complete with no SHA, and the completed fast
+        # path then never probed) — defer until an anchor exists
         report.alerts.append(
             "omnisweep: no trusted HEAD anchor — sweep deferred (unanchored "
-            "multi-cycle certification refused)")
+            "certification refused)")
         return
     if not config.shadow and not truncated:
         import hashlib as _hl
@@ -1630,8 +1634,13 @@ def run_cycle(
                     continue  # mirrored PRs are never reviewed twice
                 bot_authored = bool(pr.is_bot_author)
                 if bot_authored and fixlane.dependency_depth(pr, pr.title, config) in ("skip",):
-                    state.mark_reviewed(st, pr.number, pr.head_sha, "dependency-skip")
                     report.skipped_dependency += 1
+                    if config.shadow:
+                        # F14-C001 (reopened F5-201): shadow never writes the
+                        # live reviewed marker — a later LIVE run must still
+                        # see this PR as unreviewed
+                        continue
+                    state.mark_reviewed(st, pr.number, pr.head_sha, "dependency-skip")
                     continue
                 if not state.needs_review(st, pr.number, pr.head_sha):
                     continue

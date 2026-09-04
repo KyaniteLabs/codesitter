@@ -78,6 +78,17 @@ def _read_state(repo: str) -> dict | None:
         # MECE round-6 (luna-max F6-C019): True == 1 — boolean versions must
         # not pass the int check; unknown/future = UNKNOWN, never cold
         return None
+    # F14-C006: scheduler-consumed aux fields are validated like the loader
+    # — open_ids garbage or an invalid merged_since would classify an active
+    # repo COLD instead of the UNKNOWN/warm fail-safe
+    _oi = st.get("open_ids")
+    if _oi is not None and (not isinstance(_oi, list)
+                            or any(isinstance(x, bool) or not isinstance(x, int)
+                                   for x in _oi)):
+        return None
+    _ms = st.get("merged_since")
+    if _ms is not None and (not isinstance(_ms, str) or "T" not in _ms):
+        return None
     return st
 
 

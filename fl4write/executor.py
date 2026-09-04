@@ -1046,8 +1046,12 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
             # F13-B007: a merge is real only when the API PROVES it — the
             # response used to be discarded and every non-exception outcome
             # reported as merged
+            # F14-B003: a squash merge returns the NEW merge-commit sha —
+            # the head-sha precondition stays on the REQUEST; the response
+            # proves completion via merged:true plus a real returned sha
             if not isinstance(_resp, dict) or _resp.get("merged") is not True \
-                    or _resp.get("sha") != pr_data["head"]["sha"]:
+                    or not isinstance(_resp.get("sha"), str) \
+                    or not _resp.get("sha"):
                 log.warning("merge of %s#%s did not prove completion: %s",
                             config.repo, number, str(_resp)[:160])
                 continue

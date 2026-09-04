@@ -83,15 +83,25 @@ def acceptance_snapshot(forge: ForgeAdapter, config: RepoConfig) -> dict[str, An
         # UltraQA round 2: shape errors are external-surface failures — this
         # function's contract is "never raises" (acceptance=n/a on the line)
         log.warning("acceptance open-list skipped (%s): %s", config.repo, exc)
+    # F14-C008 (reopened F2-205): shape-filter the OPEN rows FIRST — the
+    # merged dedupe dereferenced q.number on every existing open row, so one
+    # malformed open row discarded the WHOLE merged sample silently
+    from .models import PullRequest as _PR
+    prs = [p for p in prs if isinstance(p, _PR)
+           and isinstance(p.number, int) and not isinstance(p.number, bool)]
     if hasattr(forge, "list_merged_prs"):
         try:
             from datetime import datetime, timedelta, timezone
 
             since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
-            prs += [
-                p for p in forge.list_merged_prs(config.repo, since)
-                if all(not (p.number == q.number) for q in prs)
-            ]
+            merged_rows = forge.list_merged_prs(config.repo, since)
+            if isinstance(merged_rows, list):
+                _open_nums = {q.number for q in prs}
+                prs += [p for p in merged_rows
+                        if isinstance(p, _PR)
+                        and isinstance(p.number, int)
+                        and not isinstance(p.number, bool)
+                        and p.number not in _open_nums]
         except (ForgeError, NotImplementedError, ValueError, TypeError, KeyError,
                 AttributeError):
             pass  # merged sampling is additive, never load-bearing
