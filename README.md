@@ -69,9 +69,9 @@ no fleet repo has enabled it yet — luna F3-004 doc truth).
 
 Current fleet state (2026-09-04, MECE audit round 1): **130 central configs**
 across GitHub + Forgejo cycling ~100 repos/hour on the nucbox runner
-(`run-cycle.sh`, hourly crontab, single-host law — LEARNINGS #17). **400+
-tests green** (426 collected / 423 passing + 3 live-eval as of the MECE
-round-4 desk pass), ruff clean, CI on every push. Quality loop on
+(`run-cycle.sh`, hourly crontab, single-host law — LEARNINGS #17). **500+
+tests green** (509 passing + 3 skipped as of the MECE
+round-9 desk pass), ruff clean, CI on every push. Quality loop on
 issue #5; desk charter + incident history on issue #3 and map #63.
 
 Requested behavior (CEO 2026-09-04, not yet implemented): the **exhaustive bug-resolution

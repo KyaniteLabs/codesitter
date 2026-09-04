@@ -708,7 +708,18 @@ def _omnisweep_step(
     # alert is the audit trail; completed findings belong to an older HEAD)
     if not config.shadow and not truncated:
         import hashlib as _hl
-        fp = _hl.sha256("\x00".join(scan).encode()).hexdigest()[:16]
+        # F9-C003: content edits with unchanged paths must restart the sweep
+        # too — fingerprint paths AND sizes, plus the anchored HEAD when the
+        # forge can report one (a stale 'at HEAD' audit is a false claim)
+        fp_meta = "\x00".join(f"{pp}:{sz}" for (pp, sz) in sorted(files))
+        try:
+            _anchor = primary.head_check_runs(config.repo)
+        except Exception:  # noqa: BLE001 - anchor probing never blocks
+            _anchor = None
+        if _anchor and isinstance(_anchor, (tuple, list)) and len(_anchor) == 2 \
+                and isinstance(_anchor[0], str) and _anchor[0]:
+            fp_meta += "\x00head:" + _anchor[0]
+        fp = _hl.sha256(fp_meta.encode()).hexdigest()[:16]
         if st.get("omni_fp") and fp != st["omni_fp"] and st.get("omni_cursor", ""):
             st["omni_cursor"] = ""
             st["omni_findings"] = []
@@ -933,6 +944,13 @@ def _retro_sweep(
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         # UltraQA round 2: API shape drift degrades the lane, never crashes
         report.alerts.append(f"retro listing degraded (skipped this cycle): {exc}")
+        return set()
+
+    # F9-C001: envelope guard — a truthy dict iterated its keys as 'rows',
+    # became an empty list and falsely declared the audit COMPLETE
+    if not isinstance(listed, list):
+        report.alerts.append(
+            f"retro listing wrong envelope ({type(listed).__name__}; skipped this cycle)")
         return set()
 
     # row-shape guard (UltraQA round 2): one malformed merged row must not
@@ -1371,6 +1389,16 @@ def run_cycle(
                 listing_failed = True
                 report.alerts.append(f"primary list_open_prs degraded: {exc}")
                 log.warning("list_open_prs shape failure for %s (degraded): %s", config.repo, exc)
+                prs = []
+
+            # F9-C002: the listing ENVELOPE must be a list — a truthy dict
+            # iterates its keys as 'rows' and used to pass the row guard while
+            # listing_failed stayed False (prune then deleted live state)
+            if not isinstance(prs, list):
+                listing_failed = True
+                report.alerts.append(
+                    f"primary list_open_prs wrong envelope ({type(prs).__name__}; "
+                    "degraded this cycle)")
                 prs = []
 
             # Adapter contract guard: garbage rows (None, dicts, strings from a

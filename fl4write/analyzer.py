@@ -174,7 +174,6 @@ def _call_model(route: ModelRoute, prompt: str, mode: str = "pr", system: str | 
     }
     if route.seed is not None:
         payload["seed"] = route.seed
-    from . import telemetry as _tel
 
     _t0 = time.time()
     req = urllib.request.Request(route.endpoint, data=json.dumps(payload).encode(), headers=headers, method="POST")
@@ -184,11 +183,9 @@ def _call_model(route: ModelRoute, prompt: str, mode: str = "pr", system: str | 
     choice = (data.get("choices") or [{}])[0]
     content = (choice.get("message") or {}).get("content", "")
     _usage = data.get("usage") or {}
-    _tel.emit("model_call", model=route.model, latency_s=round(_lat, 2),
-              prompt_tokens=_usage.get("prompt_tokens"),
-              completion_tokens=_usage.get("completion_tokens"),
-              finish_reason=choice.get("finish_reason"))
     if not content:
+        # F9-001: outcome events must carry ok — the caller emits ok=False;
+        # an inconclusive event used to default 'healthy' in calibration
         raise RuntimeError("model returned empty content (payload-assert failed)")
     if choice.get("finish_reason") == "length":
         raise RuntimeError(
@@ -202,6 +199,10 @@ def _call_model(route: ModelRoute, prompt: str, mode: str = "pr", system: str | 
     _tel_ok.record_route(route.model, ok=True, latency_s=_lat, parse_ok=True,
                          prompt_tokens=_usage.get("prompt_tokens"),
                          completion_tokens=_usage.get("completion_tokens"))
+    _tel_ok.emit("model_call", model=route.model, ok=True, parse_ok=True,
+                 latency_s=round(_lat, 2),
+                 prompt_tokens=_usage.get("prompt_tokens"),
+                 completion_tokens=_usage.get("completion_tokens"))
     return content
 
 

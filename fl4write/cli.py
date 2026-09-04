@@ -34,6 +34,10 @@ def _gh(*args: str) -> str:
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(f"gh {' '.join(args[:2])} timed out after 120s") from exc
+    except OSError as exc:
+        # F9-D005: a missing gh binary or other process error is a DIFF
+        # unavailable, not a raw traceback through the cycle
+        raise RuntimeError(f"gh {' '.join(args[:2])} unavailable: {exc}") from exc
     if out.returncode != 0:
         raise RuntimeError(f"gh {' '.join(args[:2])} failed: {out.stderr[-200:]}")
     return out.stdout

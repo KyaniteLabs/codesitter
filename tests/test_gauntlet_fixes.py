@@ -2987,3 +2987,75 @@ class TestMECERound8SolB:
         assert "_opts_with_value" in src  # F8-006 arity
         assert "setup/infrastructure failure" in src  # F8-008 infra class
         assert "_tag = _hl.blake2b" in src  # F8-003 branch identity
+
+
+class TestMECERound9Pins:
+    """Round-9 desk: retro/open listing envelopes (F9-C001/002), tree
+    fingerprint with sizes+head (F9-C003), telemetry outcome events
+    (lm F9-001), get_file/comment/issue id guards (F9-D001/003/004),
+    gh OSError wrap (F9-D005), README count truth (F9-E001)."""
+
+    def test_retro_dict_envelope_never_completes(self, tmp_path, monkeypatch):
+        class _RawDict(_R4Forge):
+            def list_merged_prs(self, repo, since_iso):
+                return {"not": "a list"}  # raw truthy dict envelope
+
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _RawDict()
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(retro_audit={"enabled": True}, ci_watch={"enabled": False},
+                        omnisweep={"enabled": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"x.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert any("wrong envelope" in a for a in r.alerts)
+        assert st.get("retro_complete") is not True
+
+    def test_open_listing_dict_envelope_is_lane_failure(self, tmp_path, monkeypatch):
+        sp = tmp_path / "s.json"
+        recs = {"1": {"head_sha": "a" * 40, "fix_depth": 1}}
+        _r4_seed(sp, prs=recs)
+
+        class _DictList(_R4Forge):
+            def list_open_prs(self, repo):
+                return {"1": "not-a-row-list"}  # truthy dict envelope
+
+        forge = _DictList()
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(ci_watch={"enabled": False}, omnisweep={"enabled": False})
+        run_cycle(c, sp, get_diff=lambda pr: ({"x.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert "1" in st["prs"], "invalid envelope pruned live records"
+
+    def test_telemetry_outcome_events_only(self, monkeypatch, tmp_path):
+        from fl4write import telemetry as tel
+
+        p = tmp_path / "t.jsonl"
+        p.write_text('\n'.join([
+            '{"kind": "model_call", "model": "m1"}',  # no ok: pre-validation
+            '{"kind": "model_call", "model": "m1", "ok": false}',
+            '{"kind": "model_call", "model": "m1", "ok": true}',
+        ]) + '\n', encoding="utf-8")
+        monkeypatch.setattr(tel, "_path", lambda: p)
+        out = tel.calibration_snapshot(recent=10)
+        assert out.get("m1", "").startswith("1/2")  # one ok of two outcomes
+
+    def test_comment_and_issue_ids_reject_unusable(self):
+        from fl4write.forges import ForgeError
+
+        gh = TestMECERound7SolPins2._gh()
+        gh._call = lambda m, path, data=None: {"id": None}
+        try:
+            gh.create_comment("o/r", 1, "b")
+            raise AssertionError("null comment id accepted")
+        except ForgeError:
+            pass
+        gh2 = TestMECERound7SolPins2._gh()
+        gh2._call = lambda m, path, data=None: {"number": True}
+        assert gh2.open_issue("o/r", "t", "b") is None  # True must not pass
+
+    def test_readme_and_gh_wrap_laws(self):
+        readme = (REPO_ROOT / "README.md").read_text()
+        assert "509 passing" in readme
+        cli = (REPO_ROOT / "fl4write/cli.py").read_text()
+        assert "gh {' '.join(args[:2])} unavailable" in cli

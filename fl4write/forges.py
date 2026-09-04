@@ -498,11 +498,12 @@ class GitHubAdapter(ForgeAdapter):
 
     def create_comment(self, repo: str, number: int, body: str) -> int:
         resp = self._call("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
-        if not isinstance(resp, dict) or "id" not in resp:
-            # F6-313: a 2xx without the comment id is an UNCERTAIN side effect
-            # — refuse (ForgeError defers the PR; at-most-once markers win)
-            raise ForgeError(f"{self.name} POST comment {repo}#{number}: no id in response")
-        return resp["id"]
+        _cid = resp.get("id") if isinstance(resp, dict) else None
+        if not isinstance(_cid, int) or isinstance(_cid, bool) or _cid <= 0:
+            # F6-313/F9-D003: an absent/null/bool/zero id is an UNCERTAIN side
+            # effect — refuse (ForgeError defers the PR; at-most-once wins)
+            raise ForgeError(f"{self.name} POST comment {repo}#{number}: no usable id in response")
+        return _cid
 
     def update_comment(self, repo: str, number: int, comment_id: int, body: str) -> None:
         self._call("PATCH", f"/repos/{repo}/issues/comments/{comment_id}", {"body": body})
@@ -563,7 +564,9 @@ class GitHubAdapter(ForgeAdapter):
         if not isinstance(resp, dict):
             return None
         n = resp.get("number")
-        return n if isinstance(n, int) and n > 0 else None
+        if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
+            return None  # F9-D004: True == 1 must never read as an issue id
+        return n
 
     def update_issue(self, repo: str, number: int, body: str) -> bool:
         try:
@@ -697,10 +700,11 @@ class ForgejoAdapter(ForgeAdapter):
 
     def create_comment(self, repo: str, number: int, body: str) -> int:
         resp = self._call("POST", f"/repos/{repo}/issues/{number}/comments", {"body": body})
-        if not isinstance(resp, dict) or "id" not in resp:
-            # F6-313: uncertain write — degrade as ForgeError
-            raise ForgeError(f"{self.name} POST comment {repo}#{number}: no id in response")
-        return resp["id"]
+        _cid = resp.get("id") if isinstance(resp, dict) else None
+        if not isinstance(_cid, int) or isinstance(_cid, bool) or _cid <= 0:
+            # F6-313/F9-D003: uncertain write — no usable id: degrade
+            raise ForgeError(f"{self.name} POST comment {repo}#{number}: no usable id in response")
+        return _cid
 
     def update_comment(self, repo: str, number: int, comment_id: int, body: str) -> None:
         self._call("PATCH", f"/repos/{repo}/issues/comments/{comment_id}", {"body": body})
@@ -825,7 +829,9 @@ class ForgejoAdapter(ForgeAdapter):
         if not isinstance(resp, dict):
             return None
         n = resp.get("number")
-        return n if isinstance(n, int) and n > 0 else None
+        if not isinstance(n, int) or isinstance(n, bool) or n <= 0:
+            return None  # F9-D004: True == 1 must never read as an issue id
+        return n
 
     def update_issue(self, repo: str, number: int, body: str) -> bool:
         try:

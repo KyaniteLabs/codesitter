@@ -133,7 +133,9 @@ def calibration_snapshot(recent: int = 500) -> dict[str, Any]:
             continue
         if not isinstance(ev, dict):
             continue  # a stray JSON scalar must not break the snapshot (Sol#5)
-        if ev.get("kind") == "model_call":
+        if ev.get("kind") == "model_call" and "ok" in ev:
+            # F9-001: only OUTCOME events count — pre-validation events (no
+            # ok field) must never default to healthy
             order.append(ln)
             collected += 1
             if collected >= recent:
