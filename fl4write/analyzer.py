@@ -580,7 +580,24 @@ def analyze(
             testing_family = f.rule_id in ("tests", "testing-quality")
             has_test = testing_family and bool(re.search(
                 r"\b(fail(s|ed|ing|ure)?s?|break(s|ing)?|broke(n)?|red)\b", low))
-            has_scenario = any(m in low for m in _SCENARIO_MARKERS)
+            # MECE round-7 (luna F7-002): scenario markers must be POSITIVE
+            # — "unexecuted"/"non-executing"/"no exploit" wording is not
+            # concrete-breakage evidence and must not retain Critical
+            has_scenario = False
+            for m in _SCENARIO_MARKERS:
+                found_positive = False
+                for mt in re.finditer(rf"\b[a-z]*{re.escape(m)}[a-z]*\b", low):
+                    word = mt.group(0)
+                    if word.startswith(("un", "non", "not")):
+                        continue  # unexecuted / non-executing / not-executed
+                    prev = low[max(0, mt.start() - 12):mt.start()]
+                    if re.search(r"\b(no|not|without|never)\b[^.!?]*$", prev):
+                        continue  # "no exploit" / "without bypass"
+                    found_positive = True
+                    break
+                if found_positive:
+                    has_scenario = True
+                    break
             if not (has_test or has_scenario):
                 f.severity = "Major"
                 log.info("demoted Critical->Major (no test/scenario): %s:%s (%s)",

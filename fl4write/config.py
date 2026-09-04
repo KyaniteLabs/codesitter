@@ -231,6 +231,12 @@ def load_config(path: str | Path) -> RepoConfig:
     """Fail-loud loader: config errors abort the cycle, never silently skip."""
     raw = yaml.load(Path(path).read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
     config = RepoConfig.model_validate(raw)
+    for rid in config.review:
+        # MECE round-7 (luna F7-001): rule ids ride into comment backticks
+        # and parsed identities — newline/control riddled keys must refuse at
+        # load, never inject at render
+        if len(rid) > 80 or any(ch in rid for ch in ("\n", "\r", "`", "\x00")):
+            raise ValueError(f"review rule id {rid!r} contains unsafe characters")
     from .capabilities import default_review_rules
     merged = {**default_review_rules(), **config.review}
     config = config.model_copy(update={"review": merged})

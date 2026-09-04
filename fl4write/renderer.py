@@ -39,7 +39,10 @@ _URGENCY_POST_MERGE = {"Critical": "🚨 **Landed on main** — fix-forward stro
 # SAME format, defined once. Groups: sev, path, line, rule.
 FINDING_LINE_FMT = "### {emoji} {sev} — `{path}:{line}` — `{rule}`"
 FINDING_LINE_RE = re.compile(
-    r"^(?:🆕 )?### \S+ (?P<sev>Critical|Major|Minor|Nit) — `(?P<path>.+?):(?P<line>\d+)` — `(?P<rule>[^`]+)`",
+    # MECE round-7 (luna F7-001): path and rule must stay SINGLE-LINE — a
+    # rule spanning newlines let a crafted previous comment inject markdown
+    # headings through the resolved-findings interpolation
+    r"^(?:🆕 )?### \S+ (?P<sev>Critical|Major|Minor|Nit) — `(?P<path>[^`\n]+?):(?P<line>\d+)` — `(?P<rule>[^`\n]+)`",
     re.MULTILINE,
 )
 
