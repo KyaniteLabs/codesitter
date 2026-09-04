@@ -54,11 +54,14 @@ def collect_new_issues(forge: ForgeAdapter, repo: str, last_number: int,
         all_issues = forge._call("GET", f"/repos/{repo}/issues?state=open&per_page=100")
         all_issues = all_issues if isinstance(all_issues, list) else []
     # UltraQA round 3: row-shape guard — garbage rows from a half-parsed forge
-    # response must not crash the issues lane
+    # response must not crash the issues lane. F10-B004 (luna-max2 DOM-B):
+    # booleans are NOT numbers — isinstance(True, int) lets a forged boolean
+    # row target issue #1
     retry = retry or set()
     fresh = [i for i in all_issues
              if isinstance(i, dict)
              and isinstance(i.get("number"), int)
+             and not isinstance(i.get("number"), bool)
              and (i["number"] > last_number or i["number"] in retry)
              and "pull_request" not in i]
     return sorted(fresh, key=lambda i: i.get("number", 0))
@@ -190,7 +193,7 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
         last_num = int(st.get("last_triaged_number") or 0)
     except (TypeError, ValueError):
         last_num = 0
-    summary = {"triaged": 0, "skipped": 0, "errors": 0}
+    summary = {"triaged": 0, "skipped": 0, "errors": 0, "quarantined": 0}
 
     try:
         _retry_raw = st.get("issues_retry", [])
@@ -228,15 +231,20 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
                 # Marker present but not ours (identity change, cross-host run,
                 # or an ATTACKER planting the public marker): NEVER post a
                 # second copy (email-storm law) and NEVER advance the
-                # watermark over it — F8-009: quarantine instead, so the
-                # issue stays visible in state and surfaces in the alert
+                # watermark over it — F8-009/F10-B003: quarantine instead.
+                # The quarantine is a STRUCTURED report state (summary +
+                # cycle alert), not just a log line, and the recorded list is
+                # bounded so an attacker flooding markers cannot grow state
+                # without limit.
+                summary["quarantined"] += 1
                 log.warning(
                     "issue #%s: foreign triage marker quarantined (no duplicate, "
                     "watermark NOT advanced)", num)
-                summary["skipped"] += 1
                 q = st.setdefault("issues_foreign_quarantined", [])
                 if num not in q:
                     q.append(num)
+                    if len(q) > 200:
+                        q.pop(0)  # bounded state: oldest quarantine forgotten
                 retry.add(num)  # stays collected: per-cycle visibility, and
                 # the watermark can never bury it while the marker exists
                 continue

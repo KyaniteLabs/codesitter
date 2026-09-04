@@ -20,6 +20,7 @@ Architect required. Each pins a live-caught failure class:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fl4write import config as cfg
 from fl4write import gatekeeper
@@ -95,7 +96,8 @@ class TestExecutorPatchPrompt:
         c = make_config(fix={"enabled": True, "merge_own_prs": False})
         monkeypatch.setattr("fl4write.executor._run", lambda cmd, cwd=None, timeout=120, env=None: type(
             "R", (), {"returncode": 0, "stdout": pr.head_sha, "stderr": ""})())
-        monkeypatch.setattr("fl4write.executor._write_contained", lambda w, p, content: None)
+        monkeypatch.setattr("fl4write.executor._write_contained",
+                            lambda w, p, content: (Path(w) / p).write_text(content) and None)
         monkeypatch.setattr("fl4write.executor._run_tests", lambda w, c: True)
         monkeypatch.setattr("fl4write.executor._gh_api", lambda m, p, d=None: {"number": 9, "html_url": "u"})
         result = executor.attempt_fix(pr, f, c)
@@ -576,12 +578,20 @@ class TestVerifyDiffTests:
         assert executor.verify_diff_tests(pr, make_config(), ["test_x.py"]) is None
 
     def test_regex_matches_real_test_names(self):
-        from fl4write.engine import _TEST_FILE_RE
+        # F10-E004: discovery must cover spec/dir conventions so a changed
+        # test is never silently invisible to the deterministic verifier
+        from fl4write.engine import _is_test_path
 
-        for good in ("tests/test_foo.py", "pkg/test_foo.py", "src/a.test.ts", "x/y_test.rs", "tests.py"):
-            assert _TEST_FILE_RE.search(good), good
-        for bad in ("src/main.py", "README.md", "testing.md"):
-            assert not _TEST_FILE_RE.search(bad), bad
+        for good in ("tests/test_foo.py", "pkg/test_foo.py", "src/a.test.ts",
+                     "src/a.spec.ts", "src/foo.spec.jsx", "src/a.test.mjs",
+                     "x/y_test.rs", "x/y_test.go", "x/y_test.ts", "tests.py",
+                     "__tests__/foo.js", "app/__tests__/b.tsx",
+                     "src/tests/foo.ts", "tests/foo.ts", "tests/foo.spec.js"):
+            assert _is_test_path(good), good
+        for bad in ("src/main.py", "README.md", "testing.md", "src/main.ts",
+                    "src/__fixtures__/data.js", "tests/fixtures/data.json",
+                    "src/helpers.py", "pkg/util_testing.py"):
+            assert not _is_test_path(bad), bad
 
 
 class TestSolAuditFixes:

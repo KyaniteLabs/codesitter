@@ -319,23 +319,33 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
     from . import telemetry as _tel
 
     _t0 = __import__("time").time()
+
+    def _finish(status: str, reason: str = "", **extra) -> dict[str, Any]:
+        # F10-B002: ONE guarded terminal fix_attempt outcome event per attempt.
+        # Infrastructure error returns used to omit the event entirely and
+        # telemetry undercounted failures; every path records exactly once.
+        try:
+            _tel.emit("fix_attempt", repo=pr.repo, path=finding.path,
+                      status=status, reason=reason[:80],
+                      latency_s=round(__import__("time").time() - _t0, 1))
+        except Exception:  # noqa: BLE001 — telemetry never aborts the attempt
+            pass
+        pass
+        out: dict[str, Any] = {"status": status, "reason": reason}
+        out.update(extra)
+        return out
+
     blocked_reason = fix_allowed(pr, config, 0)
     if blocked_reason:
-        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="blocked",
-                  reason=blocked_reason[:80])
-        return {"status": "blocked", "reason": blocked_reason,
-                "escalation": escalate(pr, [finding], blocked_reason)}
+        return _finish("blocked", blocked_reason,
+                       escalation=escalate(pr, [finding], blocked_reason))
 
     if dependency_depth(pr, pr.title, config) == "skip":
-        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="skipped",
-                  reason="dependency PR")
-        return {"status": "skipped", "reason": "dependency PR"}
+        return _finish("skipped", "dependency PR")
 
     content = _get_file_content(pr.repo, finding.path, pr.head_sha)
     if content is None:
-        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="error",
-                  reason=f"cannot fetch {finding.path}@{pr.head_sha[:8]}")
-        return {"status": "error", "reason": f"cannot fetch {finding.path}@{pr.head_sha[:8]}"}
+        return _finish("error", f"cannot fetch {finding.path}@{pr.head_sha[:8]}")
 
     from .renderer import path_display  # MECE round-5 (terra F5-002): raw
     # paths in the fix prompt can carry control/credential-shaped content —
@@ -360,25 +370,22 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
     except ValueError as exc:  # parse-level (UltraQA round 2): ambiguous or
         # unparseable model output is NOT a transport failure — label it so ops
         # triage doesn't chase the model route for a parse problem
-        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="error",
-                  reason=f"model output unparseable: {str(exc)[:80]}")
-        return {"status": "error", "reason": f"model output unparseable: {str(exc)[:120]}"}
+        return _finish("error", f"model output unparseable: {str(exc)[:120]}")
     except Exception as exc:  # audit A6: network/HTTP/RuntimeError classes
         # crashed whole cycles through the narrow tuple — fail-open means
         # except Exception or it isn't (LEARNINGS #25c)
-        return {"status": "error", "reason": f"model unavailable: {str(exc)[:120]}"}
+        return _finish("error", f"model unavailable: {str(exc)[:120]}")
 
     if fixed is None or not isinstance(fixed, str):
-        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="nofix",
-                  reason="model returned no fix")
-        return {"status": "nofix", "reason": "model returned no fix"}
-    if fixed.strip() == content.strip():
-        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="nofix",
-                  reason="no-op patch")
+        return _finish("nofix", "model returned no fix")
+    if fixed == content:
+        # F10-E001: the no-op compare is EXACT bytes — a whitespace-only
+        # (indentation) change is a REAL fix and must reach the tree. The old
+        # .strip() compare discarded indentation-sensitive fixes as no-ops.
         # Live-caught (first real attempt, 2026-09-02): a no-op patch flowed
         # through worktree→commit→push→PR and died as an opaque 422. A patch
         # identical to the original is a nofix, caught BEFORE any writes.
-        return {"status": "nofix", "reason": "model patch identical to original (no-op)"}
+        return _finish("nofix", "model patch identical to original (no-op)")
 
     token = os.environ.get("CODESITTER_GITHUB_TOKEN", "")
     workdir = Path(tempfile.mkdtemp(prefix="fl4write-fix-"))
@@ -388,7 +395,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         # invalid ref; cloning the default branch reverted main-side changes).
         fetch_url = f"https://github.com/{pr.repo}.git"
         if _run(["git", "init", "-q"], cwd=workdir).returncode != 0:
-            return {"status": "error", "reason": "git init failed"}
+            return _finish("error", "git init failed")
         pull_env = _push_token_env(workdir, token)
         askpass_envs.append(pull_env)
         fetch = _run(
@@ -397,16 +404,16 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         )
         _drop_askpass(pull_env)  # token helper gone before any code checkout
         if fetch.returncode != 0:
-            return {"status": "error", "reason": f"fetch of PR head failed: {fetch.stderr[-100:]}"}
+            return _finish("error", f"fetch of PR head failed: {fetch.stderr[-100:]}")
         if _run(["git", "checkout", "-q", "--detach", "FETCH_HEAD"], cwd=workdir).returncode != 0:
-            return {"status": "error", "reason": "checkout of PR head failed"}
+            return _finish("error", "checkout of PR head failed")
         head_verify = _run(["git", "rev-parse", "HEAD"], cwd=workdir)
         if head_verify.stdout.strip() != pr.head_sha:
-            return {"status": "error", "reason": "checked-out SHA does not match PR head — refusing"}
+            return _finish("error", "checked-out SHA does not match PR head — refusing")
 
         err = _write_contained(workdir, finding.path, fixed)
         if err:
-            return {"status": "error", "reason": err}
+            return _finish("error", err)
 
         # F8-002: untrusted test code must never run in the tree we commit
         # from — copy the tree (minus .git) and execute the suite there, so
@@ -415,28 +422,29 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         try:
             copy = _run(["cp", "-a", f"{workdir}/.", f"{testdir}/"], cwd=workdir)
             if copy.returncode != 0:
-                return {"status": "error", "reason": "test-tree copy failed"}
+                return _finish("error", "test-tree copy failed")
             import shutil as _sh
             _sh.rmtree(testdir / ".git", ignore_errors=True)
             tested = _run_tests(testdir, config)
         finally:
             shutil.rmtree(testdir, ignore_errors=True)
         if not tested:
-            _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="testfail",
-                      reason="tests failed with fix applied")
-            return {"status": "testfail", "reason": "tests failed with fix applied"}
+            return _finish("testfail", "tests failed with fix applied")
 
-        # F8-002: the bytes we are about to stage must still be the
-        # model-tested patch (tests ran in an isolated copy; this is the
-        # workdir belt against same-process interference)
+        # F8-002 + F10-E001: the bytes about to be staged must still be the
+        # model-tested patch, byte for byte (tests ran in an isolated copy;
+        # this is the workdir belt against same-process interference). Reads
+        # FAIL CLOSED — a deleted/unreadable target must never ride into the
+        # fix PR, and whitespace tampering is caught by exact comparison.
         try:
             staged_now = (workdir / finding.path).read_bytes().decode("utf-8")
         except OSError:
-            staged_now = None
-        if staged_now is not None and staged_now.strip() != fixed.strip():
-            return {"status": "error", "reason": "target changed after tests (integrity) — refused"}
-
-        _run(["git", "add", "--", finding.path], cwd=workdir)
+            return _finish("error", "target unreadable before staging (integrity) — refused")
+        if staged_now != fixed:
+            return _finish("error", "target changed after tests (integrity) — refused")
+        staged = _run(["git", "add", "--", finding.path], cwd=workdir)
+        if staged.returncode != 0:
+            return _finish("error", f"git add failed: {staged.stderr[-80:]}")
         commit_env = _sandbox_env()
         # MECE round-3 (sol F3-003): the sandbox strips git identity vars and
         # HOME (~/.gitconfig) — every automated commit silently failed
@@ -458,8 +466,8 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             # empty commit vs environmental failure must be told apart (A8):
             # nofix would misroute ops triage and the ci-watch break heuristic
             if "nothing to commit" in (commit.stderr or ""):
-                return {"status": "nofix", "reason": "nothing to commit (patch was a no-op)"}
-            return {"status": "error", "reason": f"git commit failed: {commit.stderr[-80:]}"}
+                return _finish("nofix", "nothing to commit (patch was a no-op)")
+            return _finish("error", f"git commit failed: {commit.stderr[-80:]}")
         # F8-003: a stable hash of head/rule/path/line — plain rule-id
         # branches collided across fix rounds and findings (non-fast-forward
         # pushes failed silently)
@@ -477,7 +485,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         )
         _drop_askpass(push_env)
         if push.returncode != 0:
-            return {"status": "error", "reason": f"push failed: {push.stderr[-100:]}"}
+            return _finish("error", f"push failed: {push.stderr[-100:]}")
 
         base = _default_branch(pr.repo)
         from .renderer import _md_escape_block, path_display  # heading-safe
@@ -493,13 +501,10 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
                 f"Proposal: {_md_escape_block(finding.proposal)}\n\nTests pass. Review and merge."
             ),
         })
-        _tel.emit("fix_attempt", repo=pr.repo, path=finding.path,
-                  status="pr_opened", latency_s=round(__import__("time").time() - _t0, 1))
-        return {"status": "pr_opened", "pr_number": new_pr["number"],
-                "pr_url": new_pr["html_url"], "branch": branch}
+        return _finish("pr_opened", "", pr_number=new_pr["number"],
+                       pr_url=new_pr["html_url"], branch=branch)
     except Exception as exc:  # contained into a result dict
-
-        return {"status": "error", "reason": str(exc)[:200]}
+        return _finish("error", str(exc)[:200])
     finally:
         # MECE round-1 (luna F1-04): token-bearing askpass helpers lived in
         # sibling temp dirs and survived EXCEPTION paths (timeouts etc.) —
@@ -507,6 +512,88 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         for e in askpass_envs:
             _drop_askpass(e)
         shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _pytest_verify_argv(parts: list[str]) -> list[str] | None:
+    """Model the pytest part of a configured test_cmd for the DIFF-OWN-TESTS
+    run. Options ride through with EXPLICIT arity; anything outside the model
+    returns None — the caller degrades to UNVERIFIED instead of mis-parsing
+    (F10-B001/E002, reopened F8-006: '-q tests/' used to swallow the suite
+    path as -q's 'value'; value-taking options like -k lost their values).
+
+    Model: long attached (--opt=val) kept; single-dash tokens are short-flag
+    bundles (-q, -xv) OR short-with-attached-value (-kexpr) OR known separate
+    forms; positional tokens are DROPPED (replaced by the diff's own files).
+    """
+    # short flags (no value) and short options that take a separate value
+    _SHORT_FLAGS = frozenset("qvxsl")
+    _SHORT_VALUE = frozenset("ckmoprW")
+    # long flags (no value) with the pytest core grammar fl4write knows
+    _LONG_FLAGS = frozenset({
+        "--verbose", "--quiet", "--exitfirst", "--lf", "--ff", "--collect-only",
+        "--no-header", "--disable-warnings", "--strict", "--strict-markers",
+        "--continue-on-collection-errors", "--no-summary", "--keep-duplicates",
+        "--no-cov", "--pdb", "--tb-native",
+    })
+    # long options (and short options) that take a separate value
+    _LONG_VALUE = frozenset({
+        "-c", "-k", "-m", "-o", "-p", "-r", "-W",
+        "--maxfail", "--tb", "--rootdir", "--basetemp", "--deselect",
+        "--ignore", "--ignore-glob", "--confcutdir", "--override-ini",
+        "--junitxml", "--junit-prefix", "--color", "--log-level", "--timeout",
+        "--durations", "--durations-min", "--pyargs", "--cov", "--cov-report",
+    })
+    try:
+        i = parts.index("pytest")
+    except ValueError:
+        return None
+    out = list(parts[: i + 1])
+    j = i + 1
+    while j < len(parts):
+        tok = parts[j]
+        if tok == "--":
+            break  # everything after the separator is pytest's own paths
+        if not tok.startswith("-"):
+            j += 1  # positional path — replaced by the diff's own files
+            continue
+        if tok.startswith("--") and "=" in tok:
+            out.append(tok)  # --opt=value rides through verbatim
+            j += 1
+            continue
+        if tok.startswith("--"):
+            if tok in _LONG_FLAGS:
+                out.append(tok)
+                j += 1
+            elif tok in _LONG_VALUE and j + 1 < len(parts):
+                out += [tok, parts[j + 1]]
+                j += 2
+            else:
+                return None  # unmodeled long grammar — fail closed
+            continue
+        # single-dash: bundle of short flags, short+attached value, or known
+        # short option with a separate value
+        if len(tok) == 2:
+            if tok in _LONG_VALUE and j + 1 < len(parts):
+                out += [tok, parts[j + 1]]
+                j += 2
+            elif tok in _LONG_VALUE:
+                return None  # value missing — pytest itself would refuse
+            elif all(c in _SHORT_FLAGS for c in tok[1:]):
+                out.append(tok)
+                j += 1
+            else:
+                return None
+            continue
+        body = tok[1:]
+        if body[0] in _SHORT_VALUE:
+            out.append(tok)  # -kexpr / -mexpr attached form
+            j += 1
+        elif all(c in _SHORT_FLAGS for c in body):
+            out.append(tok)  # -qx bundled flags
+            j += 1
+        else:
+            return None
+    return out
 
 
 def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]) -> "Finding | None":
@@ -542,11 +629,23 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
 
         py_tests = [f for f in test_files if f.endswith(".py")]
         chain = bool(config.test_cmd and any(m in config.test_cmd for m in ("&&", ";", "|")))
+        if config.test_cmd and "pytest" not in config.test_cmd.split():
+            # F10-E003 (sol DOM-E, reopened F8-007): chained test_cmds
+            # (DialectOS class: install+suite) and custom runners CANNOT run
+            # THE DIFF'S OWN tests with host-controlled evidence — a whole-
+            # suite chain run would attribute unrelated baseline red to the
+            # changed file as a deterministic Critical. UNVERIFIED, no run.
+            log.warning("verify_diff_tests: test_cmd %r cannot isolate the "
+                        "diff's own tests — UNVERIFIED (no run, no finding)",
+                        config.test_cmd)
+            return None
         if chain:
-            # committed per-repo chain (DialectOS class): bash -lc keeps one
-            # argv; the string is config-repo content, never repo-controlled
-            argv = ["bash", "-lc", config.test_cmd]
-            cmd = config.test_cmd
+            # reached only when test_cmd mentions pytest in a chain word
+            # (e.g. 'pytest x && ...'): same UNVERIFIED contract
+            log.warning("verify_diff_tests: chained test_cmd %r cannot isolate "
+                        "the diff's own tests — UNVERIFIED (no run, no finding)",
+                        config.test_cmd)
+            return None
         else:
             # MECE round-6 (sol F6-E02/E03): the verify gate runs THE DIFF'S
             # OWN TESTS ONLY (audit A3) — an explicit pytest test_cmd must not
@@ -559,29 +658,20 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
                 parts = shlex.split(config.test_cmd)
                 cmd = config.test_cmd
                 if "pytest" in parts:
-                    i = parts.index("pytest")
-                    # F8-006: value-taking options keep their separate values
-                    # ('-c pyproject.toml' must not become '-c -- ...'): walk
-                    # the tail, keep options AND their values, drop positional
-                    # path tokens (replaced by the diff's own files below)
-                    _opts_with_value = {
-                        "-c", "-o", "-p", "-m", "--rootdir", "--basetemp",
-                        "--deselect", "--ignore", "--ignore-glob", "--tb",
-                        "--confcutdir", "--override-ini", "--junitxml",
-                        "--junit-prefix", "--color", "--log-level", "-q", "-b",
-                    }
-                    argv = parts[: i + 1]
-                    j = i + 1
-                    while j < len(parts):
-                        tok = parts[j]
-                        if tok.startswith("-"):
-                            argv.append(tok)
-                            if tok in _opts_with_value and j + 1 < len(parts):
-                                argv.append(parts[j + 1])  # the option's value
-                                j += 1
-                        j += 1
+                    # F10-B001/E002 (reopened F8-006): option arity is modeled
+                    # explicitly (_pytest_verify_argv); unmodeled grammar
+                    # degrades to UNVERIFIED — never a mis-parsed argv
+                    argv = _pytest_verify_argv(parts)
+                    if argv is None:
+                        log.warning("verify_diff_tests: pytest test_cmd %r uses "
+                                    "option grammar outside the modeled "
+                                    "allowlist — UNVERIFIED (no run, no finding)",
+                                    config.test_cmd)
+                        return None
                 else:
-                    argv = parts
+                    log.warning("verify_diff_tests: test_cmd %r is not pytest — "
+                                "UNVERIFIED (no run, no finding)", config.test_cmd)
+                    return None
             else:
                 argv = ["python3", "-m", "pytest"]
                 cmd = "python3 -m pytest"
@@ -720,7 +810,12 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
             if not isinstance(pr_data, dict):
                 log.warning("own-PR scan: malformed row skipped: %s", str(pr_data)[:120])
                 continue
-            number = int(pr_data["number"])
+            # F10-B004: booleans are not numbers — int(True) == 1 would make a
+            # forged boolean row target PR #1
+            number = pr_data.get("number")
+            if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+                log.warning("own-PR scan: unusable row number %r skipped", number)
+                continue
             head_ref = (pr_data.get("head") or {}).get("ref", "")
             if not head_ref.startswith("fl4write/"):
                 continue

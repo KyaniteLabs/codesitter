@@ -72,7 +72,19 @@ def resolve_installation_id(repo: str) -> int:
                 f"(or the repo does not exist)"
             ) from exc
         raise
-    return data["id"]
+    # F10-D006: envelope + id validation — a malformed/empty response must
+    # fail the resolution, never cache or export an unusable installation
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"installation resolution for {repo}: malformed response envelope "
+            f"({type(data).__name__})"
+        )
+    iid = data.get("id")
+    if isinstance(iid, bool) or not isinstance(iid, int) or iid <= 0:
+        raise RuntimeError(
+            f"installation resolution for {repo}: no usable installation id"
+        )
+    return iid
 
 
 def get_installation_token(repo: str | None = None) -> str:
@@ -97,8 +109,18 @@ def get_installation_token(repo: str | None = None) -> str:
     with urllib.request.urlopen(req, timeout=15) as resp:
 
         data = json.loads(resp.read().decode())
-    _TOKEN_CACHE[installation_id] = (data["token"], time.time())
-    return data["token"]
+    # F10-D006: envelope + non-empty-token validation BEFORE cache/export —
+    # an empty token used to be cached and exported while the CLI still
+    # selected fl4write[bot], producing unauthenticated app-identity ops
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            f"app token response: malformed envelope ({type(data).__name__})"
+        )
+    token = data.get("token")
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("app token response: empty token — refusing to cache/export")
+    _TOKEN_CACHE[installation_id] = (token, time.time())
+    return token
 
 
 def install_token_to_env(repo: str | None = None) -> None:

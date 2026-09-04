@@ -5,6 +5,7 @@ ADV-04 heading spoof in the posted comment. Each failure class pinned."""
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -2985,7 +2986,9 @@ class TestMECERound8SolB:
         assert "/status" in src and "combined_state" in src  # F8-005
         assert "fl4write-fix-test-" in src  # F8-002 isolation copy
         assert "compact = \"\".join(data[\"content\"].split())" in src  # F8-001
-        assert "_opts_with_value" in src  # F8-006 arity
+        # F8-006/F10-B001/E002: arity is modeled explicitly and anything
+        # outside the model fails closed to UNVERIFIED (no hand table rot)
+        assert "_pytest_verify_argv" in src and "_LONG_VALUE" in src
         assert "setup/infrastructure failure" in src  # F8-008 infra class
         assert "_tag = _hl.blake2b" in src  # F8-003 branch identity
 
@@ -3055,11 +3058,33 @@ class TestMECERound9Pins:
         gh2._call = lambda m, path, data=None: {"number": True}
         assert gh2.open_issue("o/r", "t", "b") is None  # True must not pass
 
-    def test_readme_and_gh_wrap_laws(self):
+    def test_readme_and_gh_wrap_laws(self, monkeypatch):
         readme = (REPO_ROOT / "README.md").read_text()
-        assert "509 passing" in readme
         cli = (REPO_ROOT / "fl4write/cli.py").read_text()
         assert "gh {' '.join(args[:2])} unavailable" in cli
+        # F10-E005 (sol DOM-E, reopened F9-E001): the old count pin asserted a
+        # LITERAL string ("509 passing") that rotted every round. Truth is
+        # derived: run the suite once and require the README to state exactly
+        # what this tree does. The nested run skips this check via the env
+        # guard (the OUTER run is the verifier).
+        if os.environ.get("FL4WRITE_DOC_TRUTH_NESTED"):
+            return
+        import subprocess as _sp
+        import sys as _sys
+        import re as _re
+        env = dict(os.environ)
+        env["FL4WRITE_DOC_TRUTH_NESTED"] = "1"
+        out = _sp.run([_sys.executable, "-m", "pytest", "tests/", "-q"],
+                      capture_output=True, text=True, cwd=str(REPO_ROOT),
+                      env=env, timeout=900)
+        m = None
+        for ln in reversed(out.stdout.splitlines()):
+            m = _re.search(r"(\d+) passed, (\d+) skipped", ln)
+            if m:
+                break
+        assert m, f"unparseable nested suite summary: {out.stdout[-200:]!r}"
+        claim = f"{m.group(1)} passing + {m.group(2)} skipped"
+        assert claim in readme, f"README must state the live count {claim!r}"
 
 
 class TestMECERound9SolA:
@@ -3303,3 +3328,273 @@ class TestMECERound10Pins:
         st = state_mod.load_state(sp)
         assert any("malformed tree rows" in a for a in r.alerts)
         assert st.get("omni_complete") is not True
+
+
+class TestMECERound10Exec:
+    """Round-10 luna-max2 DOM-B + sol DOM-E executor cluster: pytest option
+    arity model (F10-B001/E002), chain/custom-runner UNVERIFIED (F10-E003),
+    exact-byte fix integrity (F10-E001), terminal fix_attempt telemetry
+    (F10-B002), bool-number rails (F10-B004)."""
+
+    def test_pytest_arity_model_probes(self):
+        # B001/E002 recomputations: '-q tests/' must NOT eat the suite path;
+        # -k/--maxfail keep values; positionals drop; unmodeled grammar
+        # fails closed (None) instead of mis-parsing
+        from fl4write.executor import _pytest_verify_argv as va
+
+        assert va(["python3", "-m", "pytest", "-q", "tests/"]) == \
+            ["python3", "-m", "pytest", "-q"]
+        assert va(["pytest", "-k", "smoke", "tests/"]) == \
+            ["pytest", "-k", "smoke"]
+        assert va(["pytest", "--maxfail", "1", "tests/a.py", "tests/b.py"]) == \
+            ["pytest", "--maxfail", "1"]
+        assert va(["pytest", "--maxfail=1", "tests/a.py"]) == \
+            ["pytest", "--maxfail=1"]
+        assert va(["pytest", "-kexpr", "tests/"]) == ["pytest", "-kexpr"]
+        assert va(["pytest", "-xq", "tests/"]) == ["pytest", "-xq"]
+        assert va(["pytest", "-c", "pyproject.toml", "tests/"]) == \
+            ["pytest", "-c", "pyproject.toml"]
+        # attached-value + separate-value long forms survive together
+        assert va(["pytest", "-q", "--tb=line", "--maxfail", "3", "tests/"]) == \
+            ["pytest", "-q", "--tb=line", "--maxfail", "3"]
+        # fail closed: unmodeled grammar and unknown plugin options
+        assert va(["pytest", "-n", "auto", "tests/"]) is None
+        assert va(["pytest", "--unknown-flag", "tests/"]) is None
+        assert va(["pytest", "-k"]) is None  # value missing
+
+    def test_chained_test_cmd_unverified_never_runs(self, monkeypatch):
+        # E003: a chained test_cmd (DialectOS class) must NOT run a whole-suite
+        # chain and attribute its outcome to the changed test file. Pre-fix the
+        # chain RAN and a failing chain minted a deterministic Critical.
+        import subprocess
+        from fl4write.executor import verify_diff_tests
+
+        bash_calls = []
+
+        def fake_run(cmd, cwd=None, timeout=120, env=None):
+            if cmd[0] == "bash":
+                bash_calls.append(cmd)
+                # a FAILING whole-suite chain (unrelated baseline red)
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="2 failed, 30 passed", stderr="")
+            out = "a" * 40 if "rev-parse" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+        monkeypatch.setattr("fl4write.executor._run", fake_run)
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        c = make_config(test_cmd="corepack pnpm install --silent && corepack pnpm test --silent")
+        assert verify_diff_tests(pr, c, ["tests/test_x.py"]) is None
+        assert bash_calls == [], "the chain must never run for diff attribution"
+
+    def test_issues_bool_number_rows_excluded(self):
+        import fl4write.issues as iss
+
+        class _Rows(_R4Forge):
+            def __init__(self, rows):
+                super().__init__()
+                self.rows = rows
+
+            def _paginated(self, path, page_size=50, max_pages=10):
+                return list(self.rows)
+
+        rows = [{"number": True, "title": "bool row"},
+                {"number": 2, "title": "real"}]
+        fresh = iss.collect_new_issues(_Rows(rows), "o/r", last_number=0)
+        assert [i["number"] for i in fresh] == [2]
+
+    def test_own_pr_merge_scan_rejects_bool_numbers(self, monkeypatch):
+        from fl4write import executor as ex
+
+        calls = []
+
+        def fake_gh(method, path, data=None):
+            calls.append((method, path))
+            if method == "GET":
+                return [{"number": True, "head": {"ref": "fl4write/fix-1",
+                                                  "sha": "a" * 40},
+                         "user": {"login": "fl4write[bot]"}}]
+            raise AssertionError("bool-number row must never reach a write")
+        monkeypatch.setattr(ex, "_gh_api", fake_gh)
+        merged = ex.check_and_merge_own_prs(_sol_config(), "fl4write[bot]")
+        assert merged == []
+        # the forged boolean row must be refused at the LIST — pre-fix the
+        # scan consumed the row (check-runs + status probes) before giving up
+        assert len(calls) == 1 and calls[0][0] == "GET"
+
+
+class TestMECERound10ForgeDesk:
+    """Round-10 luna-max DOM-D: typed PR-row translation (D001/D002),
+    comment-id bools (D003), typed default_branch (D004), file envelope
+    (D005), appauth envelopes (D006), CLI positional contract (D007)."""
+
+    def test_row_pr_typed_scalars_never_coerce(self):
+        forge = _SolForge()  # name = github, inherits _row_pr
+        good = {"number": 2, "head": {"sha": "a" * 40,
+                                      "repo": {"full_name": "o/r"}},
+                "title": "t", "body": None, "user": {"login": "x"}}
+        pr = forge._row_pr("o/r", good)
+        assert pr is not None and pr.number == 2 and pr.head_sha == "a" * 40
+        # boolean number, numeric head.sha, numeric title/body, numeric author
+        for bad in (
+                {"number": True, "head": {"sha": "a" * 40}},
+                {"number": 2, "head": {"sha": 123}},
+                {"number": 2, "head": {"sha": "a" * 40}, "title": 5},
+                {"number": 2, "head": {"sha": "a" * 40}, "body": 5},
+                {"number": 2, "head": {"sha": "a" * 40},
+                 "user": {"login": 7}},
+                {"number": "2", "head": {"sha": "a" * 40}},
+        ):
+            assert forge._row_pr("o/r", bad) is None, bad
+
+    def test_get_file_list_envelope_degrades(self):
+        from fl4write.forges import GitHubAdapter
+
+        ad = GitHubAdapter(cfg.ForgeBinding(
+            role="primary", api_base="https://api.github.com", token_env="GHT"))
+        ad._call = lambda m, path, data=None: [1, 2]
+        assert ad.get_file("o/r", "a.py", "ref") is None  # no AttributeError
+
+    def test_default_branch_non_string_degrades(self, monkeypatch):
+        from fl4write.forges import GitHubAdapter
+
+        def _gh():
+            ad = GitHubAdapter(cfg.ForgeBinding(
+                role="primary", api_base="https://api.github.com",
+                token_env="GHT"))
+            ad._headers = lambda: {}
+            return ad
+
+        ad = _gh()
+        responses = iter([{"default_branch": 5},
+                          {"sha": "b" * 40},
+                          {"tree": [{"path": "a.py", "type": "blob", "size": 1}],
+                           "truncated": False}])
+        ad._call = lambda m, path, data=None: next(responses)
+        files, truncated = ad.list_tree_files("o/r")
+        assert [p for (p, _s) in files] == ["a.py"] and truncated is False
+
+        ad2 = _gh()
+        responses2 = iter([{"default_branch": True},
+                           {"sha": "c" * 40},
+                           {"check_runs": []}])
+        ad2._call = lambda m, path, data=None: next(responses2)
+        sha, runs = ad2.head_check_runs("o/r")
+        assert sha == "c" * 40 and runs == []
+
+    def test_appauth_envelope_and_token_validation(self, monkeypatch):
+        import fl4write.appauth as ap
+
+        monkeypatch.setattr(ap, "_TOKEN_CACHE", {})
+        # malformed envelopes refused
+        monkeypatch.setattr(ap, "_api", lambda *a, **k: [1, 2])
+        try:
+            ap.resolve_installation_id("o/r")
+            raise AssertionError("list envelope accepted")
+        except RuntimeError:
+            pass
+        monkeypatch.setattr(ap, "_api", lambda *a, **k: {"id": True})
+        try:
+            ap.resolve_installation_id("o/r")
+            raise AssertionError("boolean installation id accepted")
+        except RuntimeError:
+            pass
+        # empty/non-string tokens never cached or exported
+        monkeypatch.setattr(ap, "_api", lambda *a, **k: {"id": 5})
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'{"token": ""}'
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Resp())
+        try:
+            ap.get_installation_token("o/r")
+            raise AssertionError("empty token accepted")
+        except RuntimeError:
+            pass
+        assert ap._TOKEN_CACHE == {}
+
+    def test_cli_rejects_extra_positionals(self, monkeypatch, capsys):
+        import fl4write.cli as cli
+
+        monkeypatch.setattr("sys.argv", ["fl4write.cli", "cfg.yaml", "extra.yaml"])
+        assert cli.main() == 2
+        assert "exactly ONE" in capsys.readouterr().err
+
+
+class TestMECERound10FixIntegrity:
+    """Round-10 sol DOM-E fix-lane byte integrity (F10-E001) + terminal
+    outcome telemetry (F10-B002), driven through the real attempt_fix."""
+
+    def _attempt(self, monkeypatch, patch, content="orig", write=None,
+                 boom=None, tel=None):
+        import json as _j
+        from fl4write import executor as ex
+
+        monkeypatch.setattr(
+            "fl4write.executor._call_model",
+            lambda route, prompt, mode="pr", system=None, **kw:
+                (_ for _ in ()).throw(boom) if boom else _j.dumps(
+                    {"fixed_content": patch}))
+        monkeypatch.setattr(
+            "fl4write.executor._get_file_content", lambda r, p, ref: content)
+        monkeypatch.setattr(
+            "fl4write.executor._run",
+            lambda cmd, cwd=None, timeout=120, env=None:
+                type("R", (), {"returncode": 0, "stdout": "a" * 40,
+                               "stderr": ""})())
+        if write is None:
+            monkeypatch.setattr(
+                "fl4write.executor._write_contained", lambda w, p, c: None)
+        else:
+            monkeypatch.setattr(
+                "fl4write.executor._write_contained",
+                lambda w, p, c: (Path(w) / p).write_text(write(c)) and None)
+        monkeypatch.setattr("fl4write.executor._run_tests", lambda w, c: True)
+        monkeypatch.setattr(
+            "fl4write.executor._gh_api",
+            lambda m, p, d=None: {"number": 9, "html_url": "u"})
+        if tel is not None:
+            monkeypatch.setattr("fl4write.telemetry.emit",
+                                lambda kind, **kw: tel.append((kind, kw)))
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        f = Finding(rule_id="secrets", severity="Critical", path="x.py",
+                    line=1, message="m")
+        c = _sol_config(fix={"enabled": True, "merge_own_prs": False})
+        return ex.attempt_fix(pr, f, c)
+
+    def test_indentation_only_fix_is_a_real_fix(self, monkeypatch):
+        # E001: a whitespace-only (indentation) change is a REAL patch — the
+        # old .strip() compare discarded it as a no-op
+        r = self._attempt(monkeypatch, patch="    x = 1\n", content="x = 1\n",
+                          write=lambda c: c)
+        assert r["status"] == "pr_opened", r
+
+    def test_identical_patch_is_noop(self, monkeypatch):
+        r = self._attempt(monkeypatch, patch="x = 1\n", content="x = 1\n")
+        assert r["status"] == "nofix" and "no-op" in r["reason"]
+
+    def test_unreadable_target_fails_closed_before_staging(self, monkeypatch):
+        r = self._attempt(monkeypatch, patch="fixed\n", content="orig",
+                          write=None)  # file never written to the workdir
+        assert r["status"] == "error" and "unreadable" in r["reason"]
+
+    def test_whitespace_tamper_after_tests_refused(self, monkeypatch):
+        r = self._attempt(monkeypatch, patch="fixed\n", content="orig",
+                          write=lambda c: c + "\n")  # staged bytes differ
+        assert r["status"] == "error" and "changed after tests" in r["reason"]
+
+    def test_infra_failure_emits_terminal_telemetry_once(self, monkeypatch):
+        # B002: a model/API failure return used to carry NO fix_attempt event
+        tel = []
+        r = self._attempt(monkeypatch, patch="x", content="orig",
+                          boom=RuntimeError("boom"), tel=tel)
+        assert r["status"] == "error" and "model unavailable" in r["reason"]
+        events = [e for (k, e) in tel if k == "fix_attempt"]
+        assert len(events) == 1, events
+        assert events[0]["status"] == "error"
+        assert "boom" in events[0]["reason"]

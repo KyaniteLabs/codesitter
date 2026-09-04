@@ -45,9 +45,27 @@ log = logging.getLogger("fl4write.engine")
 ShadowSink = Callable[[str, int, str], None]
 
 REVIEW_BUDGET_S = 90  # worst-case model time for one review (2 routes x ~45s + slack)
+# F10-E004 (sol DOM-E): test discovery must cover the standard conventions —
+# *_test.go/_test.rs/_test.ts/_test.js, *.test.* and *.spec.* for the JS/TS
+# families, python test_* files, and the __tests__/ + tests?/ directory
+# conventions for non-python files. Widening matters: a changed test that
+# discovery misses bypasses the deterministic verifier SILENTLY (no UNVERIFIED
+# state); one it flags but cannot target degrades to UNVERIFIED, never a false
+# Critical.
 _TEST_FILE_RE = re.compile(
-    r"(^|/)(test_[^/]+\.py|[^/]+_test\.(go|rs|ts|js)|[^/]+\.test\.(ts|js|tsx|jsx)|tests?\.py)$"
+    r"(^|/)(test_[^/]+\.py|[^/]+_test\.(go|rs|ts|js)|"
+    r"[^/]+\.(test|spec)\.(ts|js|tsx|jsx|mjs|cjs)|tests?\.py)$"
 )
+_DIR_TEST_RE = re.compile(
+    r"(^|/)(__tests__/|tests?/)[^/]+\.(ts|js|tsx|jsx|mjs|cjs|go|rs)$"
+)
+
+
+def _is_test_path(path: str) -> bool:
+    """Single source of truth for 'is this changed file a test?' — used by
+    the deterministic verify gate (python files are targetable by pytest;
+    every other convention must reach the UNVERIFIED degrade, never silence)."""
+    return bool(_TEST_FILE_RE.search(path) or _DIR_TEST_RE.search(path))
 MODEL_FAILURE_CAP = 3  # per (PR, head SHA); exceed = alert-and-stop retrying
 
 
@@ -137,7 +155,7 @@ def _review_pr(
     # Rails (audit A2): NEVER on fork PRs (hostile by org law); GitHub-only
     # (the fetch is github.com — on Forgejo it silently died per-cycle).
     # Budget (audit A7): verify can cost ~500s worst case — reserve it or skip.
-    test_like = sorted(p for p in diff_files if _TEST_FILE_RE.search(p))
+    test_like = sorted(p for p in diff_files if _is_test_path(p))
     if (
         test_like and config.verify_tests and not config.shadow
         and not pr.is_fork and primary.name == "github"
@@ -1521,6 +1539,15 @@ def run_cycle(
 
                 issue_summary = issues_lane.run_issues_cycle(config, st, primary)
                 report.issues_triaged = issue_summary.get("triaged", 0)
+                # F10-B003: a foreign-marker quarantine is a STRUCTURED cycle
+                # alert — the lane claims per-cycle visibility; the claim must
+                # land where operators actually look
+                qn = issue_summary.get("quarantined", 0)
+                if qn:
+                    report.alerts.append(
+                        f"issues lane: {qn} foreign triage marker(s) quarantined "
+                        "(no duplicate posted, watermark held) — remove the "
+                        "marker or triage the issue manually")
 
             if not config.shadow:
                 from . import metrics

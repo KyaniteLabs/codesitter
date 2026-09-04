@@ -315,7 +315,11 @@ class ForgeAdapter:
             repo_info = self._call("GET", f"/repos/{repo}")
             if not isinstance(repo_info, dict):
                 return None  # F8-003: intermediate envelope validated
-            branch = repo_info.get("default_branch") or "main"
+            # F10-D004: the branch must be a real string — a truthy non-string
+            # default_branch reached urllib.parse.quote as a raw TypeError
+            branch = repo_info.get("default_branch")
+            if not isinstance(branch, str) or not branch:
+                branch = "main"
             # MECE round-4 (M3 F4-D07): quote branch names containing path
             # chars (e.g. 'release/1.x' default branches) in URL paths
             head = self._call("GET", f"/repos/{repo}/commits/{quote(branch, safe='')}")
@@ -355,6 +359,11 @@ class ForgeAdapter:
             data = self._call("GET", f"/repos/{repo}/contents/{quote(path, safe='')}?ref={quote(ref, safe='')}")
         except ForgeError:
             return None
+        # F10-D005 (luna-max DOM-D, reopened F9-D001): a successful LIST or
+        # scalar payload is NOT a contents envelope — .get() on it used to
+        # raise raw AttributeError out of the adapter
+        if not isinstance(data, dict):
+            return None
         if data.get("encoding") != "base64" or not data.get("content"):
             return None
         try:
@@ -366,6 +375,46 @@ class ForgeAdapter:
 
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:  # id, body  # pragma: no cover
         raise NotImplementedError
+
+    def _row_pr(self, repo: str, p: dict) -> PullRequest | None:
+        """ONE shared translation + guard for adapter PR rows (F10-D001/D002,
+        luna-max DOM-D, reopened F7-D004): typed scalars are validated BEFORE
+        construction — a numeric head.sha, non-string title/body/author, or a
+        boolean number must skip THIS row, never abort the page translation
+        and never let pydantic coerce a fabricated identity (bool -> PR #1,
+        123 -> head_sha '123'). Returns None for a malformed row."""
+        # F10-D002: raw positive non-bool integer only
+        n = p.get("number")
+        if isinstance(n, bool) or not isinstance(n, int) or n <= 0:
+            return None
+        head = p.get("head") if isinstance(p.get("head"), dict) else None
+        head_sha = head.get("sha") if head else None
+        title, body = p.get("title"), p.get("body")
+        user = p.get("user") if isinstance(p.get("user"), dict) else {}
+        login = user.get("login")
+        if not isinstance(head_sha, str) or not head_sha \
+                or not isinstance(title, (str, type(None))) \
+                or not isinstance(body, (str, type(None))) \
+                or not isinstance(login, (str, type(None))):
+            return None
+        head_repo = ((head.get("repo") or {}) if isinstance(head.get("repo"), dict) else {}).get("full_name")
+        try:
+            return PullRequest(
+                forge=self.name,
+                number=n,
+                repo=repo,
+                title=title or "",
+                body=body or "",
+                head_sha=head_sha,
+                is_fork=bool(head_repo and head_repo != repo),
+                author=login or "",
+                is_bot_author=str(user.get("type", "")).lower() == "bot",
+                merged_at=p.get("merged_at") or "",
+            )
+        except Exception as exc:  # noqa: BLE001 — pydantic rejection of a
+            # still-odd row degrades THIS row; the listing survives
+            log.warning("%s PR row rejected (%s): %s", self.name, exc, str(p)[:120])
+            return None
 
     def create_comment(self, repo: str, number: int, body: str) -> int:  # pragma: no cover
         raise NotImplementedError
@@ -382,33 +431,13 @@ class GitHubAdapter(ForgeAdapter):
         data = self._paginated(f"/repos/{repo}/pulls?state=open", page_size=50)
         prs = []
         for p in data:
-            if not isinstance(p, dict):  # F7-D004: one bad row never kills
-                continue  # the page translation (log-loud below)
-            head = p.get("head")
-            head_sha = head["sha"] if isinstance(head, dict) else ""
-            head_repo = ((head.get("repo") or {}) if isinstance(head, dict) else {}).get("full_name")
-            user = p.get("user") if isinstance(p.get("user"), dict) else {}
-            try:
-                number = int(p["number"])
-            except (KeyError, TypeError, ValueError):
-                number = -1
-            if number <= 0 or not head_sha:
+            if not isinstance(p, dict):  # F7-D004/F10-D001: one bad row never
+                continue  # kills the page translation (log-loud below)
+            pr = self._row_pr(repo, p)
+            if pr is None:
                 log.warning("%s open-pr row malformed (skipped): %s", self.name, str(p)[:120])
                 continue
-            prs.append(
-                PullRequest(
-                    forge=self.name,
-                    number=number,
-                    repo=repo,
-                    title=p.get("title") or "",
-                    body=p.get("body") or "",
-                    head_sha=head_sha,
-                    is_fork=bool(head_repo and head_repo != repo),
-                    author=user.get("login", ""),
-                    is_bot_author=str(user.get("type", "")).lower() == "bot",
-                    merged_at=p.get("merged_at") or "",
-                )
-            )
+            prs.append(pr)
         return prs
 
     def list_merged_prs(self, repo: str, since_iso: str) -> list[PullRequest]:
@@ -424,13 +453,9 @@ class GitHubAdapter(ForgeAdapter):
         for p in data:
             if not isinstance(p, dict):  # F7-D004: row guard
                 continue
-            head = p.get("head")
-            if not isinstance(head, dict):
-                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
-                continue
-            merged_raw = p.get("merged_at") or ""
-            if not merged_raw:
-                continue
+            merged_raw = p.get("merged_at")
+            if not isinstance(merged_raw, str) or not merged_raw:
+                continue  # F10-D001: a non-string merged_at is unusable
             merged = _parse_iso(merged_raw)
             # STRICT less-than: PRs merged in the SAME second as the watermark
             # stay visible. Bulk waves merge same-second; if the per-cycle cap
@@ -438,30 +463,11 @@ class GitHubAdapter(ForgeAdapter):
             # already-terminal ones are skipped free by the head-SHA guard.
             if since is not None and merged is not None and merged < since:
                 continue
-            head_sha = head.get("sha") or ""
-            head_repo = ((head.get("repo") or {}) if isinstance(head.get("repo"), dict) else {}).get("full_name")
-            user = p.get("user") if isinstance(p.get("user"), dict) else {}
-            try:
-                number = int(p["number"])
-            except (KeyError, TypeError, ValueError):
-                number = -1
-            if number <= 0 or not head_sha:
+            pr = self._row_pr(repo, p)
+            if pr is None:
                 log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
                 continue
-            prs.append(
-                PullRequest(
-                    forge=self.name,
-                    number=number,
-                    repo=repo,
-                    title=p.get("title") or "",
-                    body=p.get("body") or "",
-                    head_sha=head_sha,
-                    is_fork=bool(head_repo and head_repo != repo),
-                    author=user.get("login", ""),
-                    is_bot_author=str(user.get("type", "")).lower() == "bot",
-                    merged_at=merged_raw,
-                )
-            )
+            prs.append(pr)
         prs.sort(key=lambda pr: pr.merged_at)  # oldest first: catch-up order
         return prs
 
@@ -478,7 +484,7 @@ class GitHubAdapter(ForgeAdapter):
             cid = c.get("id")
             cbody = c.get("body")
             cuser = c.get("user")
-            if not isinstance(cid, int) or cid <= 0 \
+            if not isinstance(cid, int) or isinstance(cid, bool) or cid <= 0 \
                     or not isinstance(cbody, str) \
                     or not isinstance(cuser, dict) \
                     or not isinstance(cuser.get("login"), str):
@@ -515,7 +521,10 @@ class GitHubAdapter(ForgeAdapter):
             repo_info = self._call("GET", f"/repos/{repo}")
             if not isinstance(repo_info, dict):
                 return None  # F8-003: repo envelope validated
-            branch = repo_info.get("default_branch") or "main"
+            # F10-D004: typed default_branch (non-string truthy = main)
+            branch = repo_info.get("default_branch")
+            if not isinstance(branch, str) or not branch:
+                branch = "main"
             head = self._call("GET", f"/repos/{repo}/commits/{quote(branch, safe='')}")
             if not isinstance(head, dict):
                 return None  # F8-003: commit envelope validated
@@ -592,33 +601,11 @@ class ForgejoAdapter(ForgeAdapter):
         for p in data:
             if not isinstance(p, dict):  # F7-D004: row guard
                 continue
-            head = p.get("head")
-            if not isinstance(head, dict):
+            pr = self._row_pr(repo, p)
+            if pr is None:
                 log.warning("%s open-pr row malformed (skipped): %s", self.name, str(p)[:120])
                 continue
-            head_repo = ((head.get("repo") or {}) if isinstance(head.get("repo"), dict) else {}).get("full_name")
-            user = p.get("user") if isinstance(p.get("user"), dict) else {}
-            try:
-                number = int(p["number"])
-            except (KeyError, TypeError, ValueError):
-                number = -1
-            if number <= 0 or not head.get("sha"):
-                log.warning("%s open-pr row malformed (skipped): %s", self.name, str(p)[:120])
-                continue
-            prs.append(
-                PullRequest(
-                    forge=self.name,
-                    number=number,
-                    repo=repo,
-                    title=p.get("title") or "",
-                    body=p.get("body") or "",
-                    head_sha=head.get("sha", ""),
-                    is_fork=bool(head_repo and head_repo != repo),
-                    author=user.get("login", ""),
-                    is_bot_author=str(user.get("type", "")).lower() == "bot",
-                    merged_at=p.get("merged_at") or "",
-                )
-            )
+            prs.append(pr)
         return prs
 
     def list_merged_prs(self, repo: str, since_iso: str) -> list[PullRequest]:
@@ -631,8 +618,8 @@ class ForgejoAdapter(ForgeAdapter):
             if not isinstance(p, dict):  # F8-004: per-row guard like GitHub
                 log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
                 continue
-            merged_raw = p.get("merged_at") or ""
-            if not merged_raw or not p.get("merged"):
+            merged_raw = p.get("merged_at")
+            if not isinstance(merged_raw, str) or not merged_raw                     or not p.get("merged"):
                 continue
             merged = _parse_iso(merged_raw)
             # STRICT less-than: PRs merged in the SAME second as the watermark
@@ -641,33 +628,11 @@ class ForgejoAdapter(ForgeAdapter):
             # already-terminal ones are skipped free by the head-SHA guard.
             if since is not None and merged is not None and merged < since:
                 continue
-            head = p.get("head")
-            if not isinstance(head, dict):
+            pr = self._row_pr(repo, p)
+            if pr is None:
                 log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
                 continue
-            head_repo = ((head.get("repo") or {}) if isinstance(head.get("repo"), dict) else {}).get("full_name")
-            user = p.get("user") if isinstance(p.get("user"), dict) else {}
-            try:
-                number = int(p["number"])
-            except (KeyError, TypeError, ValueError):
-                number = -1
-            if number <= 0 or not head.get("sha"):
-                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
-                continue
-            prs.append(
-                PullRequest(
-                    forge=self.name,
-                    number=number,
-                    repo=repo,
-                    title=p.get("title") or "",
-                    body=p.get("body") or "",
-                    head_sha=head.get("sha", ""),
-                    is_fork=bool(head_repo and head_repo != repo),
-                    author=user.get("login", ""),
-                    is_bot_author=str(user.get("type", "")).lower() == "bot",
-                    merged_at=merged_raw,
-                )
-            )
+            prs.append(pr)
         prs.sort(key=lambda pr: pr.merged_at)
         return prs
 
@@ -682,7 +647,7 @@ class ForgejoAdapter(ForgeAdapter):
             cid = c.get("id")
             cbody = c.get("body")
             cuser = c.get("user")
-            if not isinstance(cid, int) or cid <= 0 \
+            if not isinstance(cid, int) or isinstance(cid, bool) or cid <= 0 \
                     or not isinstance(cbody, str) \
                     or not isinstance(cuser, dict) \
                     or not isinstance(cuser.get("login"), str):
@@ -724,7 +689,10 @@ class ForgejoAdapter(ForgeAdapter):
             if not isinstance(repo_info, dict):
                 # F7-D003: the repo envelope is an intermediate contract too
                 return None
-            branch = repo_info.get("default_branch") or "main"
+            # F10-D004: typed default_branch (non-string truthy = main)
+            branch = repo_info.get("default_branch")
+            if not isinstance(branch, str) or not branch:
+                branch = "main"
             # MECE round-4 (M3 F4-D07): a default branch containing '/' or
             # other path chars must not corrupt the trees URL — quote the name
             branch_q = quote(branch, safe="")

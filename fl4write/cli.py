@@ -196,11 +196,17 @@ def main() -> int:
     run_fixes = "--fixes" in sys.argv
     run_issues = "--issues" in sys.argv
     # MECE round-2 (glm F2-107): the config path may appear after flags —
-    # take the first NON-flag argument instead of blind argv[1]
-    config_path = next((a for a in sys.argv[1:] if not a.startswith("--")), None)
-    if not config_path:
-        print("usage: python3 -m fl4write.cli <config.yaml> [--live]", file=sys.stderr)
+    # take the first NON-flag argument instead of blind argv[1]. F10-D007
+    # (luna-max DOM-D): EXACTLY one positional is the contract — extra
+    # positionals were silently ignored, so a typo'd invocation ran a valid
+    # config while discarding the mistake
+    positionals = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if len(positionals) != 1:
+        print(f"expected exactly ONE config path, got {len(positionals)} "
+              f"positional argument(s) — refusing to run (typo guard)",
+              file=sys.stderr)
         return 2
+    config_path = positionals[0]
     try:
         # F8-005: a missing/unreadable/malformed config is a concise CLI
         # error with exit 2 — never an uncaught traceback
