@@ -26,9 +26,22 @@ fi
 # unintended directory (or 'check-dirty clean' certified a MISSING checkout)
 cd ~/workspaces/fl4write || { echo "$(date -Iseconds) ERR: cannot cd to ~/workspaces/fl4write" >> "$LOG"; exit 1; }
 
-# Self-update — failures are VISIBLE (silent staleness would run green forever).
+# F11-E001 (round 11, luna-max2 DOM-E): the C2 guard is the runner's own
+# hygiene law — uncommitted files are invisible to git pull and silently
+# change what the runner executes. Run it EVERY cycle BEFORE self-update; a
+# dirty checkout must not run (the guard was previously never invoked).
+if ! GUARD_OUT=$(bash check-dirty.sh 2>&1); then
+    echo "$(date -Iseconds) $GUARD_OUT" >> "$LOG"
+    echo "$(date -Iseconds) ERR: dirty checkout — cycle ABORTED (commit/stash before the runner self-pulls)" >> "$LOG"
+    exit 1
+fi
+
+# Self-update — pull FAILURE IS FATAL: running stale code reviews today's PRs
+# with yesterday's rules and posts wrong reviews (F11-E001; previously an
+# alert-and-continue that silently degraded every cycle after a failed pull).
 if ! git pull -q origin main 2>>"$LOG"; then
-    echo "$(date -Iseconds) ALERT: self-update (git pull) failed — running stale code" >> "$LOG"
+    echo "$(date -Iseconds) ERR: self-update (git pull) failed — cycle ABORTED (retry next hour)" >> "$LOG"
+    exit 1
 fi
 
 # Hosts without ~/.sinter/config.json read the model key from .bashrc.
