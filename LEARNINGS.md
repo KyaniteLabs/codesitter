@@ -526,3 +526,21 @@ documented scoring data participates in scores; loader validation covers every l
 field; tier activity reads an explicit open-id set, not retained history; containers AND
 elements validate; git failures fail loudly.
 
+## 54. Fix-lane integrity and marker ownership (2026-09-04, MECE round 8)
+Sol's DOM-B close: base64 strictness rejected the API's line-wrapped content (disabling fixes);
+untrusted tests ran in the SAME tree the bot commits from (hooks/target tampering could ride
+into the commit); fix branches collided on rule-id-only names; the merge request never bound
+GitHub's sha precondition (a force-push between check and merge merged an unverified head) and
+legacy commit STATUSES were never queried (red status + green checks authorized merges);
+configured pytest commands lost separate option values ('-c pyproject.toml' became '-c --');
+non-Python changed tests fell back to a whole-suite attribution; chained-runner install errors
+minted deterministic Criticals; ANY commenter could plant the public triage marker and
+permanently suppress triage (watermark advanced over a foreign marker); label text with
+embedded backticks broke code spans; calibration sliced raw lines instead of the last N model
+calls and the append-only stream was read whole. Laws: validate whitespace-stripped payloads;
+tests execute in .git-less copies and staged bytes re-verify; branches hash head+rule+path+line;
+merges bind the checked SHA and both check-runs AND commit statuses; option arity survives argv
+construction; unsupported test mappings return UNVERIFIED; setup failures are not test failures;
+foreign markers quarantine without advancing; spans stay balanced; calibration counts events,
+not lines; bounded tail reads.
+

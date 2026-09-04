@@ -87,6 +87,23 @@ def record_route(model: str, ok: bool, latency_s: float, parse_ok: bool,
         pass
 
 
+def _read_tail(path, max_bytes: int = 8 * 1024 * 1024) -> str:
+    """F8-012: bounded read of an append-only stream tail — never loads the
+    whole (unbounded) file; the first partial line is discarded."""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    if size <= max_bytes:
+        return path.read_text(encoding="utf-8", errors="replace")
+    with path.open("rb") as fh:
+        fh.seek(size - max_bytes)
+        tail = fh.read()
+    text = tail.decode("utf-8", errors="replace")
+    nl = text.find("\n")
+    return text[nl + 1:] if nl != -1 else text
+
+
 def calibration_snapshot(recent: int = 500) -> dict[str, Any]:
     """L3 (GLM-B4): the feedback loop CONSUMES the stream — per-model call
     health over the last N model_call events (MECE round-4 F4-4: the
@@ -96,12 +113,32 @@ def calibration_snapshot(recent: int = 500) -> dict[str, Any]:
         # MECE round-6 (luna F6-002): the stream may hold corrupt bytes (kill
         # mid-append) — telemetry never raises by contract, and this call runs
         # AFTER the cycle in the CLI; a UnicodeDecodeError here crashed the
-        # process on the way out
-        lines = _path().read_text(encoding="utf-8", errors="replace").strip().splitlines()[-recent * 3:]
+        # process on the way out.
+        # MECE round-8 (sol F8-012): read a BOUNDED tail (the stream is
+        # append-only and never truncated) instead of loading it whole.
+        chunk = _read_tail(_path(), max_bytes=8 * 1024 * 1024)
+        lines = chunk.splitlines()[-recent * 12:]
     except OSError:
         return {}
     models: dict[str, dict[str, int]] = {}
-    for ln in lines:
+    # F8-011: the contract is the last N model-CALL events — slicing the
+    # last 3N raw lines erased calibration when reviews outnumbered calls.
+    # Walk backward from the tail until exactly N model_call events are seen.
+    collected = 0
+    order: list[str] = []
+    for ln in reversed(lines):
+        try:
+            ev = json.loads(ln)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(ev, dict):
+            continue  # a stray JSON scalar must not break the snapshot (Sol#5)
+        if ev.get("kind") == "model_call":
+            order.append(ln)
+            collected += 1
+            if collected >= recent:
+                break
+    for ln in reversed(order):
         try:
             ev = json.loads(ln)
         except (json.JSONDecodeError, ValueError):

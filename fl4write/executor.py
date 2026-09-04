@@ -34,6 +34,7 @@ import base64
 import binascii
 import json
 import logging
+import re
 import os
 import shutil
 import shlex
@@ -559,9 +560,26 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
                 cmd = config.test_cmd
                 if "pytest" in parts:
                     i = parts.index("pytest")
-                    # keep the runner head + single-token options; positional
-                    # path tokens are replaced by the diff's own files below
-                    argv = parts[: i + 1] + [t for t in parts[i + 1:] if t.startswith("-")]
+                    # F8-006: value-taking options keep their separate values
+                    # ('-c pyproject.toml' must not become '-c -- ...'): walk
+                    # the tail, keep options AND their values, drop positional
+                    # path tokens (replaced by the diff's own files below)
+                    _opts_with_value = {
+                        "-c", "-o", "-p", "-m", "--rootdir", "--basetemp",
+                        "--deselect", "--ignore", "--ignore-glob", "--tb",
+                        "--confcutdir", "--override-ini", "--junitxml",
+                        "--junit-prefix", "--color", "--log-level", "-q", "-b",
+                    }
+                    argv = parts[: i + 1]
+                    j = i + 1
+                    while j < len(parts):
+                        tok = parts[j]
+                        if tok.startswith("-"):
+                            argv.append(tok)
+                            if tok in _opts_with_value and j + 1 < len(parts):
+                                argv.append(parts[j + 1])  # the option's value
+                                j += 1
+                        j += 1
                 else:
                     argv = parts
             else:
@@ -569,6 +587,14 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
                 cmd = "python3 -m pytest"
             if py_tests:
                 argv += ["--"] + py_tests
+            elif test_files:
+                # F8-007: changed tests pytest cannot target (non-.py files
+                # under an explicit pytest runner) must never fall back to a
+                # whole-suite run — UNVERIFIED, never a misattributed
+                # deterministic Critical
+                log.warning("verify_diff_tests: changed tests are not python "
+                            "under a pytest runner — UNVERIFIED")
+                return None
             else:
                 argv += ["tests/"]  # no changed python tests: repo default
             # options ride BEFORE the '--' separator (never after the file
@@ -610,6 +636,27 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
                   files=test_files, ok=green, latency_s=round(_time.time() - _t0, 1))
         if green:
             return None
+        if not green and "pytest" in cmd and not chain:
+            pass  # junit-gated pytest failures ARE test failures
+        elif not green:
+            # F8-008: distinguish setup/infrastructure failure (install,
+            # missing deps, env) from a COMPLETED failing test run — the
+            # DialectOS chain begins with 'corepack pnpm install', and an
+            # install error used to mint a deterministic Critical
+            text_all = f"{result.stdout}\n{result.stderr}"
+            setup_err = bool(re.search(
+                r"(npm|pnpm|corepack|yarn|pip|poetry|go (?:mod|build|install)|"
+                r"EACCES|ENOENT|Cannot find module|command not found|Install failed|"
+                r"Could not resolve|Network (?:error|timeout))",
+                text_all, re.IGNORECASE))
+            test_signal = bool(re.search(
+                r"(collected \d+|\d+ (?:passed|failed)|passed|FAILED|failed|"
+                r"All tests passed|Tests:|\bOK\b|not ok)",
+                text_all, re.IGNORECASE))
+            if setup_err and not test_signal:
+                log.warning("verify_diff_tests: setup/infrastructure failure \u2014 "
+                            "UNVERIFIED, no finding (rc=%s)", result.returncode)
+                return None
         tail = (result.stdout + "\n" + result.stderr).strip().splitlines()
         # Sol-B2: the verifier records the EXACT evidence it ran — command,
         # files, head SHA — so the claim is auditable, not asserted
@@ -698,10 +745,23 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
             # Non-vacuous gate: no checks at all is NOT green; pending runs
             # are NOT green (all([]) used to bless both).
             ci_green = bool(runs) and not pending and all(c.get("conclusion") == "success" for c in runs)
+            # F8-005: legacy commit STATUSES also gate — check-runs green with
+            # a failing commit status must never authorize a merge
+            try:
+                combined = _gh_api("GET",
+                                   f"/repos/{config.repo}/commits/{pr_data['head']['sha']}/status")
+            except Exception:  # noqa: BLE001 - status probe failure = not green
+                combined = {}
+            combined_state = (combined or {}).get("state") if isinstance(combined, dict) else None
+            if combined_state != "success":
+                ci_green = False
             # The gate re-verifies authorship + CI IN CODE. is_own_identity
             # accepts the current + legacy bot slugs across renames.
             merge_own_pr(author=author, bot_identity=bot_identity, ci_green=ci_green, config=config)
-            _gh_api("PUT", f"/repos/{config.repo}/pulls/{number}/merge", {"merge_method": "squash"})
+            _gh_api("PUT", f"/repos/{config.repo}/pulls/{number}/merge", {
+                "merge_method": "squash",
+                "sha": pr_data["head"]["sha"],  # F8-004: precondition
+            })
             merged.append({"pr": number, "status": "merged"})
             log.info("merged own fix PR #%s on %s (owner=%s)", number, config.repo, owner)
         except FixLaneBlocked as exc:

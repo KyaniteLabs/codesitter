@@ -688,7 +688,7 @@ class TestMECERound1Pins:
         out = executor._get_file_content("o/r", "x.py", "a" * 40)
         assert out is None  # invalid base64 degrades, never raises
 
-    def test_issues_lane_remote_failure_contained(self):
+    def test_issues_lane_remote_failure_contained(self, monkeypatch):
         from fl4write.forges import ForgeError
         from fl4write import config as cfg
 
@@ -715,7 +715,8 @@ class TestMECERound1Pins:
         try:
             an._call_model = lambda *a, **k: '{"labels": [], "is_duplicate": false, "duplicate_hint": null, "draft_reply": "r", "urgency": "low", "is_regression": false, "regression_version": null}'
             import fl4write.issues as iss
-            iss._foreign_triage_exists = lambda forge, repo, num: False
+            monkeypatch.setattr(iss, "_foreign_triage_exists",
+                                lambda forge, repo, num: False)
             summary = iss.run_issues_cycle(c, {"last_triaged_number": 0}, BoomForge())
             assert summary.get("errors", 0) >= 1
             assert summary.get("triaged", 0) == 0  # not counted, watermark not advanced
@@ -2904,3 +2905,85 @@ class TestMECERound8Pins:
         assert 'all(isinstance(a, str) for a in p["alerts"])' in rc
         cd = (REPO_ROOT / "check-dirty.sh").read_text()
         assert "checkout integrity UNKNOWN" in cd and "git status failed" in cd
+
+
+class TestMECERound8SolB:
+    """Round-8 sol DOM-B remainder: foreign-marker quarantine (F8-009),
+    label escaping (F8-010), calibration window semantics (F8-011), merge
+    sha binding/status gate (F8-004/005), executor integrity markers
+    (F8-001/002/003/006/007/008 source laws)."""
+
+    def test_foreign_marker_quarantines_without_advancing(self, monkeypatch, tmp_path):
+        import fl4write.issues as issues_mod
+
+        class _F(ForgeAdapter):
+            name = "github"
+
+            def __init__(self):
+                super().__init__(cfg.ForgeBinding(
+                    role="primary", api_base="https://api.github.com", token_env="GHT"))
+
+            def _paginated(self, path, page_size=50, max_pages=10):
+                if "/comments" in path:
+                    return [{"id": 1, "body": "fl4write-triage:v1 attacker",
+                             "user": {"login": "attacker"}}]
+                return [{"number": 4, "title": "t", "body": "b"}]
+
+            def create_comment(self, repo, number, body):
+                return 1
+
+            def update_comment(self, repo, number, cid, body):
+                pass
+
+        monkeypatch.setattr(issues_mod, "triage_issue",
+                            lambda issue, config: {"urgency": "low", "labels": [],
+                                                   "duplicate_hint": "", "is_duplicate": False,
+                                                   "is_regression": False, "draft_reply": "ok"})
+        forge = _F()
+        st = {"last_triaged_number": 0}
+        issues_mod.run_issues_cycle(
+            cfg.RepoConfig.model_validate({
+                "repo": "o/r",
+                "forges": {"github": {"role": "primary", "api_base": "https://api.github.com",
+                                      "token_env": "GHT"}},
+                "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+                "review": {"secrets": "x"}, "issues_enabled": True}),
+            st, forge)
+        assert st.get("last_triaged_number", 0) == 0, "watermark advanced over a foreign marker"
+        assert 4 in st.get("issues_foreign_quarantined", [])
+
+    def test_triage_labels_escape_embedded_backticks(self):
+        from fl4write.issues import render_triage_comment
+
+        hostile = {"urgency": "high", "labels": ["bug` [click](https://evil.invalid)"],
+                   "duplicate_hint": None, "is_duplicate": False,
+                   "is_regression": False, "draft_reply": ""}
+        body = render_triage_comment(7, hostile, make_config())
+        # embedded backticks are replaced (never close the code span), and
+        # every remaining code span is balanced — markdown inside a code span
+        # is inert, an UNCLOSED span is not
+        assert "bug'" in body  # the embedded backtick became a safe char
+        assert body.count("`") % 2 == 0
+        assert "`bug`" not in body
+
+    def test_calibration_window_counts_model_calls_not_lines(self, monkeypatch, tmp_path):
+        from fl4write import telemetry as tel
+
+        p = tmp_path / "telemetry.jsonl"
+        lines = ['{"kind": "model_call", "model": "m1", "ok": true}']
+        for i in range(1501):
+            lines.append('{"kind": "review", "model": "m1"}')
+        p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        monkeypatch.setattr(tel, "_path", lambda: p)
+        out = tel.calibration_snapshot(recent=500)
+        assert "m1" in out  # model calls beyond the 3N raw-line window survive
+
+    def test_merge_gate_source_laws(self):
+        src = (REPO_ROOT / "fl4write/executor.py").read_text()
+        assert '"sha": pr_data["head"]["sha"]' in src  # F8-004 precondition
+        assert "/status" in src and "combined_state" in src  # F8-005
+        assert "fl4write-fix-test-" in src  # F8-002 isolation copy
+        assert "compact = \"\".join(data[\"content\"].split())" in src  # F8-001
+        assert "_opts_with_value" in src  # F8-006 arity
+        assert "setup/infrastructure failure" in src  # F8-008 infra class
+        assert "_tag = _hl.blake2b" in src  # F8-003 branch identity

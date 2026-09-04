@@ -124,8 +124,10 @@ def render_triage_comment(issue_num: int, triage: dict[str, Any], config: RepoCo
     def _safe(value, single_line=False):
         s = scrub.redact_credentials(scrub.scrub(str(value)))
         return scrub.inline(s) if single_line else _md_escape_block(s)
-    labels = ", ".join(f"`{_safe(lb, single_line=True)}`"
-                       for lb in triage.get("labels", [])) or "none suggested"
+    def _label(lb):
+        txt = _safe(lb, single_line=True).replace("`", "'")  # F8-010: backticks
+        return "`" + txt + "`" if txt else ""
+    labels = ", ".join(_label(lb) for lb in triage.get("labels", [])) or "none suggested"
 
     parts = [
         f"## FL4WRITE triage — issue #{issue_num}",
@@ -223,15 +225,20 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
             if existing:
                 forge.update_comment(config.repo, num, existing[0], body)
             elif _foreign_triage_exists(forge, config.repo, num):
-                # Marker present but not ours (identity change, cross-host run):
-                # NEVER post a second copy — that is the email-storm failure.
+                # Marker present but not ours (identity change, cross-host run,
+                # or an ATTACKER planting the public marker): NEVER post a
+                # second copy (email-storm law) and NEVER advance the
+                # watermark over it — F8-009: quarantine instead, so the
+                # issue stays visible in state and surfaces in the alert
                 log.warning(
-                    "issue #%s: marker comment exists under another identity; skipping (no duplicate)",
-                    num,
-                )
+                    "issue #%s: foreign triage marker quarantined (no duplicate, "
+                    "watermark NOT advanced)", num)
                 summary["skipped"] += 1
-                last_num = max(last_num, num)
-                st["last_triaged_number"] = last_num  # F7-B002: int write
+                q = st.setdefault("issues_foreign_quarantined", [])
+                if num not in q:
+                    q.append(num)
+                retry.add(num)  # stays collected: per-cycle visibility, and
+                # the watermark can never bury it while the marker exists
                 continue
             else:
                 forge.create_comment(config.repo, num, body)
