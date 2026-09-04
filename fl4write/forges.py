@@ -611,47 +611,33 @@ class ForgejoAdapter(ForgeAdapter):
         """Forgejo variant: Gitea's ?recursive=true TRUNCATES at 1000 entries
         (live-caught on KyaniteLabs/liminal: 862 of a much larger tree) and
         Gitea accepts a branch NAME in the trees path — so walk manually:
-        root non-recursive, then per-subtree recursion. Complete at any size."""
+        root non-recursive, then per-subtree descent. Complete at any size."""
         try:
             from urllib.parse import quote
 
-            branch = self._call("GET", f"/repos/{repo}").get("default_branch") or "main"
+            repo_info = self._call("GET", f"/repos/{repo}")
+            if not isinstance(repo_info, dict):
+                # F7-D003: the repo envelope is an intermediate contract too
+                return None
+            branch = repo_info.get("default_branch") or "main"
             # MECE round-4 (M3 F4-D07): a default branch containing '/' or
             # other path chars must not corrupt the trees URL — quote the name
             branch_q = quote(branch, safe="")
             out: list[tuple[str, int]] = []
             truncated = False
+            fetch_budget = 2000  # F6-311: bounded API walk
 
-            visited: set[str] = set()
-            _walk_budget = {"n": 0}
-
-            def walk(sha: str, prefix: str) -> None:
+            def add_blob(e: dict, prefix: str) -> None:
                 nonlocal truncated
-                if sha in visited:
-                    truncated = True  # F6-311: self-referential response
+                # F7-D003: one coerce-or-drop helper for EVERY blob row (root
+                # and subtree) — nonnumeric sizes never ValueError a cycle
+                try:
+                    out.append((prefix + str(e.get("path") or ""),
+                                int(e.get("size") or 0)))
+                except (TypeError, ValueError):
                     return
-                visited.add(sha)
-                _walk_budget["n"] += 1
-                if _walk_budget["n"] > 2000:
-                    truncated = True  # F6-311: bounded walk, never RecursionError
-                    return
-                t = self._call("GET", f"/repos/{repo}/git/trees/{sha}")
-                if not isinstance(t, dict) or not isinstance(t.get("tree"), list):
+                if len(out) > 500_000:
                     truncated = True
-                    return
-                if t.get("truncated"):
-                    truncated = True
-                for e in t.get("tree") or []:
-                    if not isinstance(e, dict):  # MECE round-5 (luna F5-002):
-                        continue  # malformed entry degrades, never crashes
-                    if e.get("type") == "blob":
-                        try:
-                            out.append((prefix + (e.get("path") or ""),
-                                        int(e.get("size") or 0)))
-                        except (TypeError, ValueError):
-                            continue
-                    elif e.get("type") == "tree":
-                        walk(e.get("sha"), prefix + (e.get("path") or "") + "/")
 
             root = self._call("GET", f"/repos/{repo}/git/trees/{branch_q}")
             if not isinstance(root, dict) or not isinstance(root.get("tree"), list):
@@ -660,13 +646,63 @@ class ForgejoAdapter(ForgeAdapter):
                 return out, True
             if root.get("truncated"):
                 truncated = True
+
+            # F7-D001: iterative worklist — deep acyclic trees used to hit
+            # Python's recursion limit before the old call guard fired.
+            # F7-D002: cycle detection is ANCESTRY-only (explicit frames keep
+            # every open ancestor on_stack) — a content-addressed subtree
+            # shared by two prefixes is legitimate and replays from the cache
+            # under every prefix; only an ancestor reference truncates.
+            tree_cache: dict[str, list] = {}
+            _push_budget = 200_000
+            on_stack: set[str] = set()
+            stack: list[tuple[str, str, list]] = []  # (sha, prefix, entries)
+
+            def entries_of(sha: str) -> list:
+                nonlocal truncated, fetch_budget
+                if sha in tree_cache:
+                    return tree_cache[sha]
+                if fetch_budget <= 0:
+                    truncated = True
+                    return []
+                t = self._call("GET", f"/repos/{repo}/git/trees/{sha}")
+                fetch_budget -= 1
+                if not isinstance(t, dict) or not isinstance(t.get("tree"), list):
+                    truncated = True
+                    tree_cache[sha] = []
+                    return []
+                if t.get("truncated"):
+                    truncated = True
+                tree_cache[sha] = [e for e in (t.get("tree") or []) if isinstance(e, dict)]
+                return tree_cache[sha]
+
+            def push_task(sha: str, prefix: str) -> None:
+                nonlocal _push_budget, truncated
+                if sha in on_stack:
+                    truncated = True  # ancestry cycle
+                    return
+                if _push_budget <= 0:
+                    truncated = True
+                    return
+                _push_budget -= 1
+                stack.append((sha, prefix, entries_of(sha)))
+
             for e in root.get("tree") or []:
-                if not isinstance(e, dict):  # MECE round-5 (luna F5-002)
+                if not isinstance(e, dict):
                     continue
                 if e.get("type") == "blob":
-                    out.append(((e.get("path") or ""), int(e.get("size") or 0)))
-                elif e.get("type") == "tree":
-                    walk(e.get("sha"), (e.get("path") or "") + "/")
+                    add_blob(e, "")
+                elif e.get("type") == "tree" and str(e.get("sha") or ""):
+                    push_task(str(e["sha"]), str(e.get("path") or "") + "/")
+            while stack:
+                sha, prefix, entries = stack.pop()
+                on_stack.add(sha)
+                for e in entries:
+                    if e.get("type") == "blob":
+                        add_blob(e, prefix)
+                    elif e.get("type") == "tree" and str(e.get("sha") or ""):
+                        push_task(str(e["sha"]), prefix + str(e.get("path") or "") + "/")
+                on_stack.discard(sha)
             return out, truncated
         except ForgeError:
             return None
@@ -701,9 +737,23 @@ class ForgejoAdapter(ForgeAdapter):
         return files, raw
 
 
+def _is_github_base(api_base: str) -> bool:
+    """MECE round-7 (sol F7-D007): EXACT hostname equality — substring
+    matching let 'https://api.github.com.evil.invalid' masquerade as GitHub
+    and receive the configured credential."""
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(api_base)
+    except ValueError:
+        return False
+    return parts.hostname == "api.github.com" and parts.port in (None, 443)
+
+
 def adapter_for(binding: ForgeBinding) -> ForgeAdapter:
     """Fail-loud adapter selection — unknown forge names abort the cycle."""
     # The binding's api_base distinguishes github.com vs a Forgejo host.
-    if "api.github.com" in binding.api_base:
+    # (F7-D007: hostname equality, never substring.)
+    if _is_github_base(binding.api_base):
         return GitHubAdapter(binding)
     return ForgejoAdapter(binding)

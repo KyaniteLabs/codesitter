@@ -2574,3 +2574,84 @@ class TestMECERound7LunaPins:
             "rule_id": "security-threat", "severity": "Critical", "path": "x.py",
             "line": 5, "message": positive})
         assert doc2.findings and doc2.findings[0].severity == "Critical"
+
+
+class TestMECERound7SolPins:
+    """Round-7 sol DOM-D: exact-host adapter selection (F7-D007), iterative
+    ancestry-aware tree walk (F7-D001/D002/D003)."""
+
+    @staticmethod
+    def _fj():
+        from fl4write.forges import ForgejoAdapter
+        ad = ForgejoAdapter(cfg.ForgeBinding(
+            role="primary", api_base="https://git.example.com/api/v1", token_env="GHT"))
+        ad._headers = lambda: {}
+        return ad
+
+    def test_host_selection_is_exact_not_substring(self):
+        from fl4write.forges import adapter_for
+
+        evil = cfg.ForgeBinding(role="primary",
+                                api_base="https://api.github.com.evil.invalid",
+                                token_env="GHT")
+        good = cfg.ForgeBinding(role="primary",
+                                api_base="https://api.github.com", token_env="GHT")
+        assert adapter_for(evil).name == "forgejo", "lookalike host got the GitHub adapter"
+        assert adapter_for(good).name == "github"
+
+    def test_deep_chain_no_recursion_and_shared_subtree_replays(self):
+        ad = self._fj()
+        payloads: dict[str, object] = {
+            "/repos/o/r": {"default_branch": "main"},
+            "/repos/o/r/git/trees/main": {"tree": [
+                {"type": "tree", "sha": "shared", "path": "left"},
+                {"type": "tree", "sha": "shared", "path": "right"}]},
+            "/repos/o/r/git/trees/shared": {"tree": [
+                {"type": "blob", "path": "f.py", "size": 3}]},
+        }
+
+        def fake_call(method, path):
+            return payloads[path]
+
+        ad._call = fake_call
+        out, truncated = ad.list_tree_files("o/r")
+        assert not truncated
+        # the SHARED subtree must appear under BOTH prefixes
+        assert ("left/f.py", 3) in out and ("right/f.py", 3) in out
+
+        # deep acyclic chain: 1100 levels must not RecursionError
+        payloads = {"/repos/o/r": {"default_branch": "main"}}
+        for i in range(1100):
+            nxt = f"n{i + 1}"
+            if i == 1099:
+                payloads[f"/repos/o/r/git/trees/n{i}"] = {
+                    "tree": [{"type": "blob", "path": "leaf", "size": 1}]}
+            else:
+                payloads[f"/repos/o/r/git/trees/n{i}"] = {
+                    "tree": [{"type": "tree", "sha": nxt, "path": "d"}]}
+        payloads["/repos/o/r/git/trees/main"] = payloads["/repos/o/r/git/trees/n0"]
+        ad._call = lambda m, path: payloads[path]
+        out2, truncated2 = ad.list_tree_files("o/r")
+        assert not truncated2 and out2  # no RecursionError, walk completes
+
+    def test_ancestry_cycle_truncates_and_root_rows_coerce(self):
+        ad = self._fj()
+        payloads = {
+            "/repos/o/r": {"default_branch": "main"},
+            "/repos/o/r/git/trees/main": {"tree": [
+                {"type": "tree", "sha": "a", "path": "x"},
+                {"type": "blob", "path": "ok.py", "size": "not-a-number"},
+                {"type": "blob", "path": "ok2.py", "size": 5}]},
+            "/repos/o/r/git/trees/a": {"tree": [
+                {"type": "tree", "sha": "a", "path": "loop"}]},  # ancestor cycle
+        }
+        ad._call = lambda m, path: payloads[path]
+        out, truncated = ad.list_tree_files("o/r")
+        assert truncated  # ancestry cycle detected
+        assert ("ok2.py", 5) in out  # valid root blob survived
+        assert not any(p == "ok.py" for p, _ in out)  # garbage size dropped
+
+    def test_repo_envelope_malformed_returns_none(self):
+        ad = self._fj()
+        ad._call = lambda m, path: None  # 2xx null repo envelope
+        assert ad.list_tree_files("o/r") is None

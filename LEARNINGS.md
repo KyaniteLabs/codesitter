@@ -489,3 +489,15 @@ the ci_watch head string was trusted as a SHA and int(head[:6], 16) crashed fixe
 cycles. Laws: locks that need 'breaking' are broken by design — prefer kernel-held locks;
 normalize EVERY consumed aux field incl. bool-flags; never trust a forge head string as hex.
 
+## 51. Credentials follow exact hosts; trees walk iteratively (2026-09-04, MECE round 7)
+Sol's DOM-D pass: substring host matching let https://api.github.com.evil.invalid masquerade as
+GitHub — the lookalike received the configured App token (adapter selection, diff-getter, auth
+minting all keyed on substring); the CLI mirrored the minted GitHub token into EVERY unset
+binding env including Forgejo mirrors (multi-forge token isolation); and the Forgejo tree walker
+still recursed (deep acyclic trees hit the interpreter recursion limit before the call guard),
+used a GLOBAL visited set that mistook shared content-addressed subtrees for cycles (files
+silently omitted, omnisweep completion blocked forever), and validated neither the repo envelope
+nor root blob rows. Laws: credentials route on EXACT normalized hostname equality; tokens never
+cross forge transports; tree walks are iterative with ancestry-only cycle frames, per-sha caches,
+fetch/push budgets, and one coerce-or-drop helper for every row.
+

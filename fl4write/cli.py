@@ -213,7 +213,9 @@ def main() -> int:
     # Forgejo-primary uses the adapter's native .diff endpoint (the gh path
     # 404s there — every PR would defer forever, the dead-adapter failure).
     primary_binding = next(b for b in config.forges.values() if b.role == "primary")
-    if "api.github.com" in primary_binding.api_base:
+    from .forges import _is_github_base as _gh_host
+
+    if _gh_host(primary_binding.api_base):
         diff_getter = make_get_diff(config.repo)
     else:
         from .forges import adapter_for as _af
@@ -228,7 +230,7 @@ def main() -> int:
     # F2-105): Forgejo-primary repos skipped entirely — minting for a repo
     # with no GH installation failed + fell back to PAT EVERY cycle (noise +
     # wrong login on the FJ surface).
-    if "api.github.com" in primary_binding.api_base:
+    if _gh_host(primary_binding.api_base):
         try:
             from .appauth import install_token_to_env
 
@@ -236,9 +238,13 @@ def main() -> int:
             # MECE round-3 (terra F3-003): adapters read the token under the
             # BINDING's token_env name (e.g. CODESITTER_GITHUB_TOKEN in fleet
             # configs, GHT in tests) — mirror the minted token there or the
-            # adapter runs unauthenticated
+            # adapter runs unauthenticated.
+            # MECE round-7 (sol F7-D008): mirror ONLY into GitHub-host
+            # bindings — a Forgejo mirror must never receive the GitHub App
+            # token (its own credential is its own token_env)
             for binding in config.forges.values():
-                if binding.token_env and not os.environ.get(binding.token_env):
+                if binding.token_env and not os.environ.get(binding.token_env) \
+                        and _gh_host(binding.api_base):
                     os.environ[binding.token_env] = os.environ.get("CODESITTER_GITHUB_TOKEN", "")
             config = config.model_copy(update={"bot_login": "fl4write[bot]"})
         except Exception as exc:
@@ -260,7 +266,7 @@ def main() -> int:
     # Config-presence surveillance (learning 16) — FORGE-AWARE (2026-09-01):
     # the old gh-only probe 404'd every cycle on Forgejo-primary repos and
     # fired false "adoption lost" alerts, live-observed on the 23:00 cycle.
-    _probe_adoption(config, native if "api.github.com" not in primary_binding.api_base else None)
+    _probe_adoption(config, native if not _gh_host(primary_binding.api_base) else None)
     from . import telemetry as _tel
     _cal = _tel.calibration_snapshot()
     if _cal:
