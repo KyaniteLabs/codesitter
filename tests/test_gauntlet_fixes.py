@@ -16,7 +16,7 @@ from fl4write import config as cfg
 from fl4write import state as state_mod
 from fl4write.analyzer import analyze
 from fl4write.engine import run_cycle
-from fl4write.forges import ForgeAdapter, ForgeError
+from fl4write.forges import ForgeAdapter, ForgeError, GitHubAdapter, ForgejoAdapter
 from fl4write.models import Finding, PullRequest, ReviewDoc
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1389,3 +1389,183 @@ class TestMECERound4LunaPins:
         for number, body in forge.posts:
             assert "🧹 1 nits filtered" in body, f"PR #{number} claims a cycle-wide count"
             assert "🧹 2" not in body
+
+
+class TestMECERound4M3Pins:
+    """Round-4 M3 DOM-D desk: comment-scan page depth (F4-D01), _call_text
+    Retry-After (F4-D02), branch URL quoting (F4-D07), check-runs page bound
+    (F4-D08). F4-D04 (nested YAML dup keys) ruled INVALID by direct probe —
+    the registered constructor recurses into nested mappings."""
+
+    @staticmethod
+    def _adapter(cls):
+        base = ("https://api.github.com" if cls is GitHubAdapter
+                else "https://git.example.com/api/v1")
+        b = cfg.ForgeBinding(role="primary", api_base=base, token_env="GHT")
+        ad = cls(b)
+        ad._headers = lambda: {}  # never read env in these unit pins
+        return ad
+
+    def test_comment_scan_can_reach_100_pages(self):
+        for cls in (GitHubAdapter, ForgejoAdapter):
+            ad = self._adapter(cls)
+            seen = {}
+
+            def fake_paginated(path, page_size, max_pages=10):
+                seen["max_pages"] = max_pages
+                seen["page_size"] = page_size
+                return []
+
+            ad._paginated = fake_paginated
+            assert ad.get_persistent_comment("o/r", 1) is None
+            assert seen["max_pages"] == 100, f"{cls.__name__} still caps at 10 pages"
+
+    def test_call_text_honors_retry_after(self, monkeypatch):
+        import urllib.error
+
+        import fl4write.forges as fmod
+
+        ad = self._adapter(ForgejoAdapter)
+        attempts = {"n": 0}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b"diff --git a/x b/x\n"
+
+        def fake_open(req, timeout=30):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise urllib.error.HTTPError(
+                    req.full_url, 429, "throttled", {"Retry-After": "0"}, None)
+            return _Resp()
+
+        waits: list[float] = []
+        monkeypatch.setattr(fmod.time, "sleep", lambda s: waits.append(s))
+        monkeypatch.setattr(fmod.urllib.request, "urlopen", fake_open)
+        out = ad._call_text("GET", "/x")
+        assert attempts["n"] == 2
+        assert waits == [0.0], f"Retry-After ignored: waited {waits}"
+        assert out.startswith("diff --git")
+
+    def test_tree_scan_quotes_slash_branch_names(self):
+        for cls in (GitHubAdapter, ForgejoAdapter):
+            ad = self._adapter(cls)
+            calls: list[str] = []
+
+            def fake_call(method, path):
+                calls.append(path)
+                if path == "/repos/o/r":
+                    return {"default_branch": "release/1.0"}
+                if "/git/trees/" in path:
+                    return {"tree": [{"type": "blob", "path": "a.py", "size": 12}]}
+                return {"sha": "c" * 40}  # commits/{branch} for GitHub
+
+            ad._call = fake_call
+            out, truncated = ad.list_tree_files("o/r")
+            assert out == [("a.py", 12)] and truncated is False
+            assert any("release%2F1.0" in p for p in calls), \
+                f"{cls.__name__} left a raw slash branch in the URL"
+
+    def test_check_runs_scan_is_page_bounded(self, monkeypatch, caplog):
+        import logging
+
+        import fl4write.forges as fmod
+
+        monkeypatch.setattr(fmod, "_CHECK_RUN_PAGE_CAP", 3)
+        ad = self._adapter(GitHubAdapter)
+        pages = {"n": 0}
+
+        def fake_call(method, path):
+            pages["n"] += 1
+            if path == "/repos/o/r":
+                return {"default_branch": "main"}
+            if "check-runs" not in path:
+                return {"sha": "c" * 40}
+            return {"check_runs": [{"id": i} for i in range(100)]}
+
+        ad._call = fake_call
+        with caplog.at_level(logging.WARNING, logger="fl4write.forges"):
+            sha, runs = ad.head_check_runs("o/r")
+        assert sha == "c" * 40
+        assert len(runs) == 300  # 3 full pages, then the cap stops the scan
+        assert "capped" in caplog.text
+
+
+class TestMECERound5TerraPins:
+    """Round-5 terra DOM-B: issue-post failure skips forever once a later
+    success advances the watermark (F5-001); raw paths render unscrubbed in
+    posted bodies (F5-002, fixlane escalation + executor PR body)."""
+
+    def _make_issue_config(self, **over):
+        raw = dict(RAW)
+        raw["repo"] = "o/r"
+        raw["issues_enabled"] = True
+        raw.update(over)
+        return cfg.RepoConfig.model_validate(raw)
+
+    def test_failed_post_is_retried_even_after_later_success(self, monkeypatch):
+        import fl4write.issues as issues_mod
+
+        class _IssuesForge(ForgeAdapter):
+            name = "github"
+
+            def __init__(self):
+                super().__init__(cfg.ForgeBinding(
+                    role="primary", api_base="https://api.github.com", token_env="GHT"))
+                self.comments: list[int] = []
+                self.fail_first = True
+
+            def _paginated(self, path, page_size=50, max_pages=10):
+                if "/comments" in path:
+                    return []
+                # real GH issue rows carry NO pull_request key — rows with the
+                # key are excluded by the collector's PR filter
+                return [
+                    {"number": 1, "title": "t1", "body": "b1"},
+                    {"number": 2, "title": "t2", "body": "b2"},
+                ]
+
+            def create_comment(self, repo, number, body):
+                if self.fail_first and number == 1:
+                    self.fail_first = False
+                    raise ForgeError("transient post failure (test)")
+                self.comments.append(number)
+                return len(self.comments)
+
+            def update_comment(self, repo, number, comment_id, body):
+                pass
+
+        monkeypatch.setattr(
+            issues_mod, "triage_issue",
+            lambda issue, config: {"urgency": "low", "labels": [], "duplicate_hint": "",
+                                   "is_duplicate": False, "is_regression": False,
+                                   "draft_reply": "ok"})
+        forge = _IssuesForge()
+        st: dict = {"last_triaged_number": 0}
+        run1 = issues_mod.run_issues_cycle(self._make_issue_config(), st, forge)
+        assert run1["errors"] == 1 and run1["triaged"] == 1
+        assert st["last_triaged_number"] == 2  # #2 succeeded
+        assert 1 in st["issues_retry"], "failed #1 was not parked in the retry set"
+        # next cycle: #1 must be collected again despite the advanced watermark
+        run2 = issues_mod.run_issues_cycle(self._make_issue_config(), st, forge)
+        assert run2["triaged"] == 1
+        assert forge.comments == [2, 1]
+
+    def test_escalation_renders_paths_via_display_transform(self):
+        from fl4write.fixlane import escalate
+        from fl4write.models import Finding, PullRequest
+
+        cred = "AKIA" + "ABCDEFGHIJKLMNOP"  # split literal: fleet scanner law
+        hostile = "safe.py\n## forged heading\n" + cred
+        f = Finding(rule_id="secrets", severity="Major", path=hostile, line=1, message="m")
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        body = escalate(pr, [f], "blocked")
+        assert cred not in body  # credential-shaped path redacted
+        assert "## forged heading" not in body  # no forged structure
+        assert not any(line.startswith("##") for line in body.splitlines()[1:])

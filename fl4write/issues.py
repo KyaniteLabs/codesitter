@@ -232,7 +232,12 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
         except (ForgeError, ValueError, TypeError, KeyError, AttributeError) as exc:
             log.warning("issues triage post failed for #%s (contained): %s", num, exc)
             summary["errors"] += 1
-            continue  # watermark NOT advanced — the issue retries next cycle
+            # MECE round-5 (terra F5-001): a LATER success in this same cycle
+            # advances the watermark past this number — without the retry-set
+            # membership the failed issue is then permanently skipped. The
+            # watermark-stays rule alone only covers the LAST-processed case.
+            retry.add(num)
+            continue
 
         st["last_triaged_number"] = max(st.get("last_triaged_number", 0), num)
 

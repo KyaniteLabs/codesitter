@@ -30,6 +30,10 @@ try:
 except PackageNotFoundError:  # running from a clone without install
     USER_AGENT = "fl4write/dev"
 
+# MECE round-4 (M3 F4-D08): hard page bound for the ci-watch check-runs scan
+# — a server that keeps returning full pages must not spin the cycle forever.
+_CHECK_RUN_PAGE_CAP = 100
+
 # The app was renamed kyanitelabs -> fl4write (2026-09-01), which changed the
 # bot login. Comments authored under EITHER slug are ours; both are accepted
 # so pre-rename comments still edit-in-place instead of duplicating.
@@ -122,7 +126,13 @@ class ForgeAdapter:
                 return resp.read().decode()
         except urllib.error.HTTPError as exc:
             if method == "GET" and _retry and exc.code in (403, 429, 500, 502, 503, 504):
-                time.sleep(1)
+                wait = 0.0
+                if exc.headers and exc.headers.get("Retry-After"):
+                    try:
+                        wait = min(float(exc.headers["Retry-After"]), 30.0)
+                    except ValueError:
+                        pass
+                time.sleep(wait)
                 return self._call_text(method, path, _retry=False)
             raise ForgeError(f"{self.name} {method} {path}: HTTP {exc.code}") from exc
         except (urllib.error.URLError, TimeoutError) as exc:
@@ -262,8 +272,12 @@ class ForgeAdapter:
         or None when unqueryable. One recursive git-trees call; `truncated`
         flags GitHub's 100k-entry/7MB cap — the caller must ALERT on it."""
         try:
+            from urllib.parse import quote
+
             branch = self._call("GET", f"/repos/{repo}").get("default_branch") or "main"
-            head = self._call("GET", f"/repos/{repo}/commits/{branch}")
+            # MECE round-4 (M3 F4-D07): quote branch names containing path
+            # chars (e.g. 'release/1.x' default branches) in URL paths
+            head = self._call("GET", f"/repos/{repo}/commits/{quote(branch, safe='')}")
             sha = head.get("sha") or ""
             if not sha:
                 return None
@@ -371,7 +385,13 @@ class GitHubAdapter(ForgeAdapter):
         return prs
 
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:
-        for c in self._paginated(f"/repos/{repo}/issues/{number}/comments", page_size=100):
+        # max_pages=100: our persistent comment must stay findable even on
+        # pathological PRs (MECE round-4 M3 F4-D01: the 10-page default made
+        # it invisible past 1000 comments → duplicate post). Cost is zero on
+        # normal PRs — the loop stops at the first short page.
+        for c in self._paginated(
+            f"/repos/{repo}/issues/{number}/comments", page_size=100, max_pages=100
+        ):
             body = c.get("body") or ""
             author = ((c.get("user") or {}).get("login") or "").lower()
             # Marker substring alone is hijackable by any commenter (review
@@ -390,8 +410,10 @@ class GitHubAdapter(ForgeAdapter):
 
     def head_check_runs(self, repo: str) -> tuple[str, list[dict]] | None:
         try:
+            from urllib.parse import quote
+
             branch = self._call("GET", f"/repos/{repo}").get("default_branch") or "main"
-            head = self._call("GET", f"/repos/{repo}/commits/{branch}")
+            head = self._call("GET", f"/repos/{repo}/commits/{quote(branch, safe='')}")
             sha = head.get("sha") or ""
             if not sha:
                 return None
@@ -400,6 +422,14 @@ class GitHubAdapter(ForgeAdapter):
             while True:  # MECE round-3 (terra F3-001): failures beyond the
                 # default page were invisible — ci_watch could call a red HEAD
                 # clean
+                if page > _CHECK_RUN_PAGE_CAP:  # MECE round-4 (M3 F4-D08):
+                    # bounded pages — a misbehaving server must not spin the
+                    # cycle forever
+                    import logging as _log
+                    _log.getLogger("fl4write.forges").warning(
+                        "head_check_runs %s: >%d full pages — capped (rows past "
+                        "the cap invisible to this call)", repo, _CHECK_RUN_PAGE_CAP)
+                    break
                 runs = self._call(
                     "GET",
                     f"/repos/{repo}/commits/{sha}/check-runs?per_page=100&page={page}")
@@ -493,7 +523,11 @@ class ForgejoAdapter(ForgeAdapter):
         return prs
 
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:
-        for c in self._paginated(f"/repos/{repo}/issues/{number}/comments", page_size=50):
+        # max_pages=100 (MECE round-4 M3 F4-D01): see GitHub variant — a
+        # persistent comment past page 10 must stay findable, never double-post
+        for c in self._paginated(
+            f"/repos/{repo}/issues/{number}/comments", page_size=50, max_pages=100
+        ):
             body = c.get("body") or ""
             author = ((c.get("user") or {}).get("login") or "").lower()
             if any(prefix in body for prefix in renderer.LEGACY_MARKER_PREFIXES) and is_own_identity(
@@ -517,7 +551,12 @@ class ForgejoAdapter(ForgeAdapter):
         Gitea accepts a branch NAME in the trees path — so walk manually:
         root non-recursive, then per-subtree recursion. Complete at any size."""
         try:
+            from urllib.parse import quote
+
             branch = self._call("GET", f"/repos/{repo}").get("default_branch") or "main"
+            # MECE round-4 (M3 F4-D07): a default branch containing '/' or
+            # other path chars must not corrupt the trees URL — quote the name
+            branch_q = quote(branch, safe="")
             out: list[tuple[str, int]] = []
             truncated = False
 
@@ -532,7 +571,7 @@ class ForgejoAdapter(ForgeAdapter):
                     elif e.get("type") == "tree":
                         walk(e.get("sha"), prefix + (e.get("path") or "") + "/")
 
-            root = self._call("GET", f"/repos/{repo}/git/trees/{branch}")
+            root = self._call("GET", f"/repos/{repo}/git/trees/{branch_q}")
             for e in root.get("tree") or []:
                 if e.get("type") == "blob":
                     out.append(((e.get("path") or ""), int(e.get("size") or 0)))

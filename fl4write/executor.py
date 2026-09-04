@@ -307,11 +307,14 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
                   reason=f"cannot fetch {finding.path}@{pr.head_sha[:8]}")
         return {"status": "error", "reason": f"cannot fetch {finding.path}@{pr.head_sha[:8]}"}
 
+    from .renderer import path_display  # MECE round-5 (terra F5-002): raw
+    # paths in the fix prompt can carry control/credential-shaped content —
+    # render via the display transform
     prompt = (
-        f"FINDING: [{finding.severity}] {finding.path}:{finding.line} — {finding.message}\n"
+        f"FINDING: [{finding.severity}] {path_display(finding.path)}:{finding.line} — {finding.message}\n"
         f"PROPOSAL: {finding.proposal}\n"
         f"REPO LAW: {json.dumps(config.review, indent=1)}\n"
-        f"FILE CONTENT ({finding.path}):\n```\n{scrub.scrub(content)}\n```"
+        f"FILE CONTENT ({path_display(finding.path)}):\n```\n{scrub.scrub(content)}\n```"
     )
     try:
         from .law import SYSTEM_PROMPT_ADDENDUM
@@ -417,7 +420,8 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             return {"status": "error", "reason": f"push failed: {push.stderr[-100:]}"}
 
         base = _default_branch(pr.repo)
-        from .renderer import _md_escape_block  # heading-safe model prose
+        from .renderer import _md_escape_block, path_display  # heading-safe
+        # model prose; display-form paths (MECE round-5, terra F5-002)
 
         new_pr = _gh_api("POST", f"/repos/{pr.repo}/pulls", {
             "title": f"fix({finding.rule_id}): {scrub.inline(finding.message, 60)}",
@@ -425,7 +429,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             "base": base,
             "body": (
                 "Automated fix by FL4WRITE.\n\n"
-                f"Finding: [{finding.severity}] {finding.path}:{finding.line} — {scrub.inline(finding.message)}\n"
+                f"Finding: [{finding.severity}] {path_display(finding.path)}:{finding.line} — {scrub.inline(finding.message)}\n"
                 f"Proposal: {_md_escape_block(finding.proposal)}\n\nTests pass. Review and merge."
             ),
         })
