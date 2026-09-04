@@ -4148,7 +4148,7 @@ class TestMECERound12Ops:
 
     def test_readme_count_attributed_to_closing_round(self):
         readme = (REPO_ROOT / "README.md").read_text()
-        assert "round-12 desk pass" in readme
+        assert "round-13 desk pass" in readme
 
 
 class TestMECERound12Pins:
