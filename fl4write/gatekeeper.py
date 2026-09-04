@@ -37,11 +37,12 @@ _GATEKEEPER_SYSTEM = (
     "are posted to a PR. Your job is to KILL findings that will be ignored and "
     "DEMOTE findings that are real but over-ranked. "
     'Reply ONLY with JSON: {"keep": [{"path": str, "line": int, "reason": str}], '
-    '"demote": [{"path": str, "line": int, "severity": str, "reason": str}]} '
+    '"demote": [{"path": str, "line": int, "rule_id": str, "severity": str, "reason": str}]} '
     "— keep ONLY findings worth a developer's attention (kill nits, style "
     "comments, anything a senior dev would dismiss). demote entries may ONLY "
-    "lower a severity (never raise); use the provided severity vocabulary. "
-    "Both lists copy path and line EXACTLY as given."
+    "lower a severity (never raise); use the provided severity vocabulary, "
+    "and copy path, line AND rule_id EXACTLY as given (rule_id disambiguates "
+    "findings that share a line)."
 )
 
 

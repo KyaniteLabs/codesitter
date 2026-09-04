@@ -85,7 +85,7 @@ def path_display(path: str) -> str:
     (terra F1-08, luna F2-003; MECE round-3 M3: a filename like
     `weird*name*.py` rendered as emphasis). Lifecycle comparisons MUST go
     through this same transform on both sides (F2-004)."""
-    out = str(path)
+    out = scrub.scrub(str(path))  # control/bidi chars first (sol F4-005)
     for ch in ("`", "*", "_", "[", "]", "#"):
         out = out.replace(ch, "")
     return scrub.redact_credentials(out.replace("\n", " ").replace("\r", " "))
@@ -168,7 +168,8 @@ def render_review(
             sections.append(
                 _TONES[tone]
                 + "\n---\n\n".join(
-                    ("🆕 " if (f.path, f.line, f.rule_id) not in previous_keys else "") + render_finding(f, tone, post_merge)
+                    ("🆕 " if (path_display(f.path), f.line, f.rule_id) not in previous_keys else "")
+                    + render_finding(f, tone, post_merge)
                     for f in findings
                 )
             )

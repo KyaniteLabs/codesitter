@@ -51,12 +51,19 @@ def _git_diff_path(line: str) -> str | None:
     if not m:
         return None
     raw = m.group(1).rstrip('"')
-    if raw.startswith('"') and raw.endswith('"'):
+    if raw.startswith('"'):
+        inner = raw[1:-1] if raw.endswith('"') else raw[1:]
+        # MECE round-4 (sol F4-002): git octal-escapes non-ASCII bytes
+        # (caf\303\251.py); ast decodes them to latin-1 chars, then re-decode
+        # as utf-8 bytes for the true name
         try:
-            raw = raw[1:-1].encode("utf-8").decode("unicode_escape")
-        except (UnicodeDecodeError, UnicodeError):
-            return raw[1:-1]
-        # decode("unicode_escape") mangles non-ascii utf-8 bytes; best effort:
+            import ast as _ast
+            decoded = _ast.literal_eval('"' + inner + '"')
+            if isinstance(decoded, str):
+                return decoded.encode("latin-1", "replace").decode("utf-8", "replace")
+        except (ValueError, SyntaxError, UnicodeError):
+            pass
+        return inner
     return raw
 
 
@@ -417,7 +424,7 @@ def analyze(
             f = Finding.model_validate(item)
         except Exception:  # malformed findings are dropped, logged
 
-            dropped.append(f"malformed: {str(item)[:80]}")
+            dropped.append(f"malformed: {scrub.redact_credentials(str(item)[:80])}")
             continue
         if f.rule_id != "general" and f.rule_id not in config.review:
             dropped.append(f"unknown rule {f.rule_id}")
@@ -499,7 +506,10 @@ def analyze(
         return -sum((n / len(s)) * _math.log2(n / len(s)) for n in freq.values())
 
     def _has_credential(text: str) -> bool:
-        if any(pref in text for pref in _SECRET_PREFIX):
+        # MECE round-4 (sol F4-003): a BARE prefix ("ghp_") is documentation,
+        # not a credential — require a real tail after the prefix
+        if re.search(r"(?:ghp_|gho_|github_pat_|sk-|sk_|AKIA|xoxb-|xoxp-|glpat-|AIza)"
+                     r"[A-Za-z0-9_\-]{8,}", text):
             return True
         # M3 leg-2 catch: >=4.3 bits is UNSATISFIABLE for 16-char literals
         # (max Shannon entropy of 16 unique chars is exactly 4.0) — short real
