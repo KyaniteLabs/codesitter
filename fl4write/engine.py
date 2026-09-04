@@ -229,10 +229,13 @@ def _review_pr(
             # dies as a contained error every cycle (silent feature death).
             # Fail LOUD as an escalation instead.
             blocked = "fix lane is GitHub-only in v1 — Forgejo repos are review/comment-only"
-            for f in findings_for_fix:
-                if f.severity in ("Critical", "Major"):
-                    primary.create_comment(config.repo, pr.number, fixlane.escalate(pr, [f], blocked))
-                    report.fix_escalations += 1
+            # MECE round-1 (M3 DOM-C #7): escalate ONCE with the full finding
+            # list — one comment per finding was comment-spam on FJ PRs
+            escalatable = [f for f in findings_for_fix if f.severity in ("Critical", "Major")]
+            if escalatable:
+                primary.create_comment(config.repo, pr.number,
+                                       fixlane.escalate(pr, escalatable, blocked))
+                report.fix_escalations += len(escalatable)
         else:
             _fix_lane(pr, findings_for_fix, config, primary, st, report)
 
