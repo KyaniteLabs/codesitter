@@ -3484,6 +3484,9 @@ class TestMECERound10ForgeDesk:
         import fl4write.appauth as ap
 
         monkeypatch.setattr(ap, "_TOKEN_CACHE", {})
+        # CI has no app key: the token mint path must never read the key file
+        # in this pin (the transport is fully faked)
+        monkeypatch.setattr(ap, "_make_jwt", lambda: "jwt")
         # malformed envelopes refused
         monkeypatch.setattr(ap, "_api", lambda *a, **k: [1, 2])
         try:
