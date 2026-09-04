@@ -156,7 +156,10 @@ def _get_file_content(repo: str, path: str, ref: str) -> str | None:
         # whole-file fix from nothing. validate=True rejects garbage; empty
         # decodes return None, never "".
         try:
-            raw = base64.b64decode(data["content"], validate=True)
+            # F8-001: the API line-wraps long payloads — strip ASCII
+            # whitespace BEFORE strict validation or valid content is refused
+            compact = "".join(data["content"].split())
+            raw = base64.b64decode(compact, validate=True)
         except (binascii.Error, ValueError) as exc:
             log.warning("file fetch invalid base64 for %s@%s: %s", path, ref[:8], exc)
             return None
@@ -404,10 +407,33 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         if err:
             return {"status": "error", "reason": err}
 
-        if not _run_tests(workdir, config):
+        # F8-002: untrusted test code must never run in the tree we commit
+        # from — copy the tree (minus .git) and execute the suite there, so
+        # hooks/target-file tampering cannot ride into the bot's commit
+        testdir = Path(tempfile.mkdtemp(prefix="fl4write-fix-test-"))
+        try:
+            copy = _run(["cp", "-a", f"{workdir}/.", f"{testdir}/"], cwd=workdir)
+            if copy.returncode != 0:
+                return {"status": "error", "reason": "test-tree copy failed"}
+            import shutil as _sh
+            _sh.rmtree(testdir / ".git", ignore_errors=True)
+            tested = _run_tests(testdir, config)
+        finally:
+            shutil.rmtree(testdir, ignore_errors=True)
+        if not tested:
             _tel.emit("fix_attempt", repo=pr.repo, path=finding.path, status="testfail",
                       reason="tests failed with fix applied")
             return {"status": "testfail", "reason": "tests failed with fix applied"}
+
+        # F8-002: the bytes we are about to stage must still be the
+        # model-tested patch (tests ran in an isolated copy; this is the
+        # workdir belt against same-process interference)
+        try:
+            staged_now = (workdir / finding.path).read_bytes().decode("utf-8")
+        except OSError:
+            staged_now = None
+        if staged_now is not None and staged_now.strip() != fixed.strip():
+            return {"status": "error", "reason": "target changed after tests (integrity) — refused"}
 
         _run(["git", "add", "--", finding.path], cwd=workdir)
         commit_env = _sandbox_env()
@@ -433,7 +459,14 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             if "nothing to commit" in (commit.stderr or ""):
                 return {"status": "nofix", "reason": "nothing to commit (patch was a no-op)"}
             return {"status": "error", "reason": f"git commit failed: {commit.stderr[-80:]}"}
-        branch = f"fl4write/fix-{pr.number}-{finding.rule_id[:20]}"
+        # F8-003: a stable hash of head/rule/path/line — plain rule-id
+        # branches collided across fix rounds and findings (non-fast-forward
+        # pushes failed silently)
+        import hashlib as _hl
+        _tag = _hl.blake2b(
+            f"{pr.head_sha}:{finding.rule_id}:{finding.path}:{finding.line}".encode(),
+            digest_size=6).hexdigest()
+        branch = f"fl4write/fix-{pr.number}-{_tag}"
         _run(["git", "branch", "-M", branch], cwd=workdir)
         push_env = _push_token_env(workdir, token)
         askpass_envs.append(push_env)
