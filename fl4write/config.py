@@ -12,6 +12,8 @@ YAML duplicate keys abort too (merge-conflict/regenerator corruption class).
 from __future__ import annotations
 
 import logging
+import types as _types
+import typing
 from pathlib import Path
 
 import yaml
@@ -227,9 +229,68 @@ def check_model_keys(config: RepoConfig) -> None:
             log.warning("%s.key_env %s is not set in the environment (expect 401s)", name, route.key_env)
 
 
+def _iter_model_fields(obj):
+    """Yield (attribute-name, value) for bool-annotated fields of a pydantic
+    model, descending into nested models."""
+    import types as _types
+
+    for name, field in obj.model_fields.items():
+        ann = field.annotation
+        # unwrap Optional[bool]
+        origin = typing.get_origin(ann)
+        if origin is typing.Union or origin is _types.UnionType:
+            args = [a for a in typing.get_args(ann) if a is not type(None)]
+            ann = args[0] if len(args) == 1 and args[0] is bool else ann
+        if ann is bool:
+            yield name, getattr(obj, name)
+    for name, field in obj.model_fields.items():
+        val = getattr(obj, name)
+        if hasattr(val, "model_fields"):  # nested model
+            yield from _iter_model_fields(val)
+
+
+def _assert_strict_bools(raw: dict, model_cls) -> None:
+    """MECE round-7 (sol F7-D009): pydantic COERCES string booleans ('off' ->
+    False) before validation ever sees them — 'strict' models only forbid
+    extra keys. Pre-check the RAW mapping so a templating/quoting mistake
+    refuses at load instead of silently enabling posting or fixes."""
+    for name, field in model_cls.model_fields.items():
+        ann = field.annotation
+        origin = typing.get_origin(ann)
+        if origin is typing.Union or origin is _types.UnionType:
+            args = [a for a in typing.get_args(ann) if a is not type(None)]
+            ann = args[0] if len(args) == 1 else ann
+        if ann is bool and name in raw:
+            v = raw[name]
+            if v is not None and not isinstance(v, bool):
+                raise ValueError(
+                    f"boolean field {name!r} must be a real true/false, got "
+                    f"{v!r} ({type(v).__name__}) — quote or type error")
+        if hasattr(ann, "model_fields") and isinstance(raw.get(name), dict):
+            # nested model configs (fix/omnisweep/...) carry bools too
+            _assert_strict_bools(raw[name], ann)
+
+
+def _warn_missing_forge_credentials(config) -> None:
+    """MECE round-7 (sol F7-D010): every NON-GitHub forge binding needs its
+    own credential env (the CLI mirrors the GH token only to GitHub hosts) —
+    warn at load so an authless Forgejo binding never silently 401s forever."""
+    import os
+
+    from .forges import _is_github_base
+
+    for bname, binding in config.forges.items():
+        if not _is_github_base(binding.api_base) and binding.token_env \
+                and not os.environ.get(binding.token_env):
+            log.warning("forge binding %s (%s): token_env %s is not set in the "
+                        "environment (expect 401s)", bname, binding.api_base,
+                        binding.token_env)
+
+
 def load_config(path: str | Path) -> RepoConfig:
     """Fail-loud loader: config errors abort the cycle, never silently skip."""
     raw = yaml.load(Path(path).read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+    _assert_strict_bools(raw, RepoConfig)  # F7-D009: pre-validation
     config = RepoConfig.model_validate(raw)
     for rid in config.review:
         # MECE round-7 (luna F7-001): rule ids ride into comment backticks
@@ -237,6 +298,7 @@ def load_config(path: str | Path) -> RepoConfig:
         # load, never inject at render
         if len(rid) > 80 or any(ch in rid for ch in ("\n", "\r", "`", "\x00")):
             raise ValueError(f"review rule id {rid!r} contains unsafe characters")
+    _warn_missing_forge_credentials(config)  # F7-D010
     from .capabilities import default_review_rules
     merged = {**default_review_rules(), **config.review}
     config = config.model_copy(update={"review": merged})

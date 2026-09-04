@@ -24,6 +24,10 @@ from .config import ForgeBinding
 from . import renderer
 from .models import PullRequest
 
+import logging
+
+log = logging.getLogger("fl4write.forges")
+
 try:
     from importlib.metadata import PackageNotFoundError, version as _pkg_version
     USER_AGENT = f"fl4write/{_pkg_version('fl4write')}"
@@ -373,17 +377,30 @@ class GitHubAdapter(ForgeAdapter):
         data = self._paginated(f"/repos/{repo}/pulls?state=open", page_size=50)
         prs = []
         for p in data:
+            if not isinstance(p, dict):  # F7-D004: one bad row never kills
+                continue  # the page translation (log-loud below)
+            head = p.get("head")
+            head_sha = head["sha"] if isinstance(head, dict) else ""
+            head_repo = ((head.get("repo") or {}) if isinstance(head, dict) else {}).get("full_name")
+            user = p.get("user") if isinstance(p.get("user"), dict) else {}
+            try:
+                number = int(p["number"])
+            except (KeyError, TypeError, ValueError):
+                number = -1
+            if number <= 0 or not head_sha:
+                log.warning("%s open-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                continue
             prs.append(
                 PullRequest(
                     forge=self.name,
-                    number=p["number"],
+                    number=number,
                     repo=repo,
                     title=p.get("title") or "",
                     body=p.get("body") or "",
-                    head_sha=p["head"]["sha"],
-                    is_fork=bool(p["head"].get("repo") and p["head"]["repo"]["full_name"] != repo),
-                    author=(p.get("user") or {}).get("login", ""),
-                    is_bot_author=str((p.get("user") or {}).get("type", "")).lower() == "bot",
+                    head_sha=head_sha,
+                    is_fork=bool(head_repo and head_repo != repo),
+                    author=user.get("login", ""),
+                    is_bot_author=str(user.get("type", "")).lower() == "bot",
                     merged_at=p.get("merged_at") or "",
                 )
             )
@@ -400,6 +417,12 @@ class GitHubAdapter(ForgeAdapter):
         since = _parse_iso(since_iso)
         prs = []
         for p in data:
+            if not isinstance(p, dict):  # F7-D004: row guard
+                continue
+            head = p.get("head")
+            if not isinstance(head, dict):
+                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                continue
             merged_raw = p.get("merged_at") or ""
             if not merged_raw:
                 continue
@@ -410,17 +433,27 @@ class GitHubAdapter(ForgeAdapter):
             # already-terminal ones are skipped free by the head-SHA guard.
             if since is not None and merged is not None and merged < since:
                 continue
+            head_sha = head.get("sha") or ""
+            head_repo = ((head.get("repo") or {}) if isinstance(head.get("repo"), dict) else {}).get("full_name")
+            user = p.get("user") if isinstance(p.get("user"), dict) else {}
+            try:
+                number = int(p["number"])
+            except (KeyError, TypeError, ValueError):
+                number = -1
+            if number <= 0 or not head_sha:
+                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                continue
             prs.append(
                 PullRequest(
                     forge=self.name,
-                    number=p["number"],
+                    number=number,
                     repo=repo,
                     title=p.get("title") or "",
                     body=p.get("body") or "",
-                    head_sha=p["head"]["sha"],
-                    is_fork=bool(p["head"].get("repo") and p["head"]["repo"]["full_name"] != repo),
-                    author=(p.get("user") or {}).get("login", ""),
-                    is_bot_author=str((p.get("user") or {}).get("type", "")).lower() == "bot",
+                    head_sha=head_sha,
+                    is_fork=bool(head_repo and head_repo != repo),
+                    author=user.get("login", ""),
+                    is_bot_author=str(user.get("type", "")).lower() == "bot",
                     merged_at=merged_raw,
                 )
             )
@@ -437,14 +470,25 @@ class GitHubAdapter(ForgeAdapter):
         ):
             if not isinstance(c, dict):  # F6-312: row-shape guard
                 continue
-            body = c.get("body") or ""
-            author = ((c.get("user") or {}).get("login") or "").lower()
+            cid = c.get("id")
+            cbody = c.get("body")
+            cuser = c.get("user")
+            if not isinstance(cid, int) or cid <= 0 \
+                    or not isinstance(cbody, str) \
+                    or not isinstance(cuser, dict) \
+                    or not isinstance(cuser.get("login"), str):
+                # F7-D005: rows need usable identity fields before marker
+                # matching — malformed forge content never escapes
+                log.warning("%s comment row malformed (skipped): %s", self.name, str(c)[:120])
+                continue
+            body = cbody
+            author = cuser.get("login").lower()
             # Marker substring alone is hijackable by any commenter (review
             # finding 2): require BOTH marker and our own authorship.
             if any(prefix in body for prefix in renderer.LEGACY_MARKER_PREFIXES) and is_own_identity(
                 author, self.bot_login
             ):
-                return c["id"], body
+                return cid, body
         return None
 
     def create_comment(self, repo: str, number: int, body: str) -> int:
@@ -500,9 +544,16 @@ class GitHubAdapter(ForgeAdapter):
 
     def open_issue(self, repo: str, title: str, body: str) -> int | None:
         try:
-            return self._call("POST", f"/repos/{repo}/issues", {"title": title, "body": body})["number"]
+            resp = self._call("POST", f"/repos/{repo}/issues", {"title": title, "body": body})
         except ForgeError:
             return None
+        # F7-D006: key presence is not a usable identifier — {'number': null}
+        # must read as an UNCERTAIN write (None -> caller retries), never a
+        # false success that later mints duplicate audit issues
+        if not isinstance(resp, dict):
+            return None
+        n = resp.get("number")
+        return n if isinstance(n, int) and n > 0 else None
 
     def update_issue(self, repo: str, number: int, body: str) -> bool:
         try:
@@ -526,18 +577,32 @@ class ForgejoAdapter(ForgeAdapter):
         data = self._paginated(f"/repos/{repo}/pulls?state=open", page_size=50)
         prs = []
         for p in data:
-            head_repo = ((p.get("head") or {}).get("repo") or {}).get("full_name")
+            if not isinstance(p, dict):  # F7-D004: row guard
+                continue
+            head = p.get("head")
+            if not isinstance(head, dict):
+                log.warning("%s open-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                continue
+            head_repo = ((head.get("repo") or {}) if isinstance(head.get("repo"), dict) else {}).get("full_name")
+            user = p.get("user") if isinstance(p.get("user"), dict) else {}
+            try:
+                number = int(p["number"])
+            except (KeyError, TypeError, ValueError):
+                number = -1
+            if number <= 0 or not head.get("sha"):
+                log.warning("%s open-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                continue
             prs.append(
                 PullRequest(
                     forge=self.name,
-                    number=p["number"],
+                    number=number,
                     repo=repo,
                     title=p.get("title") or "",
                     body=p.get("body") or "",
-                    head_sha=(p.get("head") or {}).get("sha", ""),
+                    head_sha=head.get("sha", ""),
                     is_fork=bool(head_repo and head_repo != repo),
-                    author=(p.get("user") or {}).get("login", ""),
-                    is_bot_author=str((p.get("user") or {}).get("type", "")).lower() == "bot",
+                    author=user.get("login", ""),
+                    is_bot_author=str(user.get("type", "")).lower() == "bot",
                     merged_at=p.get("merged_at") or "",
                 )
             )
@@ -586,12 +651,23 @@ class ForgejoAdapter(ForgeAdapter):
         ):
             if not isinstance(c, dict):  # F6-312: row-shape guard
                 continue
-            body = c.get("body") or ""
-            author = ((c.get("user") or {}).get("login") or "").lower()
+            cid = c.get("id")
+            cbody = c.get("body")
+            cuser = c.get("user")
+            if not isinstance(cid, int) or cid <= 0 \
+                    or not isinstance(cbody, str) \
+                    or not isinstance(cuser, dict) \
+                    or not isinstance(cuser.get("login"), str):
+                # F7-D005: rows need usable identity fields before marker
+                # matching — malformed forge content never escapes
+                log.warning("%s comment row malformed (skipped): %s", self.name, str(c)[:120])
+                continue
+            body = cbody
+            author = cuser.get("login").lower()
             if any(prefix in body for prefix in renderer.LEGACY_MARKER_PREFIXES) and is_own_identity(
                 author, self.bot_login
             ):
-                return c["id"], body
+                return cid, body
         return None
 
     def create_comment(self, repo: str, number: int, body: str) -> int:
@@ -709,9 +785,16 @@ class ForgejoAdapter(ForgeAdapter):
 
     def open_issue(self, repo: str, title: str, body: str) -> int | None:
         try:
-            return self._call("POST", f"/repos/{repo}/issues", {"title": title, "body": body})["number"]
+            resp = self._call("POST", f"/repos/{repo}/issues", {"title": title, "body": body})
         except ForgeError:
             return None
+        # F7-D006: key presence is not a usable identifier — {'number': null}
+        # must read as an UNCERTAIN write (None -> caller retries), never a
+        # false success that later mints duplicate audit issues
+        if not isinstance(resp, dict):
+            return None
+        n = resp.get("number")
+        return n if isinstance(n, int) and n > 0 else None
 
     def update_issue(self, repo: str, number: int, body: str) -> bool:
         try:

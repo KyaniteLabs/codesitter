@@ -2655,3 +2655,69 @@ class TestMECERound7SolPins:
         ad = self._fj()
         ad._call = lambda m, path: None  # 2xx null repo envelope
         assert ad.list_tree_files("o/r") is None
+
+
+class TestMECERound7SolPins2:
+    """Round-7 sol DOM-D follow-on: PR row translation guards (F7-D004),
+    comment identity fields (F7-D005), usable issue ids (F7-D006), strict
+    bools (F7-D009)."""
+
+    @staticmethod
+    def _gh():
+        from fl4write.forges import GitHubAdapter
+        ad = GitHubAdapter(cfg.ForgeBinding(
+            role="primary", api_base="https://api.github.com", token_env="GHT"))
+        ad._headers = lambda: {}
+        return ad
+
+    def test_pr_row_guards_keep_valid_siblings(self):
+        ad = self._gh()
+        ad._paginated = lambda path, page_size=50, max_pages=10: [
+            None,
+            {"number": 1, "title": "t", "head": {"sha": "a" * 40, "repo": {"full_name": "o/r"}},
+             "user": {"login": "dev", "type": "User"}, "merged_at": ""},
+            {"number": "junk"},
+        ]
+        out = ad.list_open_prs("o/r")
+        assert [p.number for p in out] == [1]
+
+    def test_comment_identity_fields_required(self):
+        ad = self._gh()
+        rows = [
+            {"id": None, "body": "x", "user": {"login": "a"}},
+            {"id": 1, "body": 42, "user": {"login": "a"}},
+            {"id": 2, "body": "x", "user": "scalar"},
+            {"id": 3, "body": "x", "user": {"login": 7}},
+        ]
+        ad._paginated = lambda path, page_size=100, max_pages=100: rows
+        assert ad.get_persistent_comment("o/r", 1) is None  # all malformed
+        ad._paginated = lambda path, page_size=100, max_pages=100: [
+            {"id": 9, "body": "fl4write:v1: marker body", "user": {"login": "fl4write[bot]"}}]
+        got = ad.get_persistent_comment("o/r", 1)
+        assert got == (9, "fl4write:v1: marker body")
+
+    def test_issue_ids_must_be_positive_ints(self):
+        for payload, expect in (({}, None), ({"number": None}, None),
+                                ({"number": "5"}, None), ({"number": 7}, 7)):
+            ad = self._gh()
+            ad._call = lambda m, path, data=None: payload
+            assert ad.open_issue("o/r", "t", "b") == expect
+
+    def test_quoted_bool_values_refused(self, tmp_path):
+        from fl4write.config import load_config
+
+        p = tmp_path / "c.yaml"
+        p.write_text("repo: o/r\n"
+                     "forges:\n  github: {role: primary, api_base: https://api.github.com, token_env: GHT}\n"
+                     "model: {endpoint: http://m/v1, model: t, key_env: K}\n"
+                     'shadow: "off"\nreview:\n  secrets: x\n', encoding="utf-8")
+        try:
+            load_config(p)
+            raise AssertionError("quoted 'off' silently flipped the shadow control")
+        except ValueError:
+            pass
+        p.write_text("repo: o/r\n"
+                     "forges:\n  github: {role: primary, api_base: https://api.github.com, token_env: GHT}\n"
+                     "model: {endpoint: http://m/v1, model: t, key_env: K}\n"
+                     "shadow: false\nreview:\n  secrets: x\n", encoding="utf-8")
+        assert load_config(p).shadow is False
