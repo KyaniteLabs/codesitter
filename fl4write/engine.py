@@ -162,7 +162,39 @@ def _review_pr(
     try:
         doc = analyze(pr, diff_files, diff_text, config)
     except ModelUnavailable as exc:
+        deterministic = [f for f in findings if f.category == "CI"]
+        if deterministic:
+            # MECE round-6 (luna-max F6-C007): the deterministic verify
+            # finding must never be swallowed by a model outage — post it now
+            # (verify evidence is model-independent), then mark reviewed
+            rh = f"{pr.head_sha[:12]}{len(deterministic):04x}"
+            body = renderer.render_review(
+                pr, deterministic, config, rh, [], diff_truncated=False,
+                post_merge=post_merge)
+            if config.shadow:
+                if shadow_sink:
+                    shadow_sink(config.repo, pr.number, body)
+            else:
+                existing = primary.get_persistent_comment(config.repo, pr.number)
+                if existing:
+                    primary.update_comment(config.repo, pr.number, existing[0], body)
+                else:
+                    primary.create_comment(config.repo, pr.number, body)
+            state.mark_reviewed(st, pr.number, pr.head_sha,
+                                f"shadow:{len(deterministic)}" if config.shadow
+                                else f"reviewed:{len(deterministic)}")
+            report.reviewed += 1
+            report.alerts.append(
+                f"#{pr.number}: model unavailable — deterministic verify finding posted "
+                f"(model analysis deferred for this SHA)")
+            return "reviewed"
         report.model_unavailable += 1
+        # MECE round-6 (luna-max F6-C005): shadow runs must not consume the
+        # LIVE model-failure counters or reach the live model-failed-cap — the
+        # live cutover then never retries the SHA
+        if config.shadow:
+            log.warning("model unavailable for %s#%s (shadow): %s", config.repo, pr.number, exc)
+            return "model-unavailable"
         key = f"{pr.number}:{pr.head_sha[:10]}"
         fails = int(st.get("model_failures", {}).get(key, 0)) + 1
         st.setdefault("model_failures", {})[key] = fails
@@ -340,7 +372,22 @@ def _post_merge_sweep(
         # UltraQA round 3: shape drift degrades the lane, never crashes
         report.alerts.append(f"post-merge listing degraded (skipped this cycle): {exc}")
         return set()
+    if not isinstance(merged_prs, list):
+        # MECE round-6 (luna-max F6-C012): a truthy non-list envelope
+        # (dict/None) crashed the row filter below — degrade loudly
+        report.alerts.append(
+            f"post-merge listing wrong shape ({type(merged_prs).__name__}; skipped this cycle)")
+        return set()
+    _raw_rows = merged_prs
     merged_prs = [p for p in merged_prs if isinstance(p, PullRequest)]
+    if len(merged_prs) != len(_raw_rows):
+        first_bad = next(i for i, r in enumerate(_raw_rows) if not isinstance(r, PullRequest))
+        report.alerts.append(
+            f"post-merge: {len(_raw_rows) - len(merged_prs)} malformed merged rows "
+            f"(first at position {first_bad}) — watermark will NOT advance past them")
+        _row_gap = first_bad  # terminal may never cross the gap
+    else:
+        _row_gap = -1
 
     # The cap bounds MODEL WORK (reviews), not list position: PRs already
     # terminal at this SHA (reviewed while open, dependency-skipped) pass
@@ -405,8 +452,13 @@ def _post_merge_sweep(
     elif not config.shadow and isinstance(st.get("pm_shadow_seen"), dict):
         st.pop("pm_shadow_seen", None)
     if terminal:
+        if _row_gap >= 0 and terminal > _row_gap:
+            # MECE round-6 (luna-max F6-C013): never advance past a malformed
+            # row — the sweep re-lists it next cycle and the alert persists
+            terminal = _row_gap
         terminal_prs = [p for p in merged_prs[:terminal]]
-        state.advance_merged_watermark(st, terminal_prs[-1].merged_at)
+        if terminal_prs:
+            state.advance_merged_watermark(st, terminal_prs[-1].merged_at)
     return considered
 
 
@@ -819,6 +871,12 @@ def _retro_sweep(
     head-SHA records (suspenders). Returns considered numbers for prune."""
     from datetime import datetime, timedelta, timezone
 
+    if config.shadow:
+        # MECE round-6 (luna-max F6-C006): retro under shadow is a dry run
+        # with no consumer and every outcome path leaked live state (seen
+        # belts, cursors, clean/deferred/park records) — skip entirely.
+        log.info("retro: shadow mode — sweep skipped (dry-run law)")
+        return set()
     if st.get("retro_complete"):
         return set()
     boundary = (
@@ -1115,7 +1173,10 @@ def _ci_watch_step(
         # the analyzer, so the scrub that protects posted findings doesn't run)
         summaries.append(f"- **{scrub.inline(name, 60)}** — {scrub.inline(conclusion, 20)}"
                          + (f": {scrub.inline(summary, 300)}" if summary else ""))
-        anns = primary.check_annotations(config.repo, run.get("id")) or []
+        _anns_raw = primary.check_annotations(config.repo, run.get("id"))
+        # MECE round-6 (luna-max F6-C012): adapter envelopes are forge-
+        # external — a truthy non-list (dict/None) used to crash the slice
+        anns = _anns_raw if isinstance(_anns_raw, list) else []
         for a in anns[: config.ci_watch.max_annotations]:
             if not isinstance(a, dict):  # MECE round-4 (luna F4-005): null rows
                 continue
@@ -1207,10 +1268,11 @@ def _ci_watch_step(
             report.alerts.append(f"ci_watch escalation failed for {config.repo}: {exc}")
     elif opened:
         st[f"ci_acted:{head}"] = True
-    else:
-        # no fix opened and no escalation channel (or shadow): acting again
-        # next cycle changes nothing — mark acted to keep the red-head count
-        # honest (one summon per SHA)
+    elif not config.shadow:
+        # no fix opened and no escalation channel: acting again next cycle
+        # changes nothing — mark acted to keep the red-head count honest (one
+        # summon per SHA). MECE round-6 (luna-max F6-C004): shadow runs never
+        # persist the live belt — the live cutover must still act on the head
         st[f"ci_acted:{head}"] = True
 
 
@@ -1322,7 +1384,10 @@ def run_cycle(
             # deadline truncation — empty open_numbers would delete every
             # per-PR record as if the PRs had closed (re-review storms + lost
             # fix-depth/model-failure state on the next healthy cycle)
-            if not listing_failed and not truncated_by_deadline:
+            # MECE round-6 (luna-max F6-C003): never prune under shadow either
+            # — a dry-run must not delete live records
+            if (not listing_failed and not truncated_by_deadline
+                    and not config.shadow):
                 state.prune_closed(st, open_numbers | merged_keep)
 
             if run_issues and config.issues_enabled:

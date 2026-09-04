@@ -50,12 +50,17 @@ class CycleLock:
 
     def _acquire(self) -> bool:
         fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, f"{os.getpid()} {int(time.time())}".encode())
+        # MECE round-6 (luna-max F6-C001): a random token makes ownership
+        # verifiable — __exit__ unlinks only a lock file we still own (a
+        # zombie holder must never unlink the successor's live lock)
+        self._token = f"{os.getpid()} {int(time.time())} {os.urandom(6).hex()}"
+        os.write(fd, self._token.encode())
         os.close(fd)
         return True
 
     def __enter__(self) -> "CycleLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._token = ""
         try:
             self._held = self._acquire()
             return self
@@ -71,10 +76,13 @@ class CycleLock:
                     return self
                 except FileExistsError:
                     continue
-            pid, _, epoch_s = raw.partition(" ")
+            parts = raw.split()
+            # token format: "<pid> <epoch> [<owner-hex>]" — the optional third
+            # field (MECE round-6, luna-max F6-C001) must not confuse the
+            # parse; the first two fields are the contract
             try:
-                pid_i, epoch = int(pid or "0"), int(float(epoch_s or 0))
-            except ValueError:
+                pid_i, epoch = int(parts[0] or "0"), int(float(parts[1] or 0))
+            except (ValueError, IndexError):
                 pid_i, epoch = 0, 0
             # pid 0 / garbage, or lock older than the max age: stale, break it.
             stale_by_age = epoch > 0 and (time.time() - epoch) > LOCK_MAX_AGE
@@ -108,7 +116,20 @@ class CycleLock:
 
     def __exit__(self, *exc: object) -> None:
         if self._held:
-            self.path.unlink(missing_ok=True)
+            # MECE round-6 (luna-max F6-C001): unlink ONLY if the lock file
+            # still carries OUR token — the file may hold a successor's lock
+            # (ours was broken as stale after a long stall)
+            try:
+                cur = self.path.read_text().strip()
+            except FileNotFoundError:
+                cur = ""
+            if cur == self._token:
+                self.path.unlink(missing_ok=True)
+            elif cur:
+                import logging as _log
+                _log.getLogger("fl4write.state").warning(
+                    "cycle lock %s content changed since acquire — leaving the "
+                    "holder's lock in place", self.path)
 
 
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
@@ -171,6 +192,22 @@ def load_state(path: Path) -> dict[str, Any]:
     return json.loads(json.dumps(_FRESH_STATE))
 
 
+def _valid_iso(value: str) -> bool:
+    """MECE round-6 (luna-max F6-C011): ISO-8601-ish UTC stamp check for the
+    persisted watermarks/cursors. Accepts 'YYYY-...T..Z' and '+00:00' forms
+    the engine writes; rejects arbitrary strings like '0000'."""
+    import datetime as _dt
+
+    v = value.strip()
+    if not v:
+        return False
+    try:
+        _dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
+        return True
+    except ValueError:
+        return False
+
+
 def _normalize_aux(data: dict[str, Any]) -> dict[str, Any]:
     """MECE round-5 (sol F5-004): lane belts/counters read back through raw
     int()/comparison operations — a hand-edited or partially-written value of
@@ -180,9 +217,29 @@ def _normalize_aux(data: dict[str, Any]) -> dict[str, Any]:
     out = dict(data)
     for key in ("merged_since", "retro_cursor"):
         v = out.get(key)
-        if v is not None and not isinstance(v, str):
-            log.warning("state %s: non-string %r dropped (bounded reconcile)", key, v)
+        if v is None:
+            continue
+        if not isinstance(v, str) or not _valid_iso(v):
+            # MECE round-6 (luna-max F6-C011): an arbitrary string watermark
+            # ("0000") made the retro sweep skip current PRs and mark the
+            # window COMPLETE — validate ISO semantics, not just type
+            log.warning("state %s: invalid %s %r dropped (bounded reconcile)", key, key, v)
             out.pop(key, None)
+    omni = out.get("omni_findings")
+    if omni is not None:
+        if not isinstance(omni, list):
+            log.warning("state omni_findings: non-list dropped (bounded reconcile)")
+            out.pop("omni_findings", None)
+        else:
+            bad = [r for r in omni if not (isinstance(r, dict)
+                                           and isinstance(r.get("path"), str)
+                                           and isinstance(r.get("rule"), str)
+                                           and isinstance(r.get("sev"), str)
+                                           and isinstance(r.get("msg"), str))]
+            if bad:
+                log.warning("state omni_findings: dropping %d malformed rows (bounded reconcile)",
+                            len(bad))
+                out["omni_findings"] = [r for r in omni if r not in bad]
     for key in ("retro_seen", "retro_parked", "pm_shadow_seen", "retro_shadow_seen",
                 "model_failures", "omni_file_fails"):
         v = out.get(key)

@@ -444,3 +444,19 @@ WRITE, not per feature; diff-test verifiers target the diff's own files as argv 
 '--' with options inserted before the separator; plan envelopes validate shape, not just syntax;
 cd failures exit loudly. 9 findings, 7 regression pins (5 new classes), all red pre-fix.
 
+## 48. Shadow leakage audits must enumerate EVERY live write (2026-09-04, MECE round 6)
+Luna-max re-audited the round-5/6 shadow separation with a per-WRITE sweep and found four more
+live belts a dry run still touched: prune_closed ran on shadow cycles (deleting live records),
+ci_watch's no-op else-branch persisted ci_acted:<head>, model-failure counters/cap were consumed
+by shadow reviews (live cutover then never retried the SHA), and retro's clean/deferred/park
+paths still mutated live state. Same desk pass: the tokenized CycleLock exit must verify
+ownership (a zombie holder must never unlink the successor's lock) — and the new third token
+field BROKE the legacy space-partition parser (live locks parsed as garbage and were stolen),
+caught by the overlap test; watermarks/cursors need SEMANTIC ISO validation, not type checks
+('0000' falsely completed retro); truthy non-list adapter envelopes (dict annotations, None
+merged lists) crashed lanes; the post-merge watermark advanced past malformed row gaps; and the
+deterministic verify finding was swallowed by model outages. Laws: shadow audit per WRITE;
+token ownership verifies before unlink and parsers tolerate their own token format; watermarks
+validate semantics; containers validate envelopes; row gaps stall watermarks; deterministic
+evidence posts independently of the model. 9 fixes, 8 regression pins, all red pre-fix.
+

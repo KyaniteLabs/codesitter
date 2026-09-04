@@ -1678,8 +1678,8 @@ class _SolForge(_R4Forge):
     comments recorded, annotations surface."""
 
     def __init__(self, merged=None, tree=([("a.py", 10)], False), open_issue_result=1,
-                 annotations=None):
-        super().__init__(merged=merged)
+                 annotations=None, open_prs=None):
+        super().__init__(open_prs=open_prs, merged=merged)
         self.tree = tree
         self.open_issue_result = open_issue_result
         self.open_issue_calls = 0
@@ -2090,13 +2090,16 @@ class TestMECERound6SolPins:
         cfg = _sol_config(**cfg_over)
         run_cycle(cfg, sp, get_diff=lambda pr: ({"x.py"}, "diff"))
         st = state_mod.load_state(sp)
-        assert st.get("retro_seen") in (None, {}), "shadow wrote the live seen belt"
-        assert st.get("retro_cursor") is None and not st.get("retro_complete")
-        assert "1" in st.get("retro_shadow_seen", {}), "shadow belt not recorded"
-        # live cutover re-audits (posts) and completes
+        # MECE round-6 (luna-max F6-C006): retro under shadow is a full dry
+        # run — zero state writes of ANY kind (no seen belt, no cursors, no
+        # completion), zero posts
+        assert st.get("retro_seen") in (None, {}) and st.get("retro_cursor") is None
+        assert not st.get("retro_complete") and not st.get("retro_shadow_seen")
+        assert forge.posts == []
+        # live cutover audits from scratch (posts) and completes
         cfg_live = cfg.model_copy(update={"shadow": False})
         run_cycle(cfg_live, sp, get_diff=lambda pr: ({"x.py"}, "diff"))
-        assert forge.posts, "live retro never re-reviewed the shadow-only PR"
+        assert forge.posts, "live retro never re-reviewed after shadow"
         st2 = state_mod.load_state(sp)
         assert st2.get("retro_complete") or st2.get("retro_cursor"), \
             "live retro made no progress after cutover"
@@ -2142,3 +2145,143 @@ class TestMECERound6SolPins:
         m = _re.search(r"(\d+) central configs", readme)
         assert m and int(m.group(1)) == actual, \
             f"README claims {m.group(1) if m else '?'} central configs; repo has {actual}"
+
+
+class TestMECERound6LunaMaxPins:
+    """Round-6 luna-max DOM-C desk: tokenized lock exit (F6-C001), shadow
+    prune/ci/model-cap/retro leakage (F6-C003..C006), deterministic posting
+    on model-down (F6-C007), semantic watermark validation (F6-C011),
+    container guards + row-gap watermark stall (F6-C012/C013)."""
+
+    def test_lock_exit_never_unlinks_successor(self, tmp_path):
+        lock = tmp_path / "c.lock"
+        a = state_mod.CycleLock(lock)
+        a.__enter__()
+        # a successor replaced the file while we were stalled
+        lock.write_text("1 1 successor-token")
+        a.__exit__(None, None, None)
+        assert lock.exists() and "successor-token" in lock.read_text()
+
+    def test_shadow_cycle_never_prunes_live_records(self, tmp_path, monkeypatch):
+        sp = tmp_path / "s.json"
+        recs = {"1": {"head_sha": "a" * 40}, "2": {"head_sha": "b" * 40}}
+        _r4_seed(sp, prs=recs)
+        forge = _SolForge(open_prs=[_r4_pr(number=1)])
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(shadow=True,
+                        omnisweep={"enabled": False},
+                        post_merge={"enabled": False},
+                        retro_audit={"enabled": False})
+        run_cycle(c, sp, get_diff=lambda pr: ({"x.py"}, "diff"),
+                  run_fixes=False)
+        st = state_mod.load_state(sp)
+        assert set(st["prs"]) == {"1", "2"}, "shadow cycle pruned live records"
+
+    def test_shadow_ci_never_persists_acted_belt(self, tmp_path, monkeypatch):
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _R4Forge()
+        forge.annotations = [{"path": "tests/test_x.py", "start_line": 1,
+                              "message": "boom", "level": "failure"}]
+        forge.files = {"tests/test_x.py"}
+        forge.open_prs = []
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(shadow=True, ci_watch={"enabled": True, "escalate_issues": True},
+                        omnisweep={"enabled": False})
+        run_cycle(c, sp, get_diff=lambda pr: ({"x.py"}, "diff"), run_fixes=False)
+        st = state_mod.load_state(sp)
+        assert not any(k.startswith("ci_acted:") for k in st), \
+            "shadow run persisted the live ci_acted belt"
+
+    def test_shadow_model_failures_do_not_consume_live_cap(self, tmp_path, monkeypatch):
+        from fl4write.analyzer import ModelUnavailable
+
+        def boom(pr, files, text, config, mode="pr"):
+            raise ModelUnavailable("down (test)")
+
+        monkeypatch.setattr("fl4write.analyzer.analyze", boom)
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _SolForge(open_prs=[_r4_pr(number=1)])
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(shadow=True, ci_watch={"enabled": False},
+                        omnisweep={"enabled": False}, post_merge={"enabled": False})
+        run_cycle(c, sp, get_diff=lambda pr: ({"x.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert not st.get("model_failures"), "shadow consumed the live failure cap"
+        # live retry still has its full budget
+        cl = c.model_copy(update={"shadow": False})
+        run_cycle(cl, sp, get_diff=lambda pr: ({"x.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert st.get("model_failures", {}).get("1:aaaaaaaaaa") == 1
+
+    def test_deterministic_verify_posts_when_model_is_down(self, tmp_path, monkeypatch):
+        from fl4write.analyzer import ModelUnavailable
+
+        def boom(pr, files, text, config, mode="pr"):
+            raise ModelUnavailable("down (test)")
+
+        monkeypatch.setattr("fl4write.analyzer.analyze", boom)
+        monkeypatch.setattr(
+            "fl4write.executor.verify_diff_tests",
+            lambda pr, config, test_like: Finding(
+                rule_id="tests", severity="Critical", path="tests/test_x.py",
+                line=1, category="CI", message="diff tests FAIL (test)"))
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _SolForge(open_prs=[_r4_pr(number=1)])
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(verify_tests=True, ci_watch={"enabled": False},
+                        omnisweep={"enabled": False}, post_merge={"enabled": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"tests/test_x.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert forge.posts, "deterministic verify finding swallowed by model outage"
+        assert r.reviewed == 1
+        assert st["prs"]["1"].get("last_outcome", "").startswith("reviewed")
+
+    def test_watermark_cursor_semantic_validation(self, tmp_path):
+        from fl4write.state import load_state
+
+        p = tmp_path / "s.json"
+        p.write_text('{"version": 1, "prs": {}, "merged_since": "0000", '
+                     '"retro_cursor": "garbage"}', encoding="utf-8")
+        st = load_state(p)
+        assert "merged_since" not in st and "retro_cursor" not in st
+        p.write_text('{"version": 1, "prs": {}, '
+                     '"merged_since": "2026-09-01T00:00:00Z"}', encoding="utf-8")
+        assert load_state(p)["merged_since"] == "2026-09-01T00:00:00Z"
+
+    def test_annotation_container_guard(self, tmp_path, monkeypatch):
+        class _RawAnn(_R4Forge):
+            def check_annotations(self, repo, check_run_id):
+                return {"not": "a list"}  # truthy non-list raw envelope
+
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _RawAnn()
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(ci_watch={"enabled": True, "escalate_issues": True},
+                        omnisweep={"enabled": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"x.py"}, "diff"), run_fixes=False)
+        assert r is not None  # degraded, never crashed
+
+    def test_postmerge_row_gap_stops_watermark(self, tmp_path, monkeypatch):
+        from fl4write.models import ReviewDoc
+
+        def fake_analyze(pr, files, text, config):
+            return ReviewDoc(pr=pr, findings=[])
+
+        monkeypatch.setattr("fl4write.analyzer.analyze", fake_analyze)
+        sp = tmp_path / "s.json"
+        _r4_seed(sp, merged_since=_r4_date(10))
+        forge = _SolForge(merged=[_r4_pr(number=1, merged_at=_r4_date(3)),
+                                  None,
+                                  _r4_pr(number=2, merged_at=_r4_date(1))])
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(post_merge={"enabled": True, "initial_lookback_h": 168},
+                        ci_watch={"enabled": False}, omnisweep={"enabled": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"x.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert any("malformed merged rows" in a for a in r.alerts)
+        assert st["merged_since"] == _r4_date(3), \
+            "watermark advanced past the malformed row gap"
