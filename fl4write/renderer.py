@@ -70,7 +70,11 @@ def _md_escape_block(text: str) -> str:
     in the posted comment (UltraQA round 1, ADV-04: a scrubbed message still
     rendered "### 🔴 Critical — fake.py:99 — general" as real structure)."""
     out = re.sub(r"(`{3,})", "``", text)
-    return re.sub(r"(?m)^(#{1,6})(?=\s)", lambda m: "\\" + m.group(1), out)
+    # F9-A11: CommonMark treats up to THREE leading spaces as an ATX heading,
+    # and '>' blockquote lines can still carry structure
+    out = re.sub(r"(?m)^( {0,3})(#{1,6})(?=\s)",
+                 lambda m: m.group(1) + "\\" + m.group(2), out)
+    return re.sub(r"(?m)^ {0,3}>", "\\>", out)
 
 
 def parse_finding_lines(body: str) -> list[tuple[str, str, int, str]]:
@@ -83,14 +87,13 @@ def parse_finding_lines(body: str) -> list[tuple[str, str, int, str]]:
 
 
 def path_display(path: str) -> str:
-    """Display form of a repo-controlled path in rendered comments: structure
-    and markdown-emphasis characters removed, credential-shaped runs redacted
-    (terra F1-08, luna F2-003; MECE round-3 M3: a filename like
-    `weird*name*.py` rendered as emphasis). Lifecycle comparisons MUST go
-    through this same transform on both sides (F2-004)."""
+    """Display form of a repo-controlled path in rendered comments: code-span
+    characters replaced, control/bidi scrubbed, credential-shaped runs
+    redacted. F9-A09: '_' and friends are NOT deleted — destructive deletion
+    collapsed distinct paths ('a_b.py' vs 'ab.py') onto one lifecycle
+    identity and suppressed new/resolved markers."""
     out = scrub.scrub(str(path))  # control/bidi chars first (sol F4-005)
-    for ch in ("`", "*", "_", "[", "]", "#"):
-        out = out.replace(ch, "")
+    out = out.replace("`", "'")  # only the code-span terminator is replaced
     return scrub.redact_credentials(out.replace("\n", " ").replace("\r", " "))
 
 
@@ -107,7 +110,7 @@ def render_finding(f: Finding, tone: str, post_merge: bool = False) -> str:
                                 line=f.line, rule=safe_rule),
         "",
     ]
-    parts.append(_md_escape_block(scrub.redact_credentials(f.message)))
+    parts.append(_md_escape_block(scrub.scrub(scrub.redact_credentials(f.message))))  # F9-A10: full scrub belt
     if f.proposal:
         parts += [
             "",
@@ -195,7 +198,10 @@ def render_review(
     out = head + body + footer
 
 
-    scrub.assert_clean(out.replace(MARKER.format(review_hash=review_hash), ""))
+    # F9-A10: validate the CORE body — the bot's own trailing HTML comment
+    # marker is legitimate; everything else must be clean
+    _core = re.sub(r"\n?<!--.*?-->\s*$", "", out)
+    scrub.assert_clean(_core)
     return out
 
 

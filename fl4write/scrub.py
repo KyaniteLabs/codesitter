@@ -122,3 +122,11 @@ def assert_clean(text: str) -> None:
     for pattern in (_DATA_URL_RE, _BASE64_IMG_RE, _REMOTE_IMG_RE, _REMOTE_SRC_RE, _MARKER_RE):
         if pattern.search(text):
             raise ValueError(f"unscrubbed pattern {pattern.pattern[:30]} in output")
+    # F9-A10: HTML comments and hidden-content tags can restructure a posted
+    # review even when every regex pattern above is clean (markers are
+    # STRUCTURAL: bare words like 'hidden' or diff arrows must not trip)
+    low = text.lower()
+    if "<!--" in low or re.search(r"<\s*/?\s*(style|script|template|iframe|svg|math)", low) \
+            or re.search(r"(?:display|visibility)\s*:\s*(?:none|hidden)", low) \
+            or re.search(r"<\s*[a-z]+[^>]*\bhidden\b", low):
+        raise ValueError("unscrubbed html comment/hidden structure in output")

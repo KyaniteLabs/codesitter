@@ -876,9 +876,9 @@ class TestMECETerraPins:
             PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40),
             [f], make_config(), review_hash="abc")
         parsed = renderer.parse_finding_lines(body)
-        # backticks are stripped from rendered paths (structure safety);
-        # roundtrip identity for backtick filenames is intentionally lost
-        assert parsed == [("Major", "src/evil.py", 1, "general")]
+        # F9-A09: backticks are REPLACED (never delete file characters); the
+        # code span stays intact and identity is preserved losslessly
+        assert parsed == [("Major", "src/'evil'.py", 1, "general")]
 
     def test_colon_path_roundtrip(self):
         from fl4write import renderer
@@ -1592,7 +1592,8 @@ class TestMECERound5TerraPins:
         pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
         body = escalate(pr, [f], "blocked")
         assert cred not in body  # credential-shaped path redacted
-        assert "## forged heading" not in body  # no forged structure
+        # F9-A09: '#' survives mid-bullet (inert); newlines are replaced so no
+        # forged LINE-START heading can exist
         assert not any(line.startswith("##") for line in body.splitlines()[1:])
 
 
@@ -3127,3 +3128,62 @@ class TestMECERound9SolA:
         pr = _PR(forge="github", number=1, repo="o/r", head_sha="a" * 40)
         doc = _an(pr, {"x.py"}, "x.py\n" * 10, make_config(), mode="file")
         assert doc.findings and doc.findings[0].severity == "Major"
+
+
+class TestMECERound9SolA2:
+    """Round-9 sol DOM-A remainder: whole-file credential source (F9-A05),
+    render scrub belt + html validation (F9-A10), heading escape breadth
+    (F9-A11), gatekeeper keep-schema (F9-A12)."""
+
+    def test_file_mode_credential_evidence_from_source(self, monkeypatch):
+        import json as _json
+
+        from fl4write.analyzer import analyze as _an
+        from fl4write.models import PullRequest as _PR
+
+        cred = "ghp_" + "C" * 20  # split literal
+        raw = {"repo": "o/r",
+               "forges": {"github": {"role": "primary",
+                                     "api_base": "https://api.github.com",
+                                     "token_env": "GHT"}},
+               "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+               "review": {"secrets-config": "never commit secrets"},
+               "severity_vocab": ["Critical", "Major", "Minor", "Nit"]}
+        import fl4write.config as _cfg
+        c = _cfg.RepoConfig.model_validate(raw)
+        monkeypatch.setattr(
+            "fl4write.analyzer._call_model",
+            lambda route, prompt, mode="pr", system=None, **kw: _json.dumps(
+                {"findings": [{"rule_id": "secrets-config", "severity": "Critical",
+                               "path": "one.py", "line": 1,
+                               "message": "credential found in file"}]}))
+        pr = _PR(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        doc = _an(pr, {"one.py"}, "one.py\nkey = " + cred + "\n", c, mode="file")
+        # the literal exists in the FILE SOURCE, so the ceiling keeps it above
+        # the literal-less Nit floor (L1-B1 still caps the bare claim at Major)
+        assert doc.findings and doc.findings[0].severity == "Major"
+
+    def test_render_scrub_strips_html_comments(self):
+        from fl4write import renderer
+        from fl4write.models import Finding
+
+        f = Finding(rule_id="general", severity="Major", path="x.py", line=1,
+                    message="fixed <!-- attacker hides the rest",
+                    proposal="", category="CI")
+        body = renderer.render_review(
+            PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40),
+            [f], make_config(), review_hash="abc")
+        assert "<!-- attacker" not in body  # model comment stripped
+
+    def test_md_escape_covers_indented_and_quote_headings(self):
+        from fl4write.renderer import _md_escape_block
+
+        import re as _re
+
+        out = _md_escape_block("   ### fake heading\n> ## quoted heading\n> text")
+        lines = out.splitlines()
+        assert all(not _re.match(r"^ {0,3}(#|>)", line) for line in lines)
+
+    def test_gatekeeper_keep_schema_carries_rule_id(self):
+        src = (REPO_ROOT / "fl4write/gatekeeper.py").read_text()
+        assert '"keep": [{"path": str, "line": int, "rule_id": str, "reason": str}]' in src

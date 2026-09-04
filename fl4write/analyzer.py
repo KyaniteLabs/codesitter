@@ -461,7 +461,10 @@ def analyze(
             _tel.emit("parse", model=route.model, ok=True)
             break  # transport + parse both good
         except ValueError as exc:
-            _tel.record_route(route.model, ok=True, latency_s=0.0, parse_ok=False)
+            # F9-A13: the physical attempt was ALREADY recorded once inside
+            # _call_model (ok=True with latency/tokens) — a parse failure is a
+            # parse signal, NOT a second route call (this used to double
+            # count and report failed routes as 2/2 healthy)
             _tel.emit("parse", model=route.model, ok=False, error=str(exc)[:100])
             log.warning("route %s parse failed for %s#%s: %s", route.model, pr.repo, pr.number, exc)
             last_err = exc
@@ -603,6 +606,11 @@ def analyze(
     for f in findings:
         if f.severity == "Critical" and f.rule_id in _SECRET_FAMILY:
             chunk = diff_chunks.get(f.path, "")
+            if mode == "file" and not chunk:
+                # F9-A05: whole-file mode has no hunks — the FILE ITSELF is
+                # the anchored source for credential evidence (message text is
+                # redacted pre-render, so it can never be the evidence)
+                chunk = diff_text or ""
             has_literal = _has_credential(chunk) or _has_credential(f.message)
             if not has_literal:
                 f.severity = "Nit"
