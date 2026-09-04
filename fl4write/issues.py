@@ -34,7 +34,9 @@ _TRIAGE_SYSTEM = (
     "under 100 words. Never claim a fix exists unless the law mentions it."
 )
 
-_URGENCY_MARKER = {"critical": "🚨", "high": "⚠️", "medium": "", "low": ""}
+_URGENCY_MARKER = {"high": "⚠️", "medium": "", "low": ""}
+# MECE round-2 (M3 DOM-B): the triage contract is low|medium|high — a
+# "critical" urgency the model was never asked for cannot exist
 
 
 def collect_new_issues(forge: ForgeAdapter, repo: str, last_number: int,

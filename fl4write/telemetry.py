@@ -107,7 +107,10 @@ def calibration_snapshot(recent: int = 500) -> dict[str, Any]:
             m = models.setdefault(str(ev.get("model", "?")), {"calls": 0, "fails": 0, "tokens": 0})
             m["calls"] += 1
             m["fails"] += int(not ev.get("ok", True))
-            m["tokens"] += int(ev.get("completion_tokens") or 0) + int(ev.get("prompt_tokens") or 0)
+            # MECE round-2 (M3 DOM-B): provider usage fields can arrive as
+            # strings ("unknown") — never let the snapshot crash on them
+            m["tokens"] += (_safe_int(ev.get("completion_tokens"))
+                            + _safe_int(ev.get("prompt_tokens")))
     if not models:
         return {}
     out = {}

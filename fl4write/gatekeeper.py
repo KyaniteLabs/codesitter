@@ -136,7 +136,7 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
                 # (path,line) match WITHOUT rule match is ambiguous (Sol#3):
                 # only apply when exactly one finding holds that line
                 same_line = [g for g in kept if (g.path, g.line) == (f.path, f.line)]
-                if len(same_line) == 1 and (f.path, f.line) not in {(p, l) for p, l, _ in applied}:
+                if len(same_line) == 1 and (f.path, f.line) not in {(p, ln0) for p, ln0, _ in applied}:
                     target = next((v for (p, ln, r), v in demote.items()
                                    if (p, ln) == (f.path, f.line)), None)
             if key3 in applied:
