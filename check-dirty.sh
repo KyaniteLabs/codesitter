@@ -8,7 +8,7 @@ U=$(git status --porcelain | grep -c '^??' || true)
 M=$(git status --porcelain | grep -v '^??' | grep -c . || true)
 TOTAL=$((U + M))
 if [ "$TOTAL" -gt 0 ]; then
-  echo "ALERT: $U untracked + $M modified files in the runner config home — invisible to the nucbox runner until committed"
+  echo "ALERT: $U untracked + $M changed files (modified/added/deleted/renamed) in the runner config home — invisible to the nucbox runner until committed"
   git status --porcelain | head -8
   exit 1
 fi
