@@ -992,7 +992,6 @@ class TestMECERound2LunaPins:
         f = Finding(rule_id="general", severity="Major", path="src/`x`.py", line=1,
                     category="CI", message="m", proposal="")
         pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
-        body1 = renderer.render_review(pr, [f], make_config(), review_hash="abc")
         prev = [Finding(rule_id="general", severity="Major", path="src/`x`.py",
                         line=1, category="CI", message="m", proposal="")]
         body2 = renderer.render_review(pr, [f], make_config(), review_hash="abc",
