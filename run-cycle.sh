@@ -9,7 +9,11 @@ set -uo pipefail
 LOG=~/workspaces/fl4write/runner.log
 
 # One runner at a time (worst case 31 x 900s can exceed the hourly cron interval).
-exec 9>/tmp/fl4write-runner.lock
+# MECE round-1 (glm F1-5): the lock lived in WORLD-WRITABLE /tmp — any local
+# user could hold or symlink it and silently suppress every cycle. It now
+# lives in the runner's own ~/.fl4write state dir.
+mkdir -p ~/.fl4write
+exec 9>~/.fl4write/runner.lock
 flock -n 9 || exit 0
 
 export CODESITTER_GITHUB_TOKEN=$(gh auth token 2>/dev/null)
@@ -45,6 +49,11 @@ fi
 # (Sol#1: a dead scheduler used to look like a healthy empty cycle).
 mkdir -p logs
 PLAN=$(python3 -m fl4write.tiers --plan *.fl4write.yaml 2>>"$LOG")
+# MECE round-1 (glm F1-1): also refuse a plan that is not JSON at all
+case "$PLAN" in
+    ""|'{'*) ;;
+    *) PLAN="" ;;
+esac
 if [ $? -ne 0 ] || [ -z "$PLAN" ]; then
     echo "$(date -Iseconds) ERR: tier scheduler failed — fleet NOT cycled this hour" >> "$LOG"
     exit 1
@@ -69,6 +78,9 @@ NPROC=$(nproc 2>/dev/null || echo 4)
 POOL_REQ=${FL4WRITE_POOL:-4}
 [[ "$POOL_REQ" =~ ^[0-9]+$ ]] || POOL_REQ=4
 POOL=$(( POOL_REQ < NPROC ? (POOL_REQ < 4 ? POOL_REQ : 4) : (NPROC < 4 ? NPROC : 4) ))
+# MECE round-1 (glm F1-2): FL4WRITE_POOL=0 validated as numeric but made
+# xargs -P 0 run UNLIMITED workers — floor the pool at 1
+[ "$POOL" -lt 1 ] && POOL=1
 
 run_one() {
     f="$1"

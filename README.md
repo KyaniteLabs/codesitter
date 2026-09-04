@@ -58,24 +58,23 @@ Run in shadow mode (`shadow: true`) first — findings log, nothing posts.
 Cutover checklist: 48h shadow diff reviewed → host decision recorded (always-on
 host OR explicitly accepted sleep gap) → PAT scopes enumerated + rotation set.
 
-## Status — v0.4.0 ALL COMPONENTS BUILT (pilot live on 31 repos)
+## Status — v0.4+ production (fleet of 129 central configs; see PILOT.md)
 
-**v0.2.0 adds the four remaining planned components:**
-- **Fix-lane executor** (`executor.py`): real worktree → model patch → test → PR → CI-gated merge of OWN PRs (authorship asserted in code). Closes the loop: FL4WRITE can now FIX what it finds, not just report it.
-- **Gatekeeper nit-filter** (`gatekeeper.py`): staff-engineer second pass that kills nits before posting (fail-open on model down). The Greptile 79%-nits lesson, implemented.
-- **Issues lane** (`issues.py`): GitHub + Forgejo issue triage — duplicate detection, label routing, answer drafting, regression flags. Comment-only (never closes or reassigns). Enable via `--issues` flag.
-- **Acceptance metrics** (`metrics.py`): address-rate tracking per cycle (surfaced as `acceptance=NN%` in the runner report once findings accumulate). The quality signal that tells us if findings are being acted on.
-
+All five review modes live (open-PR, post-merge, retro audit, ci_watch,
+omnisweep) plus gatekeeper, issues lane, verify-tests and acceptance metrics.
 **Usage:** `python3 -m fl4write.cli <config> [--live] [--fixes] [--issues]`
+(mode flag typos are refused — unknown flags exit 2).
 
-v0.4.0 runs in production on **31 repos** (see PILOT.md) — all four lanes
-live (review, gatekeeper, fix, issues), posting as `fl4write[bot]`. 60+
-tests green; the build has passed two adversarial gates (the original 8-blocker
-review, and the 2026-09-01 six-lane audit — ~60 findings fixed; see
-LEARNINGS.md #25). The runner is a nucbox crontab (`0 * * * *`) executing
-`run-cycle.sh`; the zcode-hosted laptop automation was retired 2026-09-01
-(single-host law — see LEARNINGS #17). PM seat: see fl4write issue #3 (the
-PM-2 handoff charter). Roadmap on map #63: post-merge review mode (top priority), GitHub-App event
-trigger (v2), and **model-routing transition: a local multi-model inference
-floor with a consensus system is being built by the CEO** — configs will
-migrate off single-route deepseek when it lands.
+Current fleet state (2026-09-04, MECE audit round 1): **129 central configs**
+across GitHub + Forgejo cycling ~100 repos/hour on the nucbox runner
+(`run-cycle.sh`, hourly crontab, single-host law — LEARNINGS #17). **405
+tests + 3 live-eval green**, ruff clean, CI on every push. Quality loop on
+issue #5; desk charter + incident history on issue #3 and map #63.
+
+Honest status line (post 2026-09-03 adjudication): the bot is NOT yet
+declared fit-for-use at scale — the desk's own adjudicated sample found the
+majority of posted Criticals were false positives (see #5 and LEARNINGS
+#38-42). Severity-integrity gates, execution-evidence test gating, adapter
+containment and the scrub/injection surface were rebuilt under the readiness
+gauntlet; phase-2 citation grounding (findings must quote the reviewed
+code's bytes) is the remaining gate before re-quoting Q1.

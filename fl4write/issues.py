@@ -37,7 +37,8 @@ _TRIAGE_SYSTEM = (
 _URGENCY_MARKER = {"critical": "🚨", "high": "⚠️", "medium": "", "low": ""}
 
 
-def collect_new_issues(forge: ForgeAdapter, repo: str, last_number: int) -> list[dict[str, Any]]:
+def collect_new_issues(forge: ForgeAdapter, repo: str, last_number: int,
+                       retry: set[int] | None = None) -> list[dict[str, Any]]:
     """Fetch open issues with number > last_number, PAGINATED and ascending.
 
     Single-page-30 was a silent permanent-skip: GitHub sorts newest-first,
@@ -52,10 +53,12 @@ def collect_new_issues(forge: ForgeAdapter, repo: str, last_number: int) -> list
         all_issues = all_issues if isinstance(all_issues, list) else []
     # UltraQA round 3: row-shape guard — garbage rows from a half-parsed forge
     # response must not crash the issues lane
+    retry = retry or set()
     fresh = [i for i in all_issues
              if isinstance(i, dict)
              and isinstance(i.get("number"), int)
-             and i["number"] > last_number and "pull_request" not in i]
+             and (i["number"] > last_number or i["number"] in retry)
+             and "pull_request" not in i]
     return sorted(fresh, key=lambda i: i.get("number", 0))
 
 
@@ -151,16 +154,22 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
     summary = {"triaged": 0, "skipped": 0, "errors": 0}
 
     try:
-        new_issues = collect_new_issues(forge, config.repo, last_num)
+        retry = set(st.get("issues_retry", []))
+        new_issues = collect_new_issues(forge, config.repo, last_num, retry=retry)
     except ForgeError as exc:
         log.warning("issues collect failed for %s: %s", config.repo, exc)
         return summary
 
+    # MECE round-1 (luna F1-07): a failed triage must RETRY — a later
+    # success used to advance the watermark past it forever
     for issue in new_issues:
         num = issue.get("number", 0)
+        if num in retry:
+            retry.discard(num)
         triage = triage_issue(issue, config)
         if triage is None:
             summary["errors"] += 1
+            retry.add(num)
             continue
 
         if config.shadow:
@@ -194,4 +203,5 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
 
         st["last_triaged_number"] = max(st.get("last_triaged_number", 0), num)
 
+    st["issues_retry"] = sorted(retry)
     return summary

@@ -547,8 +547,23 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
             if not head_ref.startswith("fl4write/"):
                 continue
             author = (pr_data.get("user") or {}).get("login", "")
-            checks = _gh_api("GET", f"/repos/{config.repo}/commits/{pr_data['head']['sha']}/check-runs")
-            runs = [c for c in checks.get("check_runs", []) if c.get("status") == "completed"]
+            # MECE round-1 (luna F1-05): check-runs must be PAGINATED — the
+            # default page (~100) hid failing runs on CI-heavy repos, which
+            # would let the merge gate bless a red PR as green
+            page = 1
+            check_runs: list[dict] = []
+            while True:
+                checks = _gh_api(
+                    "GET",
+                    f"/repos/{config.repo}/commits/{pr_data['head']['sha']}/check-runs"
+                    f"?per_page=100&page={page}")
+                batch = checks.get("check_runs") or []
+                check_runs += batch
+                if len(batch) < 100:
+                    break
+                page += 1
+            runs = [c for c in check_runs if c.get("status") == "completed"]
+            pending = [c for c in check_runs if c.get("status") != "completed"]
             pending = [c for c in checks.get("check_runs", []) if c.get("status") != "completed"]
             # Non-vacuous gate: no checks at all is NOT green; pending runs
             # are NOT green (all([]) used to bless both).
