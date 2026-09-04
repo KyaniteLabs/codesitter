@@ -255,13 +255,17 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
         # (injected) envelope win. Scan for the key token, decode from the
         # nearest '{' before it.
         key_pat = _re.compile(re.escape(f'"{envelope_key}"') + r"\s*:")
+        # F8-A01: scan the CLEANED text (think blocks removed) — a model that
+        # drafted JSON inside <think> plus the real envelope used to trigger
+        # the ambiguous-duplicate refusal and lose the whole review
+        scan_text = cleaned if cleaned else content
         seen_spans: list[tuple[int, int]] = []
-        for m in key_pat.finditer(content):
-            brace = content.rfind("{", 0, m.start())
+        for m in key_pat.finditer(scan_text):
+            brace = scan_text.rfind("{", 0, m.start())
             if brace == -1:
                 continue
             try:
-                parsed, end = strict_decoder.raw_decode(content[brace:])
+                parsed, end = strict_decoder.raw_decode(scan_text[brace:])
             except ValueError:
                 continue
             if isinstance(parsed, dict) and envelope_key in parsed and m.start() > brace:

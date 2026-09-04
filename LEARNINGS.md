@@ -513,3 +513,16 @@ containment wraps field ACCESS, not just operations; persisted counters normaliz
 boundary on READ and write back ints; argv construction uses shlex; dispatch is NUL-delimited.
 4 regression pins, all red pre-fix.
 
+## 53. Cleaned text scans; credentials refuse plaintext; weights must count (2026-09-04, MECE round 8)
+Round-8 desk: envelope scanning ran on RAW content, so a model drafting JSON inside <think> plus
+the real envelope tripped the ambiguous-duplicate refusal and lost the whole review; the GitHub
+route accepted plaintext http://api.github.com and would have shipped the App token over the
+wire; the readiness score's documented SCORING_CATEGORIES weights were dead data (a Major in an
+8-weight category scored like one in a 36-weight category); omni persisted rows without id/line
+KeyError'd complete publication; closed fix-depth PR records kept open_prs=True and blocked the
+cold tier forever; the runner validated alert CONTAINERS but not alert ELEMENTS; and check-dirty
+masked git failures as 'clean'. Laws: scan CLEANED text; credentials require https + exact host;
+documented scoring data participates in scores; loader validation covers every later-consumed
+field; tier activity reads an explicit open-id set, not retained history; containers AND
+elements validate; git failures fail loudly.
+

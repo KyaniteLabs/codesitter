@@ -731,10 +731,14 @@ class TestMECEReadinessCap:
         assert score < 100
 
     def test_all_critical_categories_checked_not_capped_by_missing(self):
-        from fl4write.capabilities import readiness_score
-        score = readiness_score({}, categories_checked={
-            "Data & Storage", "Auth & Access", "Secrets & Config", "Testing & Quality"})
+        from fl4write.capabilities import readiness_score, SCORING_CATEGORIES
+        # full weighted coverage (all categories evidenced, no findings) = 100
+        score = readiness_score({}, categories_checked=set(SCORING_CATEGORIES))
         assert score == 100
+        # partial coverage deducts for the unevidenced weight (F8-A02)
+        partial = readiness_score({}, categories_checked={
+            "Data & Storage", "Auth & Access", "Secrets & Config", "Testing & Quality"})
+        assert partial < 100 and partial >= 80
 
     def test_omni_readiness_passes_categories(self):
         from fl4write.engine import _omni_readiness
@@ -2815,3 +2819,88 @@ class TestMECERound7BE:
     def test_runner_dispatch_is_nul_delimited(self):
         rc = (REPO_ROOT / "run-cycle.sh").read_text()
         assert "mapfile -d ''" in rc and "end='\\0'" in rc
+
+
+class TestMECERound8Pins:
+    """Round-8 desk: cleaned envelope scan (F8-A01), weighted readiness
+    (F8-A02), omni row id/line + open_ids (F8-C001/C002), runner alert/check
+    integrity (F8-E001/E002), HTTPS-only github routing (terra F8-001),
+    ancestry EXIT markers (terra F8-002), GH intermediate envelopes
+    (terra F8-003), FJ merged row guards (terra F8-004), CLI config error
+    path (terra F8-005)."""
+
+    def test_envelope_scan_ignores_think_drafts(self):
+        from fl4write.analyzer import extract_json
+
+        out = extract_json('<think>{"findings": [{"draft": true}]}</think>'
+                           '{"findings": []}', envelope_key="findings")
+        assert out == {"findings": []}
+
+    def test_https_required_for_github_route(self):
+        from fl4write.forges import _is_github_base
+
+        assert _is_github_base("http://api.github.com") is False
+        assert _is_github_base("http://api.github.com:443") is False
+        assert _is_github_base("https://api.github.com") is True
+
+    def test_gh_intermediate_envelopes_degrade(self):
+        gh = TestMECERound7SolPins2._gh()
+        gh._call = lambda m, path: None  # 2xx null repo envelope
+        assert gh.list_tree_files("o/r") is None
+        gh2 = TestMECERound7SolPins2._gh()
+        gh2._call = lambda m, path: {} if "/repos/o/r" in path else None
+        assert gh2.head_check_runs("o/r") is None
+
+    def test_fj_merged_rows_guard_siblings(self):
+        from fl4write.forges import ForgejoAdapter
+
+        fj = ForgejoAdapter(cfg.ForgeBinding(
+            role="primary", api_base="https://git.example.com/api/v1", token_env="GHT"))
+        fj._paginated = lambda path, page_size=50, max_pages=10: [
+            None,
+            {"number": 7, "merged": True, "merged_at": "2026-09-01T00:00:00Z",
+             "title": "t", "head": {"sha": "a" * 40, "repo": {"full_name": "o/r"}},
+             "user": {"login": "dev"}},
+            {"number": "junk", "merged": True, "merged_at": "2026-09-02T00:00:00Z"},
+        ]
+        out = fj.list_merged_prs("o/r", "2000-01-01T00:00:00Z")
+        assert [p.number for p in out] == [7]
+
+    def test_cli_missing_config_is_clean_exit_2(self, capsys, monkeypatch):
+        import sys as _sys
+
+        from fl4write import cli as cli_mod
+
+        monkeypatch.setattr(_sys, "argv", ["fl4write.cli", "/nonexistent/x.yaml"])
+        assert cli_mod.main() == 2
+        assert "config error" in capsys.readouterr().err
+
+    def test_omni_rows_require_id_and_line(self, tmp_path):
+        from fl4write.state import load_state
+
+        p = tmp_path / "s.json"
+        p.write_text('{"version": 1, "prs": {}, "omni_findings": ['
+                     '{"id": 1, "line": 3, "path": "a.py", "rule": "secrets", '
+                     '"sev": "Major", "msg": "m"}, '
+                     '{"path": "b.py", "rule": "secrets", "sev": "Major", "msg": "x"}]}',
+                     encoding="utf-8")
+        st = load_state(p)
+        assert len(st["omni_findings"]) == 1 and st["omni_findings"][0]["id"] == 1
+
+    def test_tiers_open_ids_exclude_closed_history(self, tmp_path, monkeypatch):
+        import fl4write.tiers as tiers_mod
+
+        monkeypatch.setattr(tiers_mod, "STATE_DIR", tmp_path)
+        p = tiers_mod._state_path("o/r")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # closed-history records retained for fix-depth rails, open_ids empty
+        p.write_text('{"version": 1, "prs": {"5": {"fix_depth": 2}}, '
+                     '"open_ids": []}', encoding="utf-8")
+        tier, _r = tiers_mod.classify("o/r", True, 1_000_000_000 - 8 * 86400, 1_000_000_000)
+        assert tier == "cold", "closed fix-depth history blocked the cold tier"
+
+    def test_runner_alert_elements_and_git_integrity(self, tmp_path):
+        rc = (REPO_ROOT / "run-cycle.sh").read_text()
+        assert 'all(isinstance(a, str) for a in p["alerts"])' in rc
+        cd = (REPO_ROOT / "check-dirty.sh").read_text()
+        assert "checkout integrity UNKNOWN" in cd and "git status failed" in cd

@@ -197,7 +197,13 @@ def main() -> int:
     if not config_path:
         print("usage: python3 -m fl4write.cli <config.yaml> [--live]", file=sys.stderr)
         return 2
-    config = load_config(config_path)
+    try:
+        # F8-005: a missing/unreadable/malformed config is a concise CLI
+        # error with exit 2 — never an uncaught traceback
+        config = load_config(config_path)
+    except Exception as exc:  # noqa: BLE001 — fail loudly but readably
+        print(f"config error: {type(exc).__name__}: {str(exc)[:300]}", file=sys.stderr)
+        return 2
     if "--omni" in sys.argv:
         # One-shot prelaunch kick: a NORMAL run_cycle (CycleLock, deadline,
         # one-state-owner all preserved) with the per-cycle file cap raised —

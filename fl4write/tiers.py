@@ -136,7 +136,13 @@ def classify(repo: str, forge_github: bool, pushed_epoch: float | None,
     # watermark. MECE round-5 (sol F5-006): the watermark alone is durable
     # historical state, not current activity — an ancient watermark used to
     # upgrade every post-merge-enabled repo out of cold forever.
-    has_open = bool(st.get("prs"))
+    # F8-C002: retained closed-PR records (fix-depth history) must not count
+    # as open activity — classification reads the persisted open-id set
+    open_ids = st.get("open_ids")
+    if isinstance(open_ids, list):
+        has_open = bool(open_ids)
+    else:
+        has_open = bool(st.get("prs"))
     wm_recent = False
     wm = st.get("merged_since")
     if isinstance(wm, str) and wm:

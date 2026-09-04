@@ -312,10 +312,15 @@ class ForgeAdapter:
         try:
             from urllib.parse import quote
 
-            branch = self._call("GET", f"/repos/{repo}").get("default_branch") or "main"
+            repo_info = self._call("GET", f"/repos/{repo}")
+            if not isinstance(repo_info, dict):
+                return None  # F8-003: intermediate envelope validated
+            branch = repo_info.get("default_branch") or "main"
             # MECE round-4 (M3 F4-D07): quote branch names containing path
             # chars (e.g. 'release/1.x' default branches) in URL paths
             head = self._call("GET", f"/repos/{repo}/commits/{quote(branch, safe='')}")
+            if not isinstance(head, dict):
+                return None  # F8-003: commit envelope validated
             sha = head.get("sha") or ""
             if not sha:
                 return None
@@ -506,8 +511,13 @@ class GitHubAdapter(ForgeAdapter):
         try:
             from urllib.parse import quote
 
-            branch = self._call("GET", f"/repos/{repo}").get("default_branch") or "main"
+            repo_info = self._call("GET", f"/repos/{repo}")
+            if not isinstance(repo_info, dict):
+                return None  # F8-003: repo envelope validated
+            branch = repo_info.get("default_branch") or "main"
             head = self._call("GET", f"/repos/{repo}/commits/{quote(branch, safe='')}")
+            if not isinstance(head, dict):
+                return None  # F8-003: commit envelope validated
             sha = head.get("sha") or ""
             if not sha:
                 return None
@@ -615,6 +625,9 @@ class ForgejoAdapter(ForgeAdapter):
         since = _parse_iso(since_iso)
         prs = []
         for p in data:
+            if not isinstance(p, dict):  # F8-004: per-row guard like GitHub
+                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                continue
             merged_raw = p.get("merged_at") or ""
             if not merged_raw or not p.get("merged"):
                 continue
@@ -625,18 +638,30 @@ class ForgejoAdapter(ForgeAdapter):
             # already-terminal ones are skipped free by the head-SHA guard.
             if since is not None and merged is not None and merged < since:
                 continue
-            head_repo = ((p.get("head") or {}).get("repo") or {}).get("full_name")
+            head = p.get("head")
+            if not isinstance(head, dict):
+                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                continue
+            head_repo = ((head.get("repo") or {}) if isinstance(head.get("repo"), dict) else {}).get("full_name")
+            user = p.get("user") if isinstance(p.get("user"), dict) else {}
+            try:
+                number = int(p["number"])
+            except (KeyError, TypeError, ValueError):
+                number = -1
+            if number <= 0 or not head.get("sha"):
+                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                continue
             prs.append(
                 PullRequest(
                     forge=self.name,
-                    number=p["number"],
+                    number=number,
                     repo=repo,
                     title=p.get("title") or "",
                     body=p.get("body") or "",
-                    head_sha=(p.get("head") or {}).get("sha", ""),
+                    head_sha=head.get("sha", ""),
                     is_fork=bool(head_repo and head_repo != repo),
-                    author=(p.get("user") or {}).get("login", ""),
-                    is_bot_author=str((p.get("user") or {}).get("type", "")).lower() == "bot",
+                    author=user.get("login", ""),
+                    is_bot_author=str(user.get("type", "")).lower() == "bot",
                     merged_at=merged_raw,
                 )
             )
@@ -771,14 +796,20 @@ class ForgejoAdapter(ForgeAdapter):
                 elif e.get("type") == "tree" and str(e.get("sha") or ""):
                     push_task(str(e["sha"]), str(e.get("path") or "") + "/")
             while stack:
-                sha, prefix, entries = stack.pop()
+                item = stack.pop()
+                if item[0] == "\x00exit":
+                    # F8-002: ancestors stay on_stack until ALL descendants
+                    # finished (EXIT marker below the children we pushed)
+                    on_stack.discard(item[1])
+                    continue
+                sha, prefix, entries = item
                 on_stack.add(sha)
+                stack.append(("\x00exit", sha))
                 for e in entries:
                     if e.get("type") == "blob":
                         add_blob(e, prefix)
                     elif e.get("type") == "tree" and str(e.get("sha") or ""):
                         push_task(str(e["sha"]), prefix + str(e.get("path") or "") + "/")
-                on_stack.discard(sha)
             return out, truncated
         except ForgeError:
             return None
@@ -821,16 +852,18 @@ class ForgejoAdapter(ForgeAdapter):
 
 
 def _is_github_base(api_base: str) -> bool:
-    """MECE round-7 (sol F7-D007): EXACT hostname equality — substring
-    matching let 'https://api.github.com.evil.invalid' masquerade as GitHub
-    and receive the configured credential."""
+    """MECE round-7 (sol F7-D007) + round-8 (terra F8-001): the GitHub route
+    carries the App credential — it requires EXACT hostname equality AND
+    https. Plaintext http://api.github.com must never receive the token."""
     from urllib.parse import urlsplit
 
     try:
         parts = urlsplit(api_base)
     except ValueError:
         return False
-    return parts.hostname == "api.github.com" and parts.port in (None, 443)
+    return (parts.scheme == "https"
+            and parts.hostname == "api.github.com"
+            and parts.port in (None, 443))
 
 
 def adapter_for(binding: ForgeBinding) -> ForgeAdapter:

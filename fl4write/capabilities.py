@@ -130,6 +130,20 @@ def readiness_score(findings_by_severity: dict[str, int],
     if major > 0:
         score = min(score, CAP_P1)
 
+    # MECE round-8 (luna-max-2 F8-A02): the documented SCORING_CATEGORIES
+    # weights were dead data — readiness depended only on counts/severity,
+    # so a Major in an 8-weight category scored the same as one in a
+    # 36-weight category. When category evidence is supplied, the weighted
+    # coverage of the audit participates in the score (missing coverage is
+    # itself risk).
+    if categories_checked is not None:
+        total_w = sum(SCORING_CATEGORIES.values())
+        covered_w = sum(SCORING_CATEGORIES.get(c, 0) for c in categories_checked
+                        if c in SCORING_CATEGORIES)
+        if total_w > 0:
+            missing_frac = 1.0 - (covered_w / total_w)
+            score -= round(missing_frac * 20)
+
     # missing evidence in critical categories (MECE round-1, terra F1-11: the
     # cap applies when ANY critical category lacks evidence, not only when ALL
     # four do — a run that only checked "Auth & Access" must not score 100)

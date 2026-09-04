@@ -202,7 +202,10 @@ def _normalize_aux(data: dict[str, Any]) -> dict[str, Any]:
                                            and isinstance(r.get("path"), str)
                                            and isinstance(r.get("rule"), str)
                                            and isinstance(r.get("sev"), str)
-                                           and isinstance(r.get("msg"), str))]
+                                           and isinstance(r.get("msg"), str)
+                                           and isinstance(r.get("id"), int)
+                                           and not isinstance(r.get("id"), bool)
+                                           and isinstance(r.get("line"), int))]
             if bad:
                 log.warning("state omni_findings: dropping %d malformed rows (bounded reconcile)",
                             len(bad))
@@ -228,6 +231,14 @@ def _normalize_aux(data: dict[str, Any]) -> dict[str, Any]:
             # a truthy STRING ("false") falsely terminalized lanes
             log.warning("state %s: non-bool %r dropped (bounded reconcile)", key, v)
             out.pop(key, None)
+    open_ids = out.get("open_ids")
+    if open_ids is not None:
+        if not isinstance(open_ids, list):
+            log.warning("state open_ids: non-list dropped (bounded reconcile)")
+            out.pop("open_ids", None)
+        else:
+            out["open_ids"] = [int(x) for x in open_ids
+                               if isinstance(x, int) and not isinstance(x, bool)]
     for key in ("retro_seen", "retro_parked", "pm_shadow_seen", "retro_shadow_seen",
                 "model_failures", "omni_file_fails"):
         v = out.get(key)

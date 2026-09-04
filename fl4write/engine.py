@@ -1442,6 +1442,7 @@ def run_cycle(
             # — a dry-run must not delete live records
             if (not listing_failed and not truncated_by_deadline
                     and not config.shadow):
+                st["open_ids"] = sorted(open_numbers)  # F8-C002: for tiers
                 state.prune_closed(st, open_numbers | merged_keep)
 
             if run_issues and config.issues_enabled:

@@ -79,7 +79,7 @@ if ! echo "$PLAN" | python3 -c 'import json,sys
 p = json.load(sys.stdin)
 ok = isinstance(p, dict) \
      and isinstance(p.get("due"), list) and all(isinstance(d, str) for d in p["due"]) \
-     and isinstance(p.get("alerts"), list) \
+     and isinstance(p.get("alerts"), list) and all(isinstance(a, str) for a in p["alerts"]) \
      and isinstance(p.get("summary"), str)
 sys.exit(0 if ok else 1)' 2>>"$LOG"; then
     echo "$(date -Iseconds) ERR: tier scheduler plan MALFORMED (shape) — fleet NOT cycled this hour" >> "$LOG"
