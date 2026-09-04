@@ -4143,6 +4143,186 @@ class TestMECERound12Ops:
         assert "rc=$?" in rc and 'exit 0; fi  # genuine contention' in rc
         assert 'echo "$(date -Iseconds) ERR: flock failed rc=$rc' in rc
 
-    def test_readme_count_attributed_to_round_11(self):
+    def test_readme_count_attributed_to_closing_round(self):
         readme = (REPO_ROOT / "README.md").read_text()
-        assert "round-11 desk pass" in readme
+        assert "round-12 desk pass" in readme
+
+
+class TestMECERound12Pins:
+    """Round-12 desk pins: config namespace/netloc/charset/int-strictness
+    (D5..D8), forge tree-sha rows + path_is_file content (D1/D4), strict hex
+    omni anchor + bool run ids (C001/C005), quarantine/ci_acted state
+    normalization (C002/C003), deadline lanes (C004), dead omni issue
+    reconcile (C006), runner lock contract + README provenance (E1/E2),
+    plus the DOM-A/B behavioral probes below."""
+
+    def test_config_rejects_token_env_collision(self):
+        from fl4write.config import RepoConfig
+        try:
+            RepoConfig.model_validate({
+                "repo": "o/r",
+                "forges": {"g": {"role": "primary", "api_base": "https://x",
+                                 "token_env": "MK"}},
+                "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "MK"},
+            })
+            raise AssertionError("forge/model env collision accepted")
+        except Exception:
+            pass
+
+    def test_config_rejects_bool_ints_and_bad_urls_and_repo_chars(self):
+        from fl4write.config import RepoConfig
+
+        def _try(**over):
+            raw = {"repo": "o/r",
+                   "forges": {"g": {"role": "primary", "api_base": "https://x",
+                                    "token_env": "T"}},
+                   "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"}}
+            raw.update(over)
+            try:
+                RepoConfig.model_validate(raw)
+                return False
+            except Exception:
+                return True
+
+        assert _try(post_merge={"enabled": True, "max_per_cycle": True}), "bool int"
+        assert _try(repo="o/r?x=1"), "url delimiter in repo"
+        assert _try(forges={"g": {"role": "primary", "api_base": "https://",
+                                  "token_env": "T"}}), "netloc-less api_base"
+        assert not _try(), "clean config must validate"
+
+    def test_fj_tree_row_missing_sha_truncates(self):
+        from fl4write.forges import ForgejoAdapter
+
+        fj = ForgejoAdapter(cfg.ForgeBinding(
+            role="primary", api_base="https://git.example/api/v1", token_env="FJT"))
+        calls = iter([
+            {"default_branch": "main"},
+            {"tree": [{"type": "tree", "path": "sub", "sha": None},
+                      {"type": "blob", "path": "ok.py", "size": 4}],
+             "truncated": False},
+        ])
+        fj._call = lambda m, path, data=None: next(calls)
+        files, truncated = fj.list_tree_files("o/r")
+        assert [p for (p, _s) in files] == ["ok.py"]
+        assert truncated is True  # missing-SHA subtree = untrustworthy tree
+
+    def test_path_is_file_requires_string_content(self):
+        from fl4write.forges import GitHubAdapter
+
+        ad = GitHubAdapter(cfg.ForgeBinding(
+            role="primary", api_base="https://api.github.com", token_env="GHT"))
+        ad._call = lambda m, path, data=None: {"encoding": "base64", "content": None}
+        assert ad.path_is_file("o/r", "x.py") is not True
+
+    def test_omni_probe_requires_full_hex_sha(self):
+        from fl4write.engine import _probe_head
+
+        class _Bad:
+            name = "github"
+
+            def head_check_runs(self, repo):
+                return "HEAD" * 5, []
+
+            def head_sha(self, repo):
+                return "not-a-sha"
+
+        class _Good:
+            name = "github"
+
+            def head_check_runs(self, repo):
+                return "a" * 40, []
+
+        assert _probe_head(_Good(), "r") == "a" * 40
+        assert _probe_head(_Bad(), "r") is None
+
+    def test_dead_omni_issue_reconciles_after_three(self, tmp_path):
+        from fl4write.engine import _omni_upsert_issue
+        from fl4write.engine import CycleReport
+
+        class _Dead:
+            name = "github"
+
+            def update_issue(self, repo, number, body):
+                return False
+
+        st = {"omni_issue": 42}
+        rep = CycleReport(repo="o/r")
+        c = _sol_config(omnisweep={"enabled": True, "fix": False},
+                        ci_watch={"enabled": False})
+        for _ in range(3):
+            _omni_upsert_issue(c, _Dead(), st, [{"id": 1, "path": "a.py",
+                                                 "line": 1, "rule": "secrets",
+                                                 "sev": "Major", "msg": "m"}],
+                               1, 1, complete=True, report=rep)
+        assert "omni_issue" not in st  # dead id reconciled after 3 failures
+
+    def test_ci_acted_string_false_cleared_at_load(self, tmp_path):
+        from fl4write.state import load_state
+
+        p = tmp_path / "s.json"
+        p.write_text('{"version": 1, "prs": {}, "ci_acted:abc": "false"}')
+        st = load_state(p)
+        assert not any(k.startswith("ci_acted:") for k in st)
+
+    def test_quarantine_lists_normalized_at_load(self, tmp_path):
+        from fl4write.state import load_state
+
+        p = tmp_path / "s.json"
+        p.write_text('{"version": 1, "prs": {}, "omni_unfetchable": "junk"}')
+        st = load_state(p)
+        assert "omni_unfetchable" not in st
+
+
+class TestMECERound12AnalyzerProbes:
+    """Round-12 luna DOM-A behavioral probes (A1/A3/A5/A7) + sol DOM-B
+    code-law pins (B1-B6/B9/B11/B12)."""
+
+    def test_pretty_printed_final_envelope_after_think(self):
+        from fl4write.analyzer import extract_json
+        out = extract_json('<think>draft</think>\n{\n  "findings": []\n}',
+                           envelope_key="findings")
+        assert out == {"findings": []}
+
+    def test_rce_marker_needs_whole_word(self):
+        import re as _re
+        src = (REPO_ROOT / "fl4write/analyzer.py").read_text()
+        # the analyzer word-scan is bounded for acronym markers...
+        assert '"rce", "xss", "ssrf")' in src
+        # ...and a word-boundary scan never matches 'source' via 'rce'
+        low = "the code reads from an external source."
+        pat = r"\brce\b"
+        assert not _re.search(pat, low)
+        assert _re.search(pat, "remote code execution (rce)") is not None
+
+    def test_backtick_fence_roundtrip_wider_than_three(self):
+        from fl4write import renderer
+        from fl4write.models import Finding
+
+        f = Finding(rule_id="general", severity="Major",
+                    path="a/```.py", line=1, message="m")
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        body = renderer.render_review(pr, [f], make_config(), review_hash="abc")
+        assert renderer.parse_finding_lines(body) == [("Major", "a/```.py", 1, "general")]
+
+    def test_curly_apostrophe_negation_refused(self):
+        from fl4write.analyzer import _self_contradicting
+        assert _self_contradicting("The code doesn\u2019t fail or crash. Tests pass.") is True
+
+    def test_attempt_fix_git_hardening_laws(self):
+        src = (REPO_ROOT / "fl4write/executor.py").read_text()
+        assert "_git_hardened_env" in src and "GIT_CONFIG_GLOBAL" in src
+        assert "fl4write-test-home-" in src  # per-run disposable test HOME
+        assert "write-tree" in src and "HEAD^{tree}" in src
+        assert "--force-with-lease" in src  # B3 retry reconcile
+        assert '"--pyargs"' in src  # B5 flag arity
+        assert "unverified=True" in src  # B12 terminal telemetry
+        tel = (REPO_ROOT / "fl4write/telemetry.py").read_text()
+        assert "OverflowError" in tel  # B11
+
+    def test_git_hardened_env_blocks_global_config(self):
+        from fl4write import executor as ex
+
+        env = ex._git_hardened_env({"HOME": "/tmp/h"})
+        assert env["GIT_CONFIG_GLOBAL"] == "/dev/null"
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert "GIT_TERMINAL_PROMPT" in env

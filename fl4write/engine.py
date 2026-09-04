@@ -988,23 +988,26 @@ def _probe_head(primary: ForgeAdapter, repo: str) -> str | None:
     string or None. Every raw adapter probe used to re-validate shape and
     index anchor[0] itself; a truthy wrong-shape envelope escaped and aborted
     the whole cycle with an uncaught KeyError/TypeError."""
+    import re as _re_sha
     try:
         _h = primary.head_check_runs(repo)
     except Exception:  # noqa: BLE001 - probing never blocks a sweep
         _h = None
     if isinstance(_h, (tuple, list)) and len(_h) == 2 \
-            and isinstance(_h[0], str) and len(_h[0]) >= 7:
+            and isinstance(_h[0], str) and _re_sha.fullmatch(r"[0-9a-f]{40}", _h[0]):
         return _h[0]
     # F11-C005: Forgejo exposes no check-runs — fall back to the adapter's
     # commit-sha anchor so multi-cycle sweeps on Forgejo repos are not
-    # certified unanchored (same-size content edits must restart the sweep)
+    # certified unanchored (same-size content edits must restart the sweep).
+    # F12-C001: ONLY a full hex SHA is a trusted anchor — arbitrary strings
+    # (or the "HEAD" fallback) let same-size edits pass undetected
     _hs = getattr(primary, "head_sha", None)
     if callable(_hs):
         try:
             _sha = _hs(repo)
         except Exception:  # noqa: BLE001 - probing never blocks a sweep
             return None
-        if isinstance(_sha, str) and len(_sha) >= 7:
+        if isinstance(_sha, str) and _re_sha.fullmatch(r"[0-9a-f]{40}", _sha):
             return _sha
     return None
 
@@ -1027,8 +1030,25 @@ def _omni_upsert_issue(
     number = st.get("omni_issue")
     if number:
         if not primary.update_issue(config.repo, number, body):
-            report.alerts.append(f"omnisweep: issue #{number} update failed — retrying next cycle")
+            # F12-C006: a DEAD issue id (deleted/forbidden) used to fail
+            # forever — every completed fast path retried the same id and no
+            # replacement was ever created. After bounded consecutive
+            # failures the id is reconciled away (recreate next cycle); a
+            # transient error keeps retrying.
+            fails = int(st.get("omni_pub_fail", 0)) + 1
+            if fails >= 3:
+                report.alerts.append(
+                    f"omnisweep: issue #{number} update failed {fails}x — id "
+                    "reconciled; a replacement audit issue will be created")
+                st.pop("omni_issue", None)
+                st["omni_pub_fail"] = 0
+                st["omni_published"] = False
+            else:
+                st["omni_pub_fail"] = fails
+                report.alerts.append(
+                    f"omnisweep: issue #{number} update failed ({fails}/3) — retrying next cycle")
             return
+        st.pop("omni_pub_fail", None)
         if complete:
             st["omni_published"] = True
         return
@@ -1360,7 +1380,10 @@ def _ci_watch_step(
         if not isinstance(name, str):
             name = "unnamed check"
         run_id = r.get("id")
-        if not isinstance(run_id, (str, int)):
+        if isinstance(run_id, bool) or not isinstance(run_id, (str, int)) \
+                or not str(run_id).strip():
+            # F12-C005: bool ids are ints to isinstance — True would address
+            # /check-runs/True/annotations and lose every file finding
             continue  # unusable run identity: skip, never crash (UltraQA P2)
         if conclusion not in _CI_BENIGN:
             failing.append(dict(r, conclusion=conclusion, name=name, id=run_id))
@@ -1647,10 +1670,14 @@ def run_cycle(
             if run_issues and config.issues_enabled:
                 from . import issues as issues_lane
 
-                issue_summary = issues_lane.run_issues_cycle(config, st, primary)
-                report.issues_triaged = issue_summary.get("triaged", 0)
+                # F12-C004 (reopened F11-C011): re-check the budget BEFORE the
+                # lane — earlier lanes may have consumed it (model/forge calls)
                 if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
-                    report.alerts.append("cycle deadline reached — issues lane stopped early")
+                    report.alerts.append("cycle deadline reached — issues lane deferred")
+                else:
+                    issue_summary = issues_lane.run_issues_cycle(
+                        config, st, primary, deadline=deadline)
+                    report.issues_triaged = issue_summary.get("triaged", 0)
                 # F10-B003: a foreign-marker quarantine is a STRUCTURED cycle
                 # alert — the lane claims per-cycle visibility; the claim must
                 # land where operators actually look
@@ -1664,7 +1691,10 @@ def run_cycle(
             if not config.shadow:
                 from . import metrics
 
-                report.acceptance = metrics.acceptance_snapshot(primary, config)
+                if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
+                    report.alerts.append("cycle deadline reached — acceptance metrics skipped")
+                else:
+                    report.acceptance = metrics.acceptance_snapshot(primary, config)
 
             if report.fix_failures:
                 # ONE summarizing alert per cycle (V2) — alert fatigue is a

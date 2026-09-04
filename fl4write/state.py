@@ -300,6 +300,23 @@ def _normalize_aux(data: dict[str, Any]) -> dict[str, Any]:
         else:
             out["open_ids"] = [int(x) for x in open_ids
                                if isinstance(x, int) and not isinstance(x, bool)]
+    # F12-C002: quarantine/unscannable ledgers are consumed by .append() —
+    # a persisted non-list used to survive unless another core field was bad
+    for key in ("omni_unfetchable", "omni_unscannable"):
+        v = out.get(key)
+        if v is None:
+            continue
+        if not isinstance(v, list):
+            log.warning("state %s: non-list %r dropped (bounded reconcile)", key, v)
+            out.pop(key, None)
+        else:
+            out[key] = [x for x in v if isinstance(x, str)][:2000]
+    # F12-C003: dynamic ci_acted:<head> markers are truthiness-READ — a
+    # persisted string "false" used to suppress red-head remediation forever
+    for k in [k for k in out if k.startswith("ci_acted:")]:
+        if not isinstance(out[k], bool):
+            log.warning("state %s: non-bool dropped (bounded reconcile)", k)
+            out.pop(k, None)
     for key in ("retro_seen", "retro_parked", "pm_shadow_seen", "retro_shadow_seen",
                 "model_failures", "omni_file_fails"):
         v = out.get(key)

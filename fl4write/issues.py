@@ -14,6 +14,7 @@ triage everything with a number > last_triaged).
 from __future__ import annotations
 
 import json
+import time
 import logging
 from typing import Any
 
@@ -220,7 +221,8 @@ def _foreign_triage_exists(forge: ForgeAdapter, repo: str, number: int) -> bool:
     return False
 
 
-def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter) -> dict[str, int]:
+def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter,
+                    deadline: float | None = None) -> dict[str, int]:
     """One issues-triage cycle for one repo. Returns a summary dict.
 
     Mutates the ENGINE-OWNED state dict (single owner per cycle: the engine
@@ -247,6 +249,11 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
     # MECE round-1 (luna F1-07): a failed triage must RETRY — a later
     # success used to advance the watermark past it forever
     for issue in new_issues:
+        if deadline is not None and deadline - time.time() < 5:
+            # F12-C004: the lane honors the cycle deadline — remaining issues
+            # stay un-triaged (watermark holds) rather than overrunning
+            log.warning("issues cycle deadline reached — %d issue(s) deferred", len(new_issues))
+            break
         num = issue.get("number", 0)
         try:
             triage = triage_issue(issue, config)

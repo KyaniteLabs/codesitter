@@ -120,9 +120,10 @@ class ForgeAdapter:
                 time.sleep(1)
                 return self._call(method, path, payload, _retry=False)
             raise ForgeError(f"{self.name} {method} {path}: {exc}") from exc
-        except (OSError, UnicodeDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
             # F6-306: ConnectionReset/other OSErrors and decode failures used
-            # to escape as raw exceptions past the ForgeError boundary
+            # to escape as raw exceptions past the ForgeError boundary.
+            # F12-D008: ValueError (malformed URL from a bad api_base) too
             if method == "GET" and _retry:
                 time.sleep(1)
                 return self._call(method, path, payload, _retry=False)
@@ -280,7 +281,10 @@ class ForgeAdapter:
         # but is still a file — judge by the base64 encoding marker, not by
         # content truthiness; directories answer with a LIST.
         if isinstance(data, dict):
-            return data.get("encoding") == "base64" and "content" in data
+            # F12-D004: content must be a real (possibly empty) string — a
+            # null/numeric content value is a malformed envelope, not a file
+            return data.get("encoding") == "base64" \
+                and isinstance(data.get("content"), str)
         if isinstance(data, list):
             return False  # directory: queryable answer, not a file
         # F6-314: any other malformed-success payload is UNQUERYABLE (None),
@@ -824,8 +828,14 @@ class ForgejoAdapter(ForgeAdapter):
                     continue
                 if e.get("type") == "blob":
                     add_blob(e, "")
-                elif e.get("type") == "tree" and str(e.get("sha") or ""):
-                    push_task(str(e["sha"]), str(e.get("path") or "") + "/")
+                elif e.get("type") == "tree":
+                    # F12-D001: a subtree row without a usable sha hides every
+                    # file beneath it — drop it ONLY with a truncation mark
+                    sha = e.get("sha")
+                    if not isinstance(sha, str) or not sha:
+                        truncated = True
+                        continue
+                    push_task(sha, str(e.get("path") or "") + "/")
             while stack:
                 item = stack.pop()
                 if item[0] == "\x00exit":
@@ -839,8 +849,12 @@ class ForgejoAdapter(ForgeAdapter):
                 for e in entries:
                     if e.get("type") == "blob":
                         add_blob(e, prefix)
-                    elif e.get("type") == "tree" and str(e.get("sha") or ""):
-                        push_task(str(e["sha"]), prefix + str(e.get("path") or "") + "/")
+                    elif e.get("type") == "tree":
+                        sha = e.get("sha")
+                        if not isinstance(sha, str) or not sha:
+                            truncated = True  # F12-D001: subtree w/o a sha
+                            continue
+                        push_task(sha, prefix + str(e.get("path") or "") + "/")
             return out, truncated
         except ForgeError:
             return None

@@ -17,7 +17,7 @@ import typing
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 log = logging.getLogger("fl4write.config")
 
@@ -29,6 +29,35 @@ class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+def _int_field_names() -> set[str]:
+    """Lazy: model classes below this point register at import time."""
+    import fl4write.config as _self
+
+    names: set[str] = set()
+    for _v in vars(_self).values():
+        if isinstance(_v, type) and issubclass(_v, BaseModel):
+            for _n, _f in getattr(_v, "model_fields", {}).items():
+                if _f.annotation is int:
+                    names.add(_n)
+    return names
+
+
+def _reject_bool_ints(raw):
+    """F12-D006: pydantic coerces YAML booleans to integers ('true' -> 1) —
+    a typo'd boolean must fail load-loud, never silently change a limit.
+    Deep-walks the raw config and refuses bools for any field declared int."""
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if k in _int_field_names() and isinstance(v, bool):
+                raise ValueError(f"config field {k!r} must be an integer, got boolean {v!r}")
+            if isinstance(v, (dict, list)):
+                _reject_bool_ints(v)
+    elif isinstance(raw, list):
+        for v in raw:
+            _reject_bool_ints(v)
+    return raw
+
+
 class ForgeBinding(_StrictModel):
     """One forge's view of a repo. Exactly one forge must be `primary`;
     others are `mirror` (polled for completeness, deduped by head SHA —
@@ -36,6 +65,15 @@ class ForgeBinding(_StrictModel):
 
     role: str = Field(pattern="^(primary|mirror)$")
     api_base: str = Field(pattern=r"^https?://")  # http allowed: self-hosted forges
+
+    @field_validator("api_base")
+    @classmethod
+    def _api_base_queryable(cls, v: str) -> str:
+        # F12-D008: 'https://' (no netloc) passed the prefix pattern and
+        # leaked raw transport ValueError through the adapters at runtime
+        if not __import__("urllib.parse").parse.urlsplit(v).netloc:
+            raise ValueError(f"api_base must include a host, got {v!r}")
+        return v
     token_env: str = Field(min_length=1)
     # REQUIRED + NON-EMPTY: no default — a default or empty value silently
     # omits auth instead of failing (MECE round-1, sol F1-005); "" would make
@@ -44,6 +82,13 @@ class ForgeBinding(_StrictModel):
 
 class ModelRoute(_StrictModel):
     endpoint: str = Field(pattern=r"^https?://")  # http allowed: BYO-LLM localhost routers
+
+    @field_validator("endpoint")
+    @classmethod
+    def _endpoint_queryable(cls, v: str) -> str:
+        if not __import__("urllib.parse").parse.urlsplit(v).netloc:
+            raise ValueError(f"endpoint must include a host, got {v!r}")
+        return v
     model: str
     key_env: str = ""  # empty = no auth header
     # MECE round-5 (luna F5-003): NaN/Infinity temperature serializes as
@@ -132,7 +177,7 @@ class OmniSweepConfig(_StrictModel):
 class RepoConfig(_StrictModel):
     """The full per-repo config. Validated fail-loud at startup."""
 
-    repo: str = Field(pattern=r"^[^/\s]+/[^/\s]+$")  # owner/name
+    repo: str = Field(pattern=r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")  # F12-D007: forge-safe owner/name (no URL delimiters)
     forges: dict[str, ForgeBinding]
     model: ModelRoute
     fallback_model: ModelRoute | None = None
@@ -170,6 +215,32 @@ class RepoConfig(_StrictModel):
         if len(primaries) != 1:
             raise ValueError(f"exactly one forge must be 'primary', got {primaries}")
         return v
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_env_namespace_collisions(cls, raw) -> object:
+        # F12-D005 (CRITICAL): a forge binding's token_env must never equal a
+        # model route's key_env — the app-installation token was mirrored into
+        # the binding's env name, and a collision sent the FORGE credential as
+        # the model endpoint's Bearer token
+        _reject_bool_ints(raw)
+        if not isinstance(raw, dict):
+            return raw
+        _model = raw.get("model") or {}
+        _fallback = raw.get("fallback_model") or {}
+        _key_envs = {(_model.get("key_env") or ""), (_fallback.get("key_env") or "")}
+        _key_envs.discard("")
+        _forges = raw.get("forges")
+        if isinstance(_forges, dict):
+            for _name, _b in _forges.items():
+                if isinstance(_b, dict):
+                    _te = _b.get("token_env")
+                    if isinstance(_te, str) and _te in _key_envs:
+                        raise ValueError(
+                            f"forge {_name!r} token_env {_te!r} collides with a model "
+                            "key_env — credentials would cross authentication "
+                            "namespaces")
+        return raw
 
     @field_validator("review")
     @classmethod
