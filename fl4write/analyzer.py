@@ -266,8 +266,11 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
         # F9-A02: a response that is ONLY a reasoning block must never be
         # certified as an empty/clean final review
         raise ValueError("response contains only a <think> reasoning block — refusing")
-    if envelope_key and closed_think and ('{"' + envelope_key + '"') not in cleaned:
+    if envelope_key and closed_think and not _re.search(
+            re.escape(f'"{envelope_key}"') + r"\s*:", cleaned):
         # the only envelope occurrence lives inside a CLOSED reasoning block
+        # (F12-A1: the check is whitespace-tolerant — a pretty-printed final
+        # envelope after </think> used to be refused)
         raise ValueError(
             "response carries a reasoning block and no final envelope — refusing")
     candidates = [cleaned]
@@ -443,8 +446,10 @@ _CONTRACTIONS = {
 
 def _normalize_negations(text: str) -> str:
     """F10-A02: fused negations ('doesn\'t fail', 'cannot crash') must join
-    the clause-level refutation scan."""
-    low = text.lower()
+    the clause-level refutation scan. F12-A7: typographic apostrophes
+    (U+2019) are the same quote — normalize them first or "doesn’t fail"
+    bypassed every gate."""
+    low = text.lower().replace("\u2019", "'").replace("\u2018", "'")
     for k, v in _CONTRACTIONS.items():
         low = low.replace(k, v)
     return low
@@ -711,7 +716,12 @@ def analyze(
             has_scenario = False
             for m in _SCENARIO_MARKERS:
                 found_positive = False
-                for mt in re.finditer(rf"\b[a-z]*{re.escape(m)}[a-z]*\b", low):
+                # F12-A3: short acronym markers (rce/xss/ssrf) match ONLY as
+                # whole words — the old contains-scan matched 'source' via
+                # 'rce' and retained Critical without any concrete breakage
+                _pat = rf"\b{re.escape(m)}\b" if m in ("rce", "xss", "ssrf") \
+                    else rf"\b[a-z]*{re.escape(m)}[a-z]*\b"
+                for mt in re.finditer(_pat, low):
                     word = mt.group(0)
                     if word.startswith(("un", "non", "not")):
                         continue  # unexecuted / non-executing / not-executed

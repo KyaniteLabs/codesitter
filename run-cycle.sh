@@ -12,9 +12,24 @@ LOG=~/workspaces/fl4write/runner.log
 # MECE round-1 (glm F1-5): the lock lived in WORLD-WRITABLE /tmp — any local
 # user could hold or symlink it and silently suppress every cycle. It now
 # lives in the runner's own ~/.fl4write state dir.
-mkdir -p ~/.fl4write
-exec 9>~/.fl4write/runner.lock
-flock -n 9 || exit 0
+mkdir -p ~/.fl4write || { echo "$(date -Iseconds) ERR: cannot create ~/.fl4write — aborting" >> "$LOG"; exit 1; }
+# F12-E001 (round 12, terra DOM-E): lock SETUP failures must not look like
+# normal contention — a missing flock tool (rc 127) or an unopenable lock
+# file used to reach '|| exit 0' and silently skip the whole fleet as healthy
+if ! command -v flock >/dev/null 2>&1; then
+    echo "$(date -Iseconds) ERR: flock tool missing — aborting cycle" >> "$LOG"
+    exit 1
+fi
+if ! exec 9>~/.fl4write/runner.lock 2>>"$LOG"; then
+    echo "$(date -Iseconds) ERR: cannot open runner.lock — aborting cycle" >> "$LOG"
+    exit 1
+fi
+flock -n 9 2>>"$LOG" || {
+    rc=$?
+    if [ "$rc" -eq 1 ]; then exit 0; fi  # genuine contention: another cycle runs
+    echo "$(date -Iseconds) ERR: flock failed rc=$rc — aborting cycle" >> "$LOG"
+    exit 1
+}
 
 export CODESITTER_GITHUB_TOKEN=$(gh auth token 2>/dev/null)
 if [ -z "$CODESITTER_GITHUB_TOKEN" ]; then

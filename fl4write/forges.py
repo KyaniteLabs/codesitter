@@ -189,11 +189,15 @@ class ForgeAdapter:
                 break
         else:
             # MECE round-1 (luna F1-008): stopped at max_pages with every page
-            # full — rows past the cap exist and are silently invisible
-            import logging as _log
-            _log.getLogger("fl4write.forges").warning(
-                "paginated %s stopped at %d full pages (page_size=%d) — rows past "
-                "the cap are invisible to this call", path, max_pages, page_size)
+            # full — rows past the cap exist. F12-D002 (reopened): returning
+            # the partial list as COMPLETE let the engine prune live PR state
+            # and issue collection advance past unseen issues; capped
+            # enumeration now degrades LOUD so callers hold watermarks and
+            # block destructive actions
+            raise ForgeError(
+                f"paginated {path}: stopped at {max_pages} FULL pages "
+                f"(page_size={page_size}) — enumeration incomplete, refusing "
+                "the partial list")
         return out
 
     def reaction_summary(self, repo: str, comment_id: int) -> dict[str, dict[str, int]] | None:

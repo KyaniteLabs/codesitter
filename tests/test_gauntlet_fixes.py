@@ -4128,3 +4128,21 @@ class TestMECERound11Engine2:
         assert rec.get("last_reviewed_sha") is None
         # model-failure counted ONCE for this SHA — the retry cap governs
         assert st.get("model_failures", {}).get("5:aaaaaaaaaa") == 1
+
+
+class TestMECERound12Ops:
+    """Round-12 terra DOM-E: runner lock-contention contract (E001), README
+    provenance truth (E002)."""
+
+    def test_runner_lock_setup_failures_are_loud(self):
+        rc = (REPO_ROOT / "run-cycle.sh").read_text()
+        # missing flock tool or unopenable lock = ERROR exit, never silent
+        assert "command -v flock" in rc and "flock tool missing" in rc
+        assert "cannot open runner.lock" in rc
+        # genuine contention (flock rc 1) is still the quiet skip
+        assert "rc=$?" in rc and 'exit 0; fi  # genuine contention' in rc
+        assert 'echo "$(date -Iseconds) ERR: flock failed rc=$rc' in rc
+
+    def test_readme_count_attributed_to_round_11(self):
+        readme = (REPO_ROOT / "README.md").read_text()
+        assert "round-11 desk pass" in readme

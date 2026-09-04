@@ -104,9 +104,9 @@ def _sandbox_home() -> str:
     return _SANDBOX_HOME
 
 
-def _sandbox_env() -> dict[str, str]:
+def _sandbox_env_for(home: str) -> dict[str, str]:
     out = {k: os.environ[k] for k in _TEST_ENV_ALLOW if k in os.environ}
-    out["HOME"] = _sandbox_home()
+    out["HOME"] = home
     # user-site packages (e.g. pytest) live under the REAL home's .local —
     # re-expose ONLY that library dir (never the secret stores in ~/.sinter)
     try:
@@ -120,6 +120,27 @@ def _sandbox_env() -> dict[str, str]:
     for k in list(out):
         if any(s in k.upper() for s in _SECRET_ENV_KEYS):
             out.pop(k, None)
+    return out
+
+
+def _sandbox_env() -> dict[str, str]:
+    return _sandbox_env_for(_sandbox_home())
+
+
+def _git_hardened_env(base: dict[str, str]) -> dict[str, str]:
+    """F12-B001 (round 12, sol DOM-B, reopened F1-001/F8-002): PRIVILEGED git
+    (commit/push) must be blind to anything executed test code could write —
+    a test that polluted its HOME with ~/.gitconfig (core.hooksPath, url
+    rewrites) used to steer the post-test commit/push in the REAL worktree.
+    Global/system config and hooks are disabled explicitly."""
+    out = dict(base)
+    out.update({
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "HOME": base.get("HOME", _sandbox_home()),
+    })
     return out
 
 
@@ -321,10 +342,16 @@ def _run_tests(cwd: Path, config: RepoConfig) -> bool:
         for excl in config.known_env_failures:
             argv += ["--deselect", excl]
         junit = Path(tempfile.mkdtemp(prefix="fl4write-junit-")) / "results.xml"
+        # F12-B001: a FRESH disposable HOME per test run — the process-wide
+        # sandbox home was reusable and writable by executed code, which
+        # could plant ~/.gitconfig for the post-test privileged git calls
+        home = tempfile.mkdtemp(prefix="fl4write-test-home-")
         try:
-            green, _ = _pytest_evidence(argv, cwd, config.test_timeout, _sandbox_env(), junit)
+            green, _ = _pytest_evidence(argv, cwd, config.test_timeout,
+                                        _sandbox_env_for(home), junit)
             return green
         finally:
+            shutil.rmtree(home, ignore_errors=True)
             shutil.rmtree(junit.parent, ignore_errors=True)
     # Non-pytest runner: no host-controlled evidence -> fail closed (see docstring)
     log.warning("fix-gate fail-closed: non-pytest test_cmd %r has no host-controlled "
@@ -373,11 +400,18 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
     from .renderer import path_display  # MECE round-5 (terra F5-002): raw
     # paths in the fix prompt can carry control/credential-shaped content —
     # render via the display transform
+    # F12-B002 (reopened F1-012): the premise must be the file's EXACT
+    # bytes — destructively scrubbed content made compliant fixes delete
+    # legitimate HTML/comments/literals the model never saw. The widened
+    # fence contains raw bytes structurally; PATCH_SYSTEM already declares
+    # file content to be DATA, never instructions.
+    _fence = "`" * (1 + max((len(run) for run in re.findall(r"`+", content)),
+                            default=0))
     prompt = (
         f"FINDING: [{finding.severity}] {path_display(finding.path)}:{finding.line} — {finding.message}\n"
         f"PROPOSAL: {finding.proposal}\n"
         f"REPO LAW: {json.dumps(config.review, indent=1)}\n"
-        f"FILE CONTENT ({path_display(finding.path)}):\n```\n{scrub.scrub(content)}\n```"
+        f"FILE CONTENT ({path_display(finding.path)}):\n{_fence}\n{content}\n{_fence}"
     )
     try:
         from .law import SYSTEM_PROMPT_ADDENDUM
@@ -468,7 +502,9 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         staged = _run(["git", "add", "--", finding.path], cwd=workdir)
         if staged.returncode != 0:
             return _finish("error", f"git add failed: {staged.stderr[-80:]}")
-        commit_env = _sandbox_env()
+        # F12-B001: privileged git ignores global/system config and hooks
+        # (test-polluted HOME .gitconfig must never steer the real commit)
+        commit_env = _git_hardened_env(_sandbox_env())
         # MECE round-3 (sol F3-003): the sandbox strips git identity vars and
         # HOME (~/.gitconfig) — every automated commit silently failed
         # "Please tell me who you are" (0 landed fixes explained). Identity is
@@ -479,6 +515,12 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             "GIT_COMMITTER_NAME": "fl4write[bot]",
             "GIT_COMMITTER_EMAIL": "fl4write@kyanitelabs.tech",
         })
+        # the index tree is captured BEFORE the commit — post-commit the
+        # committed tree must equal it (hook/race belt: untested bytes must
+        # never ride into the commit)
+        tree_before = _run(["git", "write-tree"], cwd=workdir, env=commit_env)
+        if tree_before.returncode != 0 or not tree_before.stdout.strip():
+            return _finish("error", "cannot capture pre-commit tree (integrity) — refused")
         commit = _run(
             ["git", "commit", "-q", "-m",
              f"fix({finding.rule_id}): {scrub.inline(finding.message, 60)}\n\n"
@@ -491,6 +533,11 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             if "nothing to commit" in (commit.stderr or ""):
                 return _finish("nofix", "nothing to commit (patch was a no-op)")
             return _finish("error", f"git commit failed: {commit.stderr[-80:]}")
+        tree_after = _run(["git", "rev-parse", "HEAD^{tree}"], cwd=workdir, env=commit_env)
+        if tree_after.returncode != 0 or tree_after.stdout.strip() != tree_before.stdout.strip():
+            # F12-B001: committed tree != the tree whose bytes were tested —
+            # something modified content between staging and commit
+            return _finish("error", "committed tree differs from staged tree (integrity) — refused")
         # F8-003: a stable hash of head/rule/path/line — plain rule-id
         # branches collided across fix rounds and findings (non-fast-forward
         # pushes failed silently)
@@ -508,7 +555,18 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         )
         _drop_askpass(push_env)
         if push.returncode != 0:
-            return _finish("error", f"push failed: {push.stderr[-100:]}")
+            # F12-B003 (reopened F8-003): a retry after a failed PR creation
+            # re-created the same branch from the same parent (a NEW sibling
+            # commit) and the plain push rejected forever as non-fast-forward.
+            # The branch is bot-owned under the own-PR rail: one force-with-
+            # lease retry reconciles it; anything else is a real error.
+            push2 = _run(
+                ["git", "push", "-q", "--force-with-lease", fetch_url,
+                 f"HEAD:refs/heads/{branch}"],
+                cwd=workdir, timeout=120, env=push_env,
+            )
+            if push2.returncode != 0:
+                return _finish("error", f"push failed: {push2.stderr[-100:]}")
 
         base = _default_branch(pr.repo)
         from .renderer import _md_escape_block, path_plain  # heading-safe
@@ -556,7 +614,7 @@ def _pytest_verify_argv(parts: list[str]) -> list[str] | None:
         "--verbose", "--quiet", "--exitfirst", "--lf", "--ff", "--collect-only",
         "--no-header", "--disable-warnings", "--strict", "--strict-markers",
         "--continue-on-collection-errors", "--no-summary", "--keep-duplicates",
-        "--no-cov", "--pdb", "--tb-native",
+        "--no-cov", "--pdb", "--tb-native", "--pyargs",
     })
     # long options (and short options) that take a separate value
     _LONG_VALUE = frozenset({
@@ -564,7 +622,7 @@ def _pytest_verify_argv(parts: list[str]) -> list[str] | None:
         "--maxfail", "--tb", "--rootdir", "--basetemp", "--deselect",
         "--ignore", "--ignore-glob", "--confcutdir", "--override-ini",
         "--junitxml", "--junit-prefix", "--color", "--log-level", "--timeout",
-        "--durations", "--durations-min", "--pyargs", "--cov", "--cov-report",
+        "--durations", "--durations-min", "--cov", "--cov-report",
     })
     try:
         i = parts.index("pytest")
@@ -711,10 +769,13 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
             else:
                 argv += ["tests/"]  # no changed python tests: repo default
             # options ride BEFORE the '--' separator (never after the file
-            # paths): default quiet/line output + configured deselects
+            # paths): default quiet/line output + configured deselects.
+            # F12-B006: known_env_failures used to apply ONLY to explicit
+            # test_cmds — the default pytest path silently ran a changed
+            # known-broken test and minted a false deterministic Critical
             extra: list[str] = ["-q", "--tb=line"] if not config.test_cmd else []
-            if config.test_cmd and "pytest" in config.test_cmd:
-                for excl in config.known_env_failures:
+            for excl in config.known_env_failures:
+                if not any(excl in a for a in extra):
                     extra += ["--deselect", excl]
             if extra:
                 try:
@@ -748,6 +809,10 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
                         log.warning("verify_diff_tests: pytest exited %s with no "
                                     "junit evidence — infra UNVERIFIED, no finding",
                                     result.returncode)
+                        # F12-B012: infra paths emit their terminal outcome too
+                        _tel.emit("verify_tests", repo=pr.repo, head=pr.head_sha[:10],
+                                  cmd=cmd, files=test_files, ok=False, unverified=True,
+                                  latency_s=round(_time.time() - _t0, 1))
                         return None
                     if junit.exists():
                         try:
@@ -759,10 +824,18 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
                             if _fails == 0 and _errs > 0:
                                 log.warning("verify_diff_tests: junit shows errors-only "
                                             "(%s) — infra UNVERIFIED, no finding", _errs)
+                                _tel.emit("verify_tests", repo=pr.repo,
+                                          head=pr.head_sha[:10], cmd=cmd,
+                                          files=test_files, ok=False, unverified=True,
+                                          latency_s=round(_time.time() - _t0, 1))
                                 return None
                         except Exception as exc:  # noqa: BLE001
                             log.warning("verify_diff_tests: junit unreadable (%s) — "
                                         "infra UNVERIFIED, no finding", exc)
+                            _tel.emit("verify_tests", repo=pr.repo,
+                                      head=pr.head_sha[:10], cmd=cmd,
+                                      files=test_files, ok=False, unverified=True,
+                                      latency_s=round(_time.time() - _t0, 1))
                             return None
             finally:
                 shutil.rmtree(junit_dir, ignore_errors=True)
@@ -883,12 +956,17 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
             # would let the merge gate bless a red PR as green
             page = 1
             check_runs: list[dict] = []
+            checks_capped = False
             while True:
                 if page > 20:
                     # F11-B008: liveness bound — CI-heavy repos must not block
-                    # the whole cycle on an endless check-run stream
-                    log.warning("check-runs scan on %s#%s: >20 full pages — capped",
-                                config.repo, number)
+                    # the whole cycle on an endless check-run stream.
+                    # F12-B004: capped evidence is INCOMPLETE — a pending or
+                    # failing run past the cap must never merge (ci_green is
+                    # forced False below)
+                    log.warning("check-runs scan on %s#%s: >20 full pages — capped "
+                                "(ci_green forced false)", config.repo, number)
+                    checks_capped = True
                     break
                 checks = _gh_api(
                     "GET",
@@ -904,6 +982,8 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
             # Non-vacuous gate: no checks at all is NOT green; pending runs
             # are NOT green (all([]) used to bless both).
             ci_green = bool(runs) and not pending and all(c.get("conclusion") == "success" for c in runs)
+            if checks_capped:
+                ci_green = False  # F12-B004: partial evidence never merges
             # F8-005: legacy commit STATUSES also gate — check-runs green with
             # a failing commit status must never authorize a merge
             try:

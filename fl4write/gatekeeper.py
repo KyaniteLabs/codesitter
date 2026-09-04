@@ -63,8 +63,13 @@ def _keep_sets(parsed: object) -> tuple[set[tuple[str, int]], dict[tuple[str, in
     for k in keep:
         if not isinstance(k, dict):
             continue
+        # F12-A2: booleans are not line numbers — int(True)==1 used to let a
+        # malformed keep row filter/drop the WRONG (line-1) finding
+        _ln = k.get("line")
+        if isinstance(_ln, bool) or not isinstance(_ln, int):
+            continue
         try:
-            pl = (str(k.get("path", "")).strip(), int(k.get("line")))
+            pl = (str(k.get("path", "")).strip(), _ln)
         except (TypeError, ValueError):
             continue
         rule = str(k.get("rule_id", "")).strip()
@@ -94,8 +99,11 @@ def _demotions(parsed: dict, severity_vocab: list[str]) -> dict[tuple[str, int, 
     for d in parsed.get("demote") or []:
         if not isinstance(d, dict):
             continue
+        _ln = d.get("line")
+        if isinstance(_ln, bool) or not isinstance(_ln, int):
+            continue  # F12-A2: bool anchors never demote line 1
         try:
-            key = (str(d.get("path", "")).strip(), int(d.get("line")), str(d.get("rule_id", "")))
+            key = (str(d.get("path", "")).strip(), _ln, str(d.get("rule_id", "")))
         except (TypeError, ValueError):
             continue
         target = str(d.get("severity", ""))
@@ -117,8 +125,13 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
     if not findings:
         return findings, 0, False
 
+    # F12-A8: paths/messages are repo-controlled — every surface that leaves
+    # the process (prompt, logs) is single-line scrubbed so a control-bearing
+    # path cannot forge prompt structure or log lines
+    from . import scrub as _scrub
     finding_list = "\n".join(
-        f"- [{f.severity}] {f.path}:{f.line} ({f.rule_id}): {f.message[:120]}" for f in findings
+        f"- [{f.severity}] {_scrub.inline(f.path, 200)}:{f.line} ({_scrub.inline(f.rule_id, 60)}): "
+        f"{_scrub.inline(f.message, 120)}" for f in findings
     )
     prompt = f"REPO SEVERITY VOCAB: {config.severity_vocab}\nFINDINGS TO FILTER:\n{finding_list}\nJSON keep list:"
 
@@ -187,7 +200,9 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
             if key3 in applied:
                 continue
             if target and config.severity_vocab.index(target) > config.severity_vocab.index(f.severity):
-                log.info("gatekeeper demoted %s:%s (%s) %s->%s", f.path, f.line, f.rule_id, f.severity, target)
+                log.info("gatekeeper demoted %s:%s (%s) %s->%s",
+                         _scrub.inline(f.path, 200), f.line, _scrub.inline(f.rule_id, 60),
+                         f.severity, target)
                 demoted_ids.append(f"{f.path}:{f.line} ({f.rule_id}) {f.severity}->{target}")
                 f.severity = target
                 applied.add(key3)
@@ -197,7 +212,8 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
         kept_ids = {id(f) for f in kept}
         for f in findings:
             if id(f) not in kept_ids:
-                log.info("gatekeeper dropped: %s:%s (%s) %s", f.path, f.line, f.rule_id, f.message[:60])
+                log.info("gatekeeper dropped: %s:%s (%s) %s", _scrub.inline(f.path, 200),
+                         f.line, _scrub.inline(f.rule_id, 60), _scrub.inline(f.message, 60))
         dropped = len(findings) - len(kept)
         if dropped:
             log.info("gatekeeper dropped %d/%d findings (nit filter)", dropped, len(findings))

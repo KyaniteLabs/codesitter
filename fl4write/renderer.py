@@ -45,7 +45,7 @@ FINDING_LINE_RE = re.compile(
     # F11-A5: the path/line span may be fenced with a backtick RUN (paths
     # containing a literal backtick use a wider fence) — the group must not
     # stop at a single backtick inside a wider fence
-    r"^(?:🆕 )?### \S+ (?P<sev>Critical|Major|Minor|Nit) — (?P<f>`{1,3})(?P<path>.*?):(?P<line>\d+)(?P=f) — `(?P<rule>[^`\n]+)`",
+    r"^(?:🆕 )?### \S+ (?P<sev>Critical|Major|Minor|Nit) — (?P<f>`+)(?P<path>.*?):(?P<line>\d+)(?P=f) — `(?P<rule>[^`\n]+)`",
     re.MULTILINE,
 )
 

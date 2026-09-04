@@ -36,6 +36,12 @@ _REMOTE_IMG_REF_DEF_RE = re.compile(
 _PROTOCOL_RELATIVE_IMG_RE = re.compile(
     r"!\[[^\]]*\]\(\s*//[^)]*\)", re.IGNORECASE)
 _IMG_REF_USAGE_RE = re.compile(r"!\[[^\]]*\]\[[^\]]*\]", re.IGNORECASE)
+# F12-A4 (reopened F11-A6): angle-bracket image destinations ('![x](<https://…>)')
+# and <img srcset="…"> survive the inline-URL scrub
+_ANGLE_IMG_RE = re.compile(
+    r"!\[[^\]]*\]\(\s*<[^>]*https?://[^>]*>\s*\)", re.IGNORECASE)
+_SRCSET_RE = re.compile(
+    r"<\s*(img|source)[^>]*\bsrcset\s*=[^>]*>", re.IGNORECASE)
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _HIDDEN_TAG_RE = re.compile(
     r"</?\s*(details|summary|script|style|iframe|h[1-6]|table|thead|tbody|tr|th|td|"
@@ -63,6 +69,8 @@ def scrub(text: str) -> str:
     s = _REMOTE_IMG_RE.sub("[image removed]", s)
     s = _PROTOCOL_RELATIVE_IMG_RE.sub("[image removed]", s)
     s = _IMG_REF_USAGE_RE.sub("[image removed]", s)
+    s = _ANGLE_IMG_RE.sub("[image removed]", s)
+    s = _SRCSET_RE.sub("&lt;remote-srcset ", s)
     # reference DEFINITIONS feed the reference-style images above; removing
     # the usage alone leaves the URL live for other renderers
     s = _REMOTE_IMG_REF_DEF_RE.sub("", s)
@@ -135,7 +143,8 @@ def assert_clean(text: str) -> None:
             raise ValueError(f"unscrubbed control char U+{cp:04X} in output")
     for pattern in (_DATA_URL_RE, _BASE64_IMG_RE, _REMOTE_IMG_RE,
                     _PROTOCOL_RELATIVE_IMG_RE, _IMG_REF_USAGE_RE,
-                    _REMOTE_IMG_REF_DEF_RE, _REMOTE_SRC_RE, _MARKER_RE):
+                    _REMOTE_IMG_REF_DEF_RE, _ANGLE_IMG_RE, _SRCSET_RE,
+                    _REMOTE_SRC_RE, _MARKER_RE):
         if pattern.search(text):
             raise ValueError(f"unscrubbed pattern {pattern.pattern[:30]} in output")
     # F9-A10: HTML comments and hidden-content tags can restructure a posted

@@ -62,9 +62,15 @@ _ROUTE_STATS: dict[str, dict[str, float]] = {}
 
 
 def _safe_int(v: object) -> int:
+    # F12-B011 (reopened F2-108): provider numbers can be non-finite
+    # (1e309 parses to inf and int(inf) raises OverflowError) — a hostile or
+    # corrupt event used to crash calibration AFTER a completed cycle
     try:
-        return int(v or 0)  # "unknown"/None/floats never raise (Sol#5)
-    except (TypeError, ValueError):
+        if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
+            return 0
+        n = int(v or 0)  # "unknown"/None/floats never raise (Sol#5)
+        return n if n > 0 else 0  # negative token counts are corrupt
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 

@@ -174,11 +174,28 @@ def render_triage_comment(issue_num: int, triage: dict[str, Any], config: RepoCo
     return result
 
 
+def _row_body_author(c) -> tuple[str, str] | None:
+    """F12-B010: ONE validated comment-row read for the marker scans — a
+    non-dict row or a numeric body used to raise and retry the issue forever
+    instead of skipping the malformed row."""
+    if not isinstance(c, dict):
+        return None
+    body = c.get("body")
+    user = c.get("user")
+    login = user.get("login") if isinstance(user, dict) else None
+    if not isinstance(body, str) or not isinstance(login, str):
+        return None
+    return body, login
+
+
 def find_existing_triage(forge: ForgeAdapter, repo: str, number: int, bot_login: str) -> tuple[int, str] | None:
     """Find our existing triage comment on this issue."""
     for c in forge._paginated(f"/repos/{repo}/issues/{number}/comments", page_size=50):
-        body = c.get("body") or ""
-        author = ((c.get("user") or {}).get("login") or "").lower()
+        _row = _row_body_author(c)
+        if _row is None:
+            continue  # malformed row skipped (F12-B010)
+        body, author = _row
+        author = author.lower()
         if (
             "fl4write-triage:v1" in body or "codesitter-triage:v1" in body
         ) and is_own_identity(author, bot_login):
@@ -194,7 +211,10 @@ def _foreign_triage_exists(forge: ForgeAdapter, repo: str, number: int) -> bool:
     triaged — skip rather than spam a second copy.
     """
     for c in forge._paginated(f"/repos/{repo}/issues/{number}/comments", page_size=50):
-        body = c.get("body") or ""
+        _row = _row_body_author(c)
+        if _row is None:
+            continue  # malformed row skipped (F12-B010)
+        body, _author = _row
         if "fl4write-triage:v1" in body or "codesitter-triage:v1" in body:
             return True
     return False
@@ -228,26 +248,32 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
     # success used to advance the watermark past it forever
     for issue in new_issues:
         num = issue.get("number", 0)
-        if num in retry:
-            retry.discard(num)
         try:
             triage = triage_issue(issue, config)
         except Exception as exc:  # noqa: BLE001 - F11-B003 belt: one hostile
             # issue must degrade THIS issue, never abort the whole lane
             log.warning("issues triage crashed for #%s (contained): %s", num, exc)
             summary["errors"] += 1
-            retry.add(num)
+            if not config.shadow:
+                retry.add(num)  # F12-B008: shadow never mutates the live belt
             continue
         if triage is None:
             summary["errors"] += 1
-            retry.add(num)
+            if not config.shadow:
+                retry.add(num)  # F12-B008: shadow never mutates the live belt
             continue
 
         if config.shadow:
             summary["triaged"] += 1
             # SHADOW NEVER ADVANCES THE WATERMARK (LEARNINGS #2 class): a
             # shadow-triaged issue must still get its live triage later.
+            # F12-B008: shadow also NEVER mutates the live retry belt — the
+            # old code discarded retry membership BEFORE this branch, so a
+            # successful shadow triage erased the retry and the issue became
+            # permanently invisible to the live cutover (below watermark)
             continue
+        if num in retry:
+            retry.discard(num)
         try:  # MECE round-1 (luna F1-13): remote ops must never escape the
             # lane — a forge hiccup degrades THIS issue, not the whole cycle
             body = render_triage_comment(num, triage, config)
@@ -291,5 +317,11 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
         last_num = max(last_num, num)
         st["last_triaged_number"] = last_num  # F7-B002: int-normalized write
 
-    st["issues_retry"] = sorted(retry)
+    # F12-B009 (reopened F10-B003): the retry set must stay BOUNDED like the
+    # quarantine list — closed/permanently-marked issues used to accumulate
+    # forever. Entries at or below the watermark that were NOT collected this
+    # cycle are gone/closed: garbage-collect them; cap the remainder.
+    _collected = {int(i.get("number", 0)) for i in new_issues}
+    retry = {r for r in retry if r > last_num or r in _collected}
+    st["issues_retry"] = sorted(retry)[-200:]
     return summary
