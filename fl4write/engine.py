@@ -204,14 +204,32 @@ def _review_pr(
                     primary.update_comment(config.repo, pr.number, existing[0], body)
                 else:
                     primary.create_comment(config.repo, pr.number, body)
-            state.mark_reviewed(st, pr.number, pr.head_sha,
-                                f"shadow:{len(deterministic)}" if config.shadow
-                                else f"reviewed:{len(deterministic)}")
             report.reviewed += 1
+            if config.shadow:
+                report.alerts.append(
+                    f"#{pr.number}: model unavailable — deterministic verify finding "
+                    f"posted to the shadow sink (live retries under its own cap)")
+                return "model-unavailable"
+            # F11-C003 (reopened F6-C007): posting the deterministic finding
+            # must NOT terminalize the SHA — the old mark_reviewed made
+            # 'reviewed:1' and needs_review False, so the deferred model
+            # analysis was NEVER retried and other defects at this SHA were
+            # permanently invisible. The SHA stays reviewable under the
+            # ordinary model-failure cap; the edit-in-place comment is
+            # idempotent while only the deterministic finding exists.
+            key = f"{pr.number}:{pr.head_sha[:10]}"
+            fails = int(st.get("model_failures", {}).get(key, 0)) + 1
+            st.setdefault("model_failures", {})[key] = fails
             report.alerts.append(
                 f"#{pr.number}: model unavailable — deterministic verify finding posted "
-                f"(model analysis deferred for this SHA)")
-            return "reviewed"
+                f"(model analysis deferred; attempt {fails}/{MODEL_FAILURE_CAP} at this SHA)")
+            if fails >= MODEL_FAILURE_CAP:
+                state.mark_reviewed(st, pr.number, pr.head_sha, "model-failed-cap")
+                report.alerts.append(
+                    f"#{pr.number}: model failed {fails}x at this SHA after the "
+                    f"deterministic finding — needs human look")
+                return "model-failed-cap"
+            return "model-unavailable"
         report.model_unavailable += 1
         # MECE round-6 (luna-max F6-C005): shadow runs must not consume the
         # LIVE model-failure counters or reach the live model-failed-cap — the
@@ -437,8 +455,15 @@ def _post_merge_sweep(
             break
         bot_authored = bool(pr.is_bot_author)
         if bot_authored and fixlane.dependency_depth(pr, pr.title, config) in ("skip",):
-            state.mark_reviewed(st, pr.number, pr.head_sha, "dependency-skip")
             report.skipped_dependency += 1
+            if config.shadow:
+                # F11-C002 (reopened F5-201): shadow NEVER writes live
+                # per-PR terminal state nor advances the live watermark —
+                # the old dependency-skip branch did both, so a live cutover
+                # could miss a shadow-processed PR entirely
+                pm_shadow[str(pr.number)] = pr.head_sha + ":dep"
+                continue
+            state.mark_reviewed(st, pr.number, pr.head_sha, "dependency-skip")
             terminal += 1
             continue
         if not state.needs_review(st, pr.number, pr.head_sha):
@@ -472,6 +497,11 @@ def _post_merge_sweep(
             break  # deferred (diff/model): watermark stops before this PR
 
     if config.shadow and pm_shadow:
+        if len(pm_shadow) > 200:
+            # F11-C016: the shadow belt is bounded — a long shadow soak must
+            # not grow state without limit (entries beyond the newest 200 are
+            # stale merges the live cutover has long passed)
+            pm_shadow = dict(list(pm_shadow.items())[-200:])
         st["pm_shadow_seen"] = pm_shadow
     elif not config.shadow and isinstance(st.get("pm_shadow_seen"), dict):
         st.pop("pm_shadow_seen", None)
@@ -667,13 +697,10 @@ def _omnisweep_step(
         if st.get("omni_head"):
             _cur = _probe_head(primary, config.repo)
             if _cur is not None and _cur != st["omni_head"]:
-                st["omni_complete"] = False
-                st["omni_published"] = False
-                st["omni_cursor"] = ""
-                st["omni_findings"] = []
-                st["omni_next_id"] = 1
-                st["omni_head"] = _cur[0]
-                st.pop("omni_fp", None)
+                # F11-C007: atomic reset — stale failure/quarantine counts
+                # must not follow the sweep onto the new HEAD
+                _omni_reset_sweep(st)
+                st["omni_head"] = _cur
                 report.alerts.append(
                     "omnisweep: HEAD changed after completion — re-auditing from scratch")
         if not st.get("omni_complete"):
@@ -711,10 +738,23 @@ def _omnisweep_step(
     if truncated:
         # MECE round-5 (sol F5-007): a known-truncated listing must NEVER
         # render COMPLETE — completion is a correctness claim about the whole
-        # tree, and the alert alone used to be followed by omni_complete=True
+        # tree, and the alert alone used to be followed by omni_complete=True.
+        # F11-C004: truncated-snapshot progress is UNTRUSTED — it advances the
+        # cursor with no fingerprint; when a complete listing later returns,
+        # every path that was newly visible before the cursor would be skipped
+        # and the sweep falsely certified. Flag it; progress is discarded on
+        # the first complete listing below.
+        st["omni_truncated_seen"] = True
         report.alerts.append(
             "omnisweep: tree listing TRUNCATED by the forge — completion BLOCKED; "
             "files past the truncation are unaudited (widen caps/excludes or split the repo)")
+    elif st.pop("omni_truncated_seen", None) and (
+            st.get("omni_cursor") or st.get("omni_complete")
+            or st.get("omni_findings") or st.get("omni_fp")):
+        _omni_reset_sweep(st)
+        report.alerts.append(
+            "omnisweep: complete listing after truncated snapshots — "
+            "truncated progress discarded, re-auditing from scratch")
     # row-shape guard: (path, size) pairs only; one garbage row must not
     # abort. F10-C003: malformed rows mean the listing is NOT a trustworthy
     # whole tree — completion is blocked while rows are bad
@@ -770,10 +810,9 @@ def _omnisweep_step(
             fp_meta += "\x00head:" + _anchor
         fp = _hl.sha256(fp_meta.encode()).hexdigest()[:16]
         if st.get("omni_fp") and fp != st["omni_fp"] and st.get("omni_cursor", ""):
-            st["omni_cursor"] = ""
-            st["omni_findings"] = []
-            st["omni_next_id"] = 1
-            st.pop("omni_head", None)
+            # F11-C007: atomic reset — stale failure/quarantine counts and
+            # totals must not ride the restart onto the new tree
+            _omni_reset_sweep(st)
             report.alerts.append("omnisweep: tree CHANGED mid-sweep — restarting from scratch")
         st["omni_fp"] = fp
     cursor = st.get("omni_cursor", "")
@@ -929,6 +968,21 @@ def _omnisweep_step(
 
 
 
+
+
+def _omni_reset_sweep(st: dict) -> None:
+    """F11-C007: ONE atomic reset for every omni restart class (HEAD change,
+    tree change mid-sweep, truncated-snapshot comeback). Every HEAD-scoped
+    field goes — the old partial resets left stale failure/quarantine counts
+    that prematurely quarantined new content, and stale totals contaminated
+    the completion report. omni_issue survives: the next audit reuses it."""
+    for key in ("omni_complete", "omni_published", "omni_cursor", "omni_head",
+                "omni_fp", "omni_findings", "omni_next_id", "omni_total",
+                "omni_scanned_total", "omni_file_fails", "omni_unscannable",
+                "omni_unfetchable", "omni_truncated_seen"):
+        st.pop(key, None)
+
+
 def _probe_head(primary: ForgeAdapter, repo: str) -> str | None:
     """F11-C015: ONE validated HEAD probe for omnisweep — returns a full SHA
     string or None. Every raw adapter probe used to re-validate shape and
@@ -937,10 +991,21 @@ def _probe_head(primary: ForgeAdapter, repo: str) -> str | None:
     try:
         _h = primary.head_check_runs(repo)
     except Exception:  # noqa: BLE001 - probing never blocks a sweep
-        return None
+        _h = None
     if isinstance(_h, (tuple, list)) and len(_h) == 2 \
             and isinstance(_h[0], str) and len(_h[0]) >= 7:
         return _h[0]
+    # F11-C005: Forgejo exposes no check-runs — fall back to the adapter's
+    # commit-sha anchor so multi-cycle sweeps on Forgejo repos are not
+    # certified unanchored (same-size content edits must restart the sweep)
+    _hs = getattr(primary, "head_sha", None)
+    if callable(_hs):
+        try:
+            _sha = _hs(repo)
+        except Exception:  # noqa: BLE001 - probing never blocks a sweep
+            return None
+        if isinstance(_sha, str) and len(_sha) >= 7:
+            return _sha
     return None
 
 
@@ -1130,6 +1195,10 @@ def _retro_sweep(
             # save-before-classification checkpointed the pre-discard seen-set
             # (a kill between the two left the PR permanently skipped)
             break
+        # F11-C016: a deferred retry counter dies with its reason — terminal
+        # success clears it (one- or two-attempt counters used to survive
+        # successful reviews forever)
+        st.pop(f"retro_defer:{pr.number}:{pr.head_sha[:10]}", None)
         oldest_processed = pr.merged_at
 
     if config.shadow and shadow_belt:

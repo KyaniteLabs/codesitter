@@ -66,7 +66,11 @@ def _read_state(repo: str) -> dict | None:
         st = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
-    if not isinstance(st, dict) or not isinstance(st.get("prs", {}), dict):
+    # F11-C010: prs must be EXPLICITLY present — {'version':1} without it is
+    # the same corrupt shape the canonical loader reconciles; treating it as
+    # an inactive-established repo classified it COLD (long sleep) instead of
+    # the UNKNOWN/warm fail-safe the scheduler promises
+    if not isinstance(st, dict) or not isinstance(st.get("prs"), dict):
         return None  # shape-corrupt = UNKNOWN, never a crash (Sol#9)
     if not isinstance(st.get("version"), int) \
             or isinstance(st.get("version"), bool) \

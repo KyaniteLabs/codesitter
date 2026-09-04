@@ -144,6 +144,35 @@ def load_state(path: Path) -> dict[str, Any]:
                                 path, len(bad))
                     data = dict(data)
                     data["prs"] = {k: v for k, v in prs.items() if k not in bad}
+                # F11-C009 (reopened F5-204): record VALUES are consumed by
+                # raw int() — normalize fix_depth and the per-PR failure maps
+                _prs = data["prs"]
+                _dirty = False
+                for _rec in _prs.values():
+                    if not isinstance(_rec, dict):
+                        continue
+                    _fd = _rec.get("fix_depth")
+                    if _fd is not None and (isinstance(_fd, bool)
+                                            or not isinstance(_fd, int)):
+                        log.warning("state %s: non-int fix_depth dropped", path)
+                        _rec.pop("fix_depth", None)
+                        _dirty = True
+                    _mf = _rec.get("model_failures")
+                    if _mf is not None:
+                        if not isinstance(_mf, dict):
+                            log.warning("state %s: non-dict PR model_failures dropped", path)
+                            _rec.pop("model_failures", None)
+                            _dirty = True
+                        else:
+                            _kept = {k: x for k, x in _mf.items()
+                                     if isinstance(x, int) and not isinstance(x, bool)}
+                            if len(_kept) != len(_mf):
+                                log.warning("state %s: dropping non-int PR model_failures", path)
+                                _rec["model_failures"] = _kept
+                                _dirty = True
+                if _dirty:
+                    data = dict(data)
+                    data["prs"] = _prs
                 return _normalize_aux(data)
             log.warning("state %s version ok but shape wrong; bounded reconcile", path)
         else:
@@ -212,12 +241,44 @@ def _normalize_aux(data: dict[str, Any]) -> dict[str, Any]:
                 out["omni_findings"] = [r for r in omni if r not in bad]
     # MECE round-7 (terra F7-002): omni cursors/counters drive raw
     # int()/comparison operations — wrong types used to TypeError/ValueError
-    # the cycle outside its handled exceptions
-    for key in ("omni_cursor", "omni_head"):
+    # the cycle outside its handled exceptions. F11-C008 (reopened F7-C002):
+    # identity/progress fields are ATOMIC with the sweep — dropping only the
+    # bad field used to leave omni_complete=True next to a lost cursor/head
+    # and the engine stayed terminal without ever re-probing
+    _omni_core_bad = False
+    for key in ("omni_cursor", "omni_head", "omni_fp"):
         v = out.get(key)
         if v is not None and not isinstance(v, str):
-            log.warning("state %s: non-string %r dropped (bounded reconcile)", key, v)
+            log.warning("state omni core %s: non-string %r — sweep state reset", key, v)
+            _omni_core_bad = True
+    for key in ("omni_scanned_total", "omni_next_id", "omni_total"):
+        v = out.get(key)
+        if v is not None and (isinstance(v, bool) or not isinstance(v, int)):
+            log.warning("state omni core %s: non-int %r — sweep state reset", key, v)
+            _omni_core_bad = True
+    if _omni_core_bad:
+        for key in ("omni_complete", "omni_published", "omni_cursor", "omni_head",
+                    "omni_fp", "omni_findings", "omni_next_id", "omni_total",
+                    "omni_scanned_total", "omni_unscannable", "omni_unfetchable",
+                    "omni_file_fails"):
             out.pop(key, None)
+        # omni_issue is deliberately kept: the next audit reuses the issue
+
+    # F11-C009 (reopened F5-204): numeric VALUES inside failure maps are
+    # consumed by raw int() — normalize the map values, not just containers
+    for key in ("model_failures", "omni_file_fails"):
+        v = out.get(key)
+        if v is None:
+            continue
+        if not isinstance(v, dict):
+            log.warning("state %s: non-dict %r dropped (bounded reconcile)", key, v)
+            out.pop(key, None)
+        else:
+            kept = {k: int(x) for k, x in v.items()
+                    if isinstance(x, int) and not isinstance(x, bool)}
+            if len(kept) != len(v):
+                log.warning("state %s: dropping non-int values (bounded reconcile)", key)
+            out[key] = kept
     for key in ("omni_scanned_total", "omni_next_id", "omni_total"):
         v = out.get(key)
         if v is None:

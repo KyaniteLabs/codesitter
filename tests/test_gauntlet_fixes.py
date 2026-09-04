@@ -2246,7 +2246,13 @@ class TestMECERound6LunaMaxPins:
         st = state_mod.load_state(sp)
         assert forge.posts, "deterministic verify finding swallowed by model outage"
         assert r.reviewed == 1
-        assert st["prs"]["1"].get("last_outcome", "").startswith("reviewed")
+        # F11-C003 (desk ruling, revises F6-C007): the deterministic finding
+        # posts, but the SHA must NOT terminalize — model analysis retries
+        # under the ordinary model-failure cap (terminalizing made the
+        # deferred analysis never run and hid other defects at this SHA)
+        rec = st["prs"].get("1", {})
+        assert not rec.get("last_outcome", "").startswith("reviewed")
+        assert any(k.startswith("1:") for k in st.get("model_failures", {}))
 
     def test_watermark_cursor_semantic_validation(self, tmp_path):
         from fl4write.state import load_state
@@ -2509,10 +2515,15 @@ class TestMECERound7TerraPins:
                      '"omni_published": true, "omni_next_id": "x"}',
                      encoding="utf-8")
         st = load_state(p)
+        # F11-C008 (reopened F7-C002): identity/progress fields are ATOMIC
+        # with the sweep — one invalid core field discards the WHOLE sweep
+        # set (including terminal flags). Field-by-field repair left
+        # omni_complete/published True next to a lost cursor and the engine
+        # stayed terminal without ever re-probing.
         assert "omni_cursor" not in st and "omni_scanned_total" not in st
         assert "omni_complete" not in st  # truthy "false" must not terminalize
         assert "omni_next_id" not in st
-        assert st.get("omni_published") is True  # real bools ride through
+        assert "omni_published" not in st  # swept away with the invalid core
 
     def test_ci_watch_non_hex_head_degrades_before_action(self, tmp_path, monkeypatch):
         sp = tmp_path / "s.json"
@@ -4014,3 +4025,106 @@ class TestMECERound11Engine:
         assert _probe_head(_Ok(), "r") == "a" * 40
         assert _probe_head(_BadShape(), "r") is None
         assert _probe_head(_Raises(), "r") is None
+
+
+class TestMECERound11Engine2:
+    """Round-11 sol DOM-C tranche 2: shadow dependency-skip discipline (C002),
+    deterministic-finding non-terminal (C003), truncated-snapshot trust
+    (C004), Forgejo head anchor (C005), atomic omni reset (C007), atomic
+    load-state reconcile (C008), record numeric normalization (C009), tiers
+    prs fail-safe (C010), retention caps (C016)."""
+
+    def test_load_state_sweeps_whole_omni_set_on_bad_core(self, tmp_path):
+        from fl4write.state import load_state
+
+        p = tmp_path / "s.json"
+        p.write_text('{"version": 1, "prs": {}, "omni_cursor": 1, '
+                     '"omni_complete": true, "omni_published": true, '
+                     '"omni_findings": [{"id": 1}], "omni_next_id": "x"}')
+        st = load_state(p)
+        for k in ("omni_cursor", "omni_complete", "omni_published",
+                  "omni_findings", "omni_next_id"):
+            assert k not in st, k
+
+    def test_load_state_normalizes_record_numerics(self, tmp_path):
+        from fl4write.state import load_state
+
+        p = tmp_path / "s.json"
+        p.write_text('{"version": 1, "prs": {"1": {"fix_depth": "bad", '
+                     '"model_failures": {"k": "x", "j": 2}}, "2": {}}}')
+        st = load_state(p)
+        rec = st["prs"]["1"]
+        assert "fix_depth" not in rec
+        assert rec["model_failures"] == {"j": 2}
+
+    def test_tiers_require_explicit_prs_field(self, tmp_path, monkeypatch):
+        import fl4write.tiers as tiers
+
+        monkeypatch.setattr(tiers, "STATE_DIR", tmp_path)
+        (tmp_path / "o__r.state.json").write_text('{"version": 1}')
+        assert tiers._read_state("o/r") is None  # missing prs = UNKNOWN
+        (tmp_path / "o__r.state.json").write_text('{"version": 1, "prs": {}}')
+        assert tiers._read_state("o/r") == {"version": 1, "prs": {}}
+
+    def test_pm_shadow_belt_and_defer_cleanup_laws(self):
+        src = (REPO_ROOT / "fl4write/engine.py").read_text()
+        # bounded shadow belt
+        assert "len(pm_shadow) > 200" in src
+        # defer counters die with their reason (terminal success)
+        assert 'f"retro_defer:{pr.number}:{pr.head_sha[:10]}"' in src
+        assert "retro_defer" in src
+
+    def test_shadow_dependency_skip_never_touches_live_state(self, tmp_path, monkeypatch):
+        import fl4write.engine as eng
+        from fl4write import fixlane
+
+        sp = tmp_path / "s.json"
+        _r4_seed(sp, merged_since="2026-08-25T12:00:00Z")
+        pr = PullRequest(forge="github", number=9, repo="o/r", head_sha="c" * 40,
+                         title="chore(deps): bump x", is_bot_author=True)
+
+        class _F(_R4Forge):
+            def list_merged_prs(self, repo, since_iso):
+                return [pr]
+
+        monkeypatch.setattr(eng, "adapter_for", lambda b: _F())
+        monkeypatch.setattr(fixlane, "dependency_depth", lambda pr, t, c: "skip")
+        c = _sol_config(shadow=True,
+                        post_merge={"enabled": True, "max_per_cycle": 10})
+        r = run_cycle(c, sp, get_diff=lambda p: ({"x.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert r.skipped_dependency == 1
+        assert st.get("merged_since") == "2026-08-25T12:00:00Z"  # watermark held
+        assert not st.get("prs"), "shadow dependency skip wrote live records"
+        assert st.get("pm_shadow_seen", {}).get("9") == "c" * 40 + ":dep"
+
+    def test_deterministic_finding_does_not_terminalize_sha(self, tmp_path, monkeypatch):
+        import fl4write.engine as eng
+        from fl4write.analyzer import ModelUnavailable
+        from fl4write.models import Finding as F2
+
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        pr = PullRequest(forge="github", number=5, repo="o/r", head_sha="a" * 40)
+
+        class _F(_R4Forge):
+            def list_open_prs(self, repo):
+                return [pr]
+
+        monkeypatch.setattr(eng, "adapter_for", lambda b: _F())
+
+        def boom(*a, **k):
+            raise ModelUnavailable("model down")
+        monkeypatch.setattr("fl4write.analyzer.analyze", boom)
+        det = F2(rule_id="tests", severity="Critical", path="tests/test_x.py",
+                 line=1, category="CI", message="diff's own tests FAIL")
+        monkeypatch.setattr("fl4write.executor.verify_diff_tests",
+                            lambda *a, **k: det)
+        c = _sol_config()
+        run_cycle(c, sp, get_diff=lambda p: ({"tests/test_x.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        rec = st.get("prs", {}).get("5", {})
+        assert rec.get("status") != "reviewed", "deterministic finding terminalized"
+        assert rec.get("last_reviewed_sha") is None
+        # model-failure counted ONCE for this SHA — the retry cap governs
+        assert st.get("model_failures", {}).get("5:aaaaaaaaaa") == 1

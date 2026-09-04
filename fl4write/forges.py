@@ -708,6 +708,24 @@ class ForgejoAdapter(ForgeAdapter):
     def head_check_runs(self, repo: str) -> tuple[str, list[dict]] | None:
         return None  # v1: check-runs (GHA) only; Forgejo commit statuses unsupported
 
+    def head_sha(self, repo: str) -> str | None:
+        """Default-branch HEAD commit sha (F11-C005): Forgejo has no
+        check-runs, but the omnisweep anchor needs SOME content identity or
+        same-size edits pass undetected and a multi-cycle sweep gets certified
+        unanchored. None when unqueryable (sweep defers, never guesses)."""
+        try:
+            from urllib.parse import quote
+            ri = self._call("GET", f"/repos/{repo}")
+            if not isinstance(ri, dict):
+                return None
+            b = ri.get("default_branch")
+            if not isinstance(b, str) or not b:
+                b = "main"
+            h = self._call("GET", f"/repos/{repo}/commits/{quote(b, safe='')}")
+            return h.get("sha") if isinstance(h, dict) and h.get("sha") else None
+        except ForgeError:
+            return None
+
     def list_tree_files(self, repo: str) -> tuple[list[tuple[str, int]], bool] | None:
         """Forgejo variant: Gitea's ?recursive=true TRUNCATES at 1000 entries
         (live-caught on KyaniteLabs/liminal: 862 of a much larger tree) and
