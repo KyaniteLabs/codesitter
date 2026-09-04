@@ -74,6 +74,12 @@ tests green** (426 collected / 423 passing + 3 live-eval as of the MECE
 round-4 desk pass), ruff clean, CI on every push. Quality loop on
 issue #5; desk charter + incident history on issue #3 and map #63.
 
+Requested behavior (CEO 2026-09-04, not yet implemented): the **exhaustive bug-resolution
+loop** — repeated fresh-eyes recon→fix→refresh→note rounds (new context every round) until
+THREE CONSECUTIVE 100%-green loops with zero regressions, then the repo is certified
+exhaustively flushed. Spec: [EXHAUSTIVE-BUG-RESOLUTION.md](EXHAUSTIVE-BUG-RESOLUTION.md) ·
+tracker: issue #13. Feature tranche; delegate-audited before fleet enablement.
+
 Honest status line (post 2026-09-03 adjudication): the bot is NOT yet
 declared fit-for-use at scale — the desk's own adjudicated sample found the
 majority of posted Criticals were false positives (see #5 and LEARNINGS
