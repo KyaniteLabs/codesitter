@@ -9,7 +9,7 @@ no triage. Curated outcomes live in LEARNINGS.md.
 - 2026-09-01 rulesets — contents-PUT 409 "must be made through a pull request" on 8 repos; branch=main 404s on master-default repos → LEARNINGS #21
 - 2026-09-01 nucbox env — cron never saw .bashrc model key; quoted value 401'd auth → LEARNINGS #22
 - 2026-09-01 assumptions — "app not installed on user account" was false; observable via /app/installations → LEARNINGS #23
-- 2026-08-31 racing branches — five silent adoption losses to date (Innerscape, Elixis ×2, devarch, tastecheck, content-production-system); surveillance every cycle is the mitigation
+- 2026-08-31 racing branches — six silent adoption losses across five repos to date (Innerscape ×1, Elixis ×2, devarch, tastecheck, content-production-system); surveillance every cycle is the mitigation
 - 2026-08-31 runner-log — per-repo ALERT lines invisible inside ok-status output; now logged explicitly
 - 2026-09-01 six-lane audit batch — ~60 findings, 13 Critical: vacuous diff fallback, dead+dangerous fix lane clone, lethal-trifecta env, symlink write-through, gatekeeper false-clean, format drift (renderer/engine/metrics), dead config knobs, silent-state corruption handling, runner timeout arithmetic, pid-reuse lock wedges, README status lies → LEARNINGS #25; fixes in 1f20586
 - 2026-09-01 meta — the hardened run-cycle.sh died on its own first deploy (set -u unbound var): new hardening needs the same verification bar as the code it guards
@@ -51,4 +51,5 @@ no triage. Curated outcomes live in LEARNINGS.md.
 - 2026-09-04 round-5 terra DOM-B — issues-lane failed post skipped forever after later watermark advance (F1-07 reopened), raw f.path in fixlane/executor/ci escalation bodies → 2 pins (fbdcdaf)
 - 2026-09-04 round-4 M3 DOM-D desk — comment scan depth 10→100 pages, _call_text ignores Retry-After, slash-branch URL corruption, unbounded check-runs scan; nested-YAML-dup claim INVALID by probe → 4 pins (fbdcdaf)
 - 2026-09-04 round-6 terra DOM-A + luna DOM-B — dup-key envelope bypasses distinct-refusal, credential egress to gatekeeper prompt (render-only redaction), drop-log slice-before-redact leak, executor lenient base64 empty-file premise (F1-024 reopened), post-cycle telemetry UnicodeDecodeError → LEARNINGS #46; 5 pins
+- 2026-09-04 round-6 sol DOM-E — retro/omni shadow still writes live belts post-#45, pytest test_cmd discards diff tests + join/split corruption + junit-after-'--', plan shape not validated, unguarded cd, PILOT/README/registry doc drift (fleet 129→130, six losses) → LEARNINGS #47; 9 findings, 7 pins
 

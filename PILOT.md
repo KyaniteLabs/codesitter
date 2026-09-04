@@ -1,4 +1,5 @@
-# The pilot program (live 2026-08-31; renamed + consolidated 2026-09-01)
+# The pilot program — 2026-08-31 launch snapshot (HISTORICAL; current state:
+# README § Status + Session state below)
 
 **32 repos** — 5 wave-1 org repos (kinocut, Epoch, devarch-framework,
 Innerscape, Elixis) + 26 wave-2 repos (org + owner's personal; originally-ours
@@ -7,7 +8,9 @@ under that spelling; **liminal held** — Sinter's repo, #999 conversation, not
 unilateral) + **KyaniteLabs/fl4write itself as #32 (2026-09-01, CEO CI-failure
 directive: own-repo CI red summons review+fix — the bot dogfoods on its own
 repo)**. Full product live: review + gatekeeper + metrics + **fix lane** +
-**issues lane** (all four enabled 2026-09-01, CEO order) + **post-merge
+**issues lane** (implementation live; opt-in per repo via `issues_enabled` —
+no fleet repo has enabled it — README F3-004 doc truth; the pilot-day
+"all four enabled" claim predates the opt-in reality) + **post-merge
 review mode** (PM-2, 2026-09-01; fleet-enabled — reviews PRs merged since a
 per-repo watermark, findings as post-merge comments, fixes as follow-up PRs —
 the answer to this org's ~60s merges the open-PR poller never sees, LEARNINGS
@@ -51,9 +54,9 @@ resolution across the org AND user-account installations).
 - **Acceptance metrics** (Greptile lesson): watch address-rate of posted
   findings per repo; a repo whose findings are never addressed = tuning
   conversation, not louder reviewing.
-- **Racing-branch surveillance**: config-presence check every cycle. Five
-  adoption losses so far (Innerscape ×1, Elixis ×2, devarch-framework ×1,
-  tastecheck ×1, content-production-system ×1). An ALERT means: re-adopt on
+- **Racing-branch surveillance**: config-presence check every cycle. Six
+  adoption losses across five repos so far (Innerscape ×1, Elixis ×2,
+  devarch-framework ×1, tastecheck ×1, content-production-system ×1). An ALERT means: re-adopt on
   current main, then verify CONTENTS-ON-MAIN — never trust the merge event.
 
 ## Session state (2026-09-03, PM-3 day 1)
@@ -127,7 +130,9 @@ model-route stability, surveillance proven. Incidents so far (all fixed with
 regression tests, see LEARNINGS.md): the email storm (#17), the rename-sweep
 URL bug (#18), the app-slug identity change (#20). Soak counts post-fix days.
 
-## Forgejo-only repos (approved 2026-09-01, awaiting the bot identity)
+## Forgejo-only repos (approved 2026-09-01; SUPERSEDED 2026-09-02 by the CEO
+## all-FJ order — configs landed on main and the fl4write bot identity is live;
+## see Session state above. Section kept for history.)
 
 Four repos exist ONLY on git.kyanitelabs.tech: `KyaniteLabs/achiote-icm`,
 `simon/CNCL`, `simon/puenteworks-os`, `simon/rlenvs` (all originally-ours,

@@ -58,7 +58,7 @@ Run in shadow mode (`shadow: true`) first — findings log, nothing posts.
 Cutover checklist: 48h shadow diff reviewed → host decision recorded (always-on
 host OR explicitly accepted sleep gap) → PAT scopes enumerated + rotation set.
 
-## Status — v0.4+ production (fleet of 129 central configs; see PILOT.md)
+## Status — v0.4+ production (fleet of 130 central configs; see PILOT.md)
 
 All five review modes live (open-PR, post-merge, retro audit, ci_watch,
 omnisweep) plus gatekeeper, verify-tests and acceptance metrics. The issues
@@ -67,7 +67,7 @@ no fleet repo has enabled it yet — luna F3-004 doc truth).
 **Usage:** `python3 -m fl4write.cli <config> [--live] [--fixes] [--issues]`
 (mode flag typos are refused — unknown flags exit 2).
 
-Current fleet state (2026-09-04, MECE audit round 1): **129 central configs**
+Current fleet state (2026-09-04, MECE audit round 1): **130 central configs**
 across GitHub + Forgejo cycling ~100 repos/hour on the nucbox runner
 (`run-cycle.sh`, hourly crontab, single-host law — LEARNINGS #17). **400+
 tests green** (426 collected / 423 passing + 3 live-eval as of the MECE

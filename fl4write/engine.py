@@ -570,6 +570,13 @@ def _omnisweep_step(
     from . import gatekeeper
     from .analyzer import ModelUnavailable, analyze
 
+    if config.shadow:
+        # MECE round-6 (sol F6-E01): shadow is a dry run — omnisweep under
+        # shadow touches NO live state (cursor/findings/completion belong to
+        # the live sweep; the cutover scans from scratch and publishes).
+        # Zero model spend: shadow omnisweep has no consumer.
+        log.info("omnisweep: shadow mode — sweep skipped (dry-run law)")
+        return
     if st.get("omni_complete"):
         report.omni_findings = len(st.get("omni_findings", []))  # F5-011
         if not st.get("omni_published"):  # MECE round-5 (sol F5-002): a
@@ -875,7 +882,9 @@ def _retro_sweep(
             report.alerts.append("retro sweep deferred — cycle deadline reached")
             break
         seen.add(pr.number)
-        st["retro_seen"] = {int(n): True for n in seen}
+        if not config.shadow:  # MECE round-6 (sol F6-E01): shadow runs never
+            # touch the LIVE seen belt — the local set dedupes the run only
+            st["retro_seen"] = {int(n): True for n in seen}
         if not state.needs_review(st, pr.number, pr.head_sha):
             if not config.shadow:
                 oldest_processed = pr.merged_at
@@ -889,7 +898,8 @@ def _retro_sweep(
             # a forge hiccup defers THIS PR, never crashes the cycle
             report.alerts.append(f"retro #{pr.number}: forge error contained: {exc}")
             seen.discard(pr.number)
-            st["retro_seen"] = {int(n): True for n in seen}
+            if not config.shadow:
+                st["retro_seen"] = {int(n): True for n in seen}
             state.save_state(state_path, st)
             break
         if outcome == "shadow":
@@ -899,7 +909,8 @@ def _retro_sweep(
             continue
         if outcome == "deferred":
             seen.discard(pr.number)  # retry next cycle
-            st["retro_seen"] = {n: True for n in seen}
+            if not config.shadow:
+                st["retro_seen"] = {n: True for n in seen}
             # MECE round-4 (luna F4-004): consecutive deferrals on one PR burn
             # the lane every cycle while the model/env is down — park after a
             # bounded retry count, surfaced by the alert
@@ -932,9 +943,10 @@ def _retro_sweep(
         st.pop("retro_shadow_seen", None)  # live runs stop honoring the belt
     if oldest_processed:
         st["retro_cursor"] = oldest_processed
-    if oldest_processed is None and not pending and not active_park:
+    if oldest_processed is None and not pending and not active_park and not config.shadow:
         # window exhausted between boundary and cursor — nothing left to audit
-        # (also fires for repos with no merges in the window: stop re-listing)
+        # (also fires for repos with no merges in the window: stop re-listing).
+        # MECE round-6 (sol F6-E01): shadow runs never set live completion
         st["retro_complete"] = True
         report.alerts.append(
             f"retro audit complete: {len(seen)} merged PRs within "

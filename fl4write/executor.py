@@ -231,7 +231,15 @@ def _pytest_evidence(argv: list[str], cwd: Path, timeout: int,
     Green = tests>0, failures=0, errors=0. Returns (green, result)."""
     xml_argv = list(argv)
     if not any(a.startswith("--junitxml") for a in xml_argv):
-        xml_argv += ["--junitxml", str(junit_path)]
+        # MECE round-6 (sol F6-E03): file paths may sit behind a '--'
+        # separator — options appended at the end would be parsed as
+        # positional paths and fail the run. Insert the junit flag before the
+        # separator (or at the end when there is none).
+        try:
+            sep = xml_argv.index("--")
+        except ValueError:
+            sep = len(xml_argv)
+        xml_argv = xml_argv[:sep] + ["--junitxml", str(junit_path)] + xml_argv[sep:]
     result = _run(xml_argv, cwd=cwd, timeout=timeout, env=env)
     if result.returncode != 0:
         return False, result
@@ -491,29 +499,61 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
         # ONLY the diff's own test files — the whole-suite default would
         # attribute MAIN's pre-existing red to this diff (audit A3: a
         # false-Critical machine wearing the word 'deterministic').
+        import shlex
+
         py_tests = [f for f in test_files if f.endswith(".py")]
-        if config.test_cmd and any(m in config.test_cmd for m in ("&&", ";", "|")):
+        chain = bool(config.test_cmd and any(m in config.test_cmd for m in ("&&", ";", "|")))
+        if chain:
             # committed per-repo chain (DialectOS class): bash -lc keeps one
             # argv; the string is config-repo content, never repo-controlled
             argv = ["bash", "-lc", config.test_cmd]
             cmd = config.test_cmd
         else:
-            cmd = config.test_cmd or (
-                f"python3 -m pytest {' '.join(py_tests)} -q --tb=line" if py_tests
-                else os.environ.get("CODESITTER_TEST_CMD", "python3 -m pytest tests/ -x -q --tb=line"))
-            argv = cmd.split()
+            # MECE round-6 (sol F6-E02/E03): the verify gate runs THE DIFF'S
+            # OWN TESTS ONLY (audit A3) — an explicit pytest test_cmd must not
+            # silently replace the changed-test paths with the whole suite
+            # (unrelated baseline red minted false deterministic Criticals),
+            # filenames stay LIST ELEMENTS (never joined then split — spaces
+            # and option-like names corrupt), and paths ride behind '--' so
+            # pytest never parses a 'test_-x.py' as an option.
+            if config.test_cmd:
+                parts = shlex.split(config.test_cmd)
+                cmd = config.test_cmd
+                if "pytest" in parts:
+                    i = parts.index("pytest")
+                    # keep the runner head + single-token options; positional
+                    # path tokens are replaced by the diff's own files below
+                    argv = parts[: i + 1] + [t for t in parts[i + 1:] if t.startswith("-")]
+                else:
+                    argv = parts
+            else:
+                argv = ["python3", "-m", "pytest"]
+                cmd = "python3 -m pytest"
+            if py_tests:
+                argv += ["--"] + py_tests
+            else:
+                argv += ["tests/"]  # no changed python tests: repo default
+            # options ride BEFORE the '--' separator (never after the file
+            # paths): default quiet/line output + configured deselects
+            extra: list[str] = ["-q", "--tb=line"] if not config.test_cmd else []
+            if config.test_cmd and "pytest" in config.test_cmd:
+                for excl in config.known_env_failures:
+                    extra += ["--deselect", excl]
+            if extra:
+                try:
+                    sep = argv.index("--")
+                except ValueError:
+                    sep = len(argv)
+                argv = argv[:sep] + extra + argv[sep:]
         env = _push_token_env(workdir, token)
         _drop_askpass(env)  # tests never see the helper (A1)
         import time as _time
         _t0 = _time.time()
         from . import telemetry as _tel
-        if "pytest" in cmd and not any(m in cmd for m in ("&&", ";", "|")):
+        if "pytest" in cmd and not chain:
             # host-controlled evidence (UltraQA P4/Sol): junit is written only
             # by a suite that genuinely completed; os._exit(0) at import can
             # fake rc and text, never the junit artifact.
-            if config.test_cmd and "pytest" in config.test_cmd:
-                for excl in config.known_env_failures:
-                    argv += ["--deselect", excl]
             junit_dir = Path(tempfile.mkdtemp(prefix="fl4write-verify-junit-"))
             junit = junit_dir / "results.xml"
             try:

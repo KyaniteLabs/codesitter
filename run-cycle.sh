@@ -22,7 +22,9 @@ if [ -z "$CODESITTER_GITHUB_TOKEN" ]; then
     exit 1
 fi
 
-cd ~/workspaces/fl4write
+# MECE round-6 (sol F6-E05): a failed cd silently ran the cycle from an
+# unintended directory (or 'check-dirty clean' certified a MISSING checkout)
+cd ~/workspaces/fl4write || { echo "$(date -Iseconds) ERR: cannot cd to ~/workspaces/fl4write" >> "$LOG"; exit 1; }
 
 # Self-update — failures are VISIBLE (silent staleness would run green forever).
 if ! git pull -q origin main 2>>"$LOG"; then
@@ -68,6 +70,19 @@ esac
 echo "$PLAN" | python3 -c 'import json,sys; json.load(sys.stdin)' 2>>"$LOG" || PLAN=""
 if [ $PLAN_RC -ne 0 ] || [ -z "$PLAN" ]; then
     echo "$(date -Iseconds) ERR: tier scheduler failed — fleet NOT cycled this hour" >> "$LOG"
+    exit 1
+fi
+# MECE round-6 (sol F6-E04): valid JSON with the WRONG SHAPE ({"due": null})
+# used to pass syntax validation and silently become an empty successful
+# cycle — validate the envelope: due/alerts must be string lists, summary str
+if ! echo "$PLAN" | python3 -c 'import json,sys
+p = json.load(sys.stdin)
+ok = isinstance(p, dict) \
+     and isinstance(p.get("due"), list) and all(isinstance(d, str) for d in p["due"]) \
+     and isinstance(p.get("alerts"), list) \
+     and isinstance(p.get("summary"), str)
+sys.exit(0 if ok else 1)' 2>>"$LOG"; then
+    echo "$(date -Iseconds) ERR: tier scheduler plan MALFORMED (shape) — fleet NOT cycled this hour" >> "$LOG"
     exit 1
 fi
 PLAN_ALERTS=$(echo "$PLAN" | python3 -c "import json,sys; [print('ALERT: '+a) for a in json.load(sys.stdin).get('alerts',[])]" 2>/dev/null)

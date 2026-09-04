@@ -428,3 +428,19 @@ after the cycle on corrupt stream bytes. Laws: decode with duplicate-key rejecti
 redact before truncation; empty premises and invalid payloads return None everywhere, twice.
 5 regression pins, all red pre-fix.
 
+## 47. Verify gates and dry-run belts need whole-path audits, twice (2026-09-04, MECE round 6)
+The DOM-E desk reopened three 'fixed' classes with fresh evidence: (1) the round-5 shadow/live
+separation covered post-merge and completion flags but retro still wrote the live retro_seen belt
+at loop top and could set retro_complete under shadow, and omnisweep shadow advanced live cursor/
+findings — cutovers still skipped unpublished work; (2) verify_diff_tests with an explicit pytest
+test_cmd discarded the diff's own changed-test paths and ran the WHOLE suite (unrelated baseline
+red mints a false 'deterministic' Critical on the changed file), filenames were joined then
+split() (spaces and option-like names corrupt), and --junitxml appended after a '--' separator
+would be parsed as a path; (3) the runner validated plan JSON syntax but not envelope shape
+({\"due\": null} = silent empty cycle), and neither runner script guarded its cd. Plus: doc drift
+reopened again (PILOT issues-lane + Forgejo-blocker claims, fleet count 129 vs 130, 'five
+losses' that were six). Laws: every state write a dry-run mode performs must be audited per
+WRITE, not per feature; diff-test verifiers target the diff's own files as argv elements behind
+'--' with options inserted before the separator; plan envelopes validate shape, not just syntax;
+cd failures exit loudly. 9 findings, 7 regression pins (5 new classes), all red pre-fix.
+

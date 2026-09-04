@@ -2060,3 +2060,85 @@ class TestMECERound6M3Candidate:
         _omni_fix_phase(c, forge, st, r2)
         assert r2.fix_prs_opened == 1
         assert st["omni_findings"][0].get("fix_attempted") is True
+
+
+class TestMECERound6SolPins:
+    """Round-6 sol DOM-E desk: retro shadow state-belts (F6-E01), verify argv
+    construction (F6-E02/E03), runner plan-shape + cd guards (F6-E04/E05),
+    README fleet-count consistency (F6-E08)."""
+
+    def test_retro_shadow_run_touches_no_live_state(self, tmp_path, monkeypatch):
+        from fl4write.models import ReviewDoc
+
+        def fake_analyze(pr, files, text, config):
+            return ReviewDoc(pr=pr, findings=[
+                Finding(rule_id="secrets", severity="Major", path="x.py", line=1,
+                        message="live finding")])
+
+        monkeypatch.setattr("fl4write.analyzer.analyze", fake_analyze)
+        monkeypatch.setattr("fl4write.gatekeeper.filter_findings",
+                            lambda findings, config: (findings, 0, False))
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _SolForge(merged=[_r4_pr(number=1, merged_at=_r4_date(20))])
+        cfg_over = {"retro_audit": {"enabled": True},
+                    "ci_watch": {"enabled": False},
+                    "fix": {"enabled": False, "merge_own_prs": False},
+                    "post_merge": {"enabled": False},
+                    "shadow": True}
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        cfg = _sol_config(**cfg_over)
+        run_cycle(cfg, sp, get_diff=lambda pr: ({"x.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert st.get("retro_seen") in (None, {}), "shadow wrote the live seen belt"
+        assert st.get("retro_cursor") is None and not st.get("retro_complete")
+        assert "1" in st.get("retro_shadow_seen", {}), "shadow belt not recorded"
+        # live cutover re-audits (posts) and completes
+        cfg_live = cfg.model_copy(update={"shadow": False})
+        run_cycle(cfg_live, sp, get_diff=lambda pr: ({"x.py"}, "diff"))
+        assert forge.posts, "live retro never re-reviewed the shadow-only PR"
+        st2 = state_mod.load_state(sp)
+        assert st2.get("retro_complete") or st2.get("retro_cursor"), \
+            "live retro made no progress after cutover"
+
+    def test_junit_flag_inserted_before_path_separator(self, monkeypatch, tmp_path):
+        from fl4write import executor as ex
+        from subprocess import CompletedProcess
+
+        captured: list = []
+
+        def fake_run(argv, cwd, timeout, env):
+            captured.append(list(argv))
+            return CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+        monkeypatch.setattr(ex, "_run", fake_run)
+        junit = tmp_path / "r.xml"
+        argv = ["python3", "-m", "pytest", "-q", "--tb=line", "--", "tests/a b.py"]
+        green, _res = ex._pytest_evidence(argv, tmp_path, 60, {}, junit)
+        got = captured[0]
+        assert got.index("--junitxml") < got.index("--"), \
+            "junit flag landed AFTER the '--' separator (parsed as a path)"
+        assert got[-1] == "tests/a b.py"
+        assert green is False  # no junit evidence written -> gate failure
+
+    def test_verify_argv_source_laws(self):
+        src = (REPO_ROOT / "fl4write/executor.py").read_text()
+        assert "argv += [\"--\"] + py_tests" in src  # paths ride behind '--'
+        assert '" ".join(py_tests)' not in src  # never joined-then-split
+        assert "shlex.split(config.test_cmd)" in src  # quoted cmds survive
+
+    def test_runner_shape_validation_and_cd_guards(self):
+        rc = (REPO_ROOT / "run-cycle.sh").read_text()
+        cd = (REPO_ROOT / "check-dirty.sh").read_text()
+        assert "MALFORMED (shape)" in rc and 'isinstance(p.get("due"), list)' in rc
+        assert "cd ~/workspaces/fl4write ||" in rc
+        assert "cd ~/workspaces/fl4write ||" in cd
+
+    def test_readme_fleet_count_matches_repo(self):
+        import re as _re
+
+        readme = (REPO_ROOT / "README.md").read_text()
+        actual = len(list((REPO_ROOT).glob("*.fl4write.yaml")))
+        m = _re.search(r"(\d+) central configs", readme)
+        assert m and int(m.group(1)) == actual, \
+            f"README claims {m.group(1) if m else '?'} central configs; repo has {actual}"

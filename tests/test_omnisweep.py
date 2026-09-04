@@ -204,10 +204,17 @@ class TestSweepLaws:
         assert len(forge.issues) == 1  # exactly one issue across all cycles
 
     def test_shadow_touches_nothing(self, tmp_path, monkeypatch):
+        # MECE round-6 (sol F6-E01): shadow omnisweep is a DRY RUN — it no
+        # longer scans into live cursor/findings state at all (the old law
+        # scanned-but-didn't-post, which advanced live belts the cutover then
+        # skipped). Shadow: zero model spend, zero state, zero posts.
         forge = OmniForge(model_findings=[F1])
         r = _run(forge, monkeypatch, tmp_path / "s.json", shadow=True,
                  omnisweep={"enabled": True, "max_files_per_cycle": 50})
-        assert r.omni_findings == 1 and forge.issues == [] and forge.issue_updates == []
+        assert r.omni_findings == 0 and forge.issues == [] and forge.issue_updates == []
+        assert forge.model_calls == []
+        st = state.load_state(tmp_path / "s.json")
+        assert "omni_cursor" not in st and "omni_findings" not in st
 
     def test_grounding_wrong_path_dropped_file_mode(self, monkeypatch):
         """Criterion E: the grounding gate is mode-independent — in file mode
