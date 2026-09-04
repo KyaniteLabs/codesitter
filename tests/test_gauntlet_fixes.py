@@ -4495,10 +4495,7 @@ class TestMECERound13Pins:
                                            "severity": "Critical", "path": "a.py",
                                            "line": 1,
                                            "message": "No iss\\u200bues found."}]})
-        monkeypatch = None
-        from fl4write.analyzer import _call_model as _orig
-        _orig2 = _orig
-        # drive through analyze with stubbed call
+        # drive through analyze with a stubbed model call
         import fl4write.analyzer as an
         old = an._call_model
         an._call_model = fake
