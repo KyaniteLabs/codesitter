@@ -534,6 +534,13 @@ def _omni_fix_phase(
         )
         result = executor.attempt_fix(synth, finding, config)
         status = result.get("status")
+        if status == "error":
+            # MECE round-6 (M3 stream candidate, desk-verified): a transient
+            # error (network/model) marked the finding attempted BEFORE the
+            # call, so it was never retried on a later cycle — un-mark it:
+            # terminal outcomes (pr_opened/testfail/nofix) stay attempted,
+            # transient errors retry (per-cycle cap still bounds the burn)
+            f["fix_attempted"] = False
         if status == "pr_opened":
             report.fix_prs_opened += 1
         elif status in ("error", "testfail", "nofix"):

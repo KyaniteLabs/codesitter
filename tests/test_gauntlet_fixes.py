@@ -2026,3 +2026,37 @@ class TestMECERound6Pins:
         monkeypatch.setattr(tel, "_path", lambda: p)
         out = tel.calibration_snapshot()
         assert isinstance(out, dict)  # never raises on corrupt bytes
+
+
+class TestMECERound6M3Candidate:
+    """M3 DOM-C stream candidate (desk-verified): omni fix phase marked a
+    finding attempted BEFORE the call — transient 'error' outcomes were never
+    retried; terminal outcomes (pr_opened/testfail/nofix) stay terminal."""
+
+    def test_omni_transient_error_fix_is_retried(self, tmp_path, monkeypatch):
+        from fl4write.engine import CycleReport, _omni_fix_phase
+
+        forge = _SolForge()
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        st = {"version": 1, "omni_head": "d" * 40, "omni_total": 1,
+              "omni_findings": [{"id": 1, "path": "a.py", "line": 1,
+                                 "rule": "secrets", "sev": "Major",
+                                 "msg": "m", "via": "t"}]}
+        outcomes = iter([{"status": "error", "reason": "model unavailable"},
+                         {"status": "pr_opened", "pr_number": 9}])
+
+        def fake_attempt(pr, finding, config):
+            return next(outcomes)
+
+        monkeypatch.setattr("fl4write.executor.attempt_fix", fake_attempt)
+        c = _sol_config(omnisweep={"enabled": True, "fix": True,
+                                   "fix_min_severity": "Major"})
+        r1 = CycleReport(repo="o/r")
+        _omni_fix_phase(c, forge, st, r1)
+        assert r1.fix_failures == 1
+        assert st["omni_findings"][0].get("fix_attempted") is False, \
+            "transient error was marked terminal and will never retry"
+        r2 = CycleReport(repo="o/r")
+        _omni_fix_phase(c, forge, st, r2)
+        assert r2.fix_prs_opened == 1
+        assert st["omni_findings"][0].get("fix_attempted") is True
