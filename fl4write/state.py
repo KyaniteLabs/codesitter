@@ -88,6 +88,15 @@ class CycleLock:
                     alive = True  # foreign pid: treat as held (never break a live lock)
                 if alive:
                     raise CycleLockHeld(f"cycle lock held by pid {pid_i}") from None
+            # MECE round-4 (luna F4-001): re-validate BEFORE the unlink — a
+            # fresh holder may have taken the lock since our read; unlink must
+            # never remove a LIVE lock
+            try:
+                fresh = self.path.read_text().strip()
+            except FileNotFoundError:
+                fresh = raw
+            if fresh != raw:
+                continue  # content changed under us — re-read the new holder
             self.path.unlink(missing_ok=True)
             try:
                 self._held = self._acquire()

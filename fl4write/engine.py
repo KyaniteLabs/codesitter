@@ -756,7 +756,10 @@ def _retro_sweep(
     # MECE round-2 (terra F2-002): JSON persistence turns int keys into
     # strings — the seen-set belt was comparing int numbers against str keys
     # and NEVER excluded (masked by the strict '<' cursor). Normalize here.
-    seen: set[int] = {int(k) for k in st.get("retro_seen", {}) if str(k).isdigit()}
+    _rs = st.get("retro_seen")
+    if not isinstance(_rs, dict):
+        _rs = {}  # MECE round-4 (luna F4-003): null/wrong-shape state degrades
+    seen: set[int] = {int(k) for k in _rs if str(k).isdigit()}
     pending = sorted(
         (p for p in listed
          if p.merged_at <= cursor and p.number not in seen),
@@ -792,6 +795,18 @@ def _retro_sweep(
         if outcome == "deferred":
             seen.discard(pr.number)  # retry next cycle
             st["retro_seen"] = {n: True for n in seen}
+            # MECE round-4 (luna F4-004): consecutive deferrals on one PR burn
+            # the lane every cycle while the model/env is down — park after a
+            # bounded retry count, surfaced by the alert
+            key = f"retro_defer:{pr.number}:{pr.head_sha[:10]}"
+            tries = int(st.get(key, 0)) + 1
+            st[key] = tries
+            if tries >= 3:
+                report.alerts.append(
+                    f"retro #{pr.number}: deferred {tries}x (model/env) — parked; "
+                    "re-arms on the next repo commit or state reset")
+                st.pop(key, None)
+                st.setdefault("retro_seen", {})[int(pr.number)] = True
             break
         oldest_processed = pr.merged_at
 
@@ -968,6 +983,8 @@ def _ci_watch_step(
                          + (f": {scrub.inline(summary, 300)}" if summary else ""))
         anns = primary.check_annotations(config.repo, run.get("id")) or []
         for a in anns[: config.ci_watch.max_annotations]:
+            if not isinstance(a, dict):  # MECE round-4 (luna F4-005): null rows
+                continue
             if not a.get("path") or not a.get("message"):
                 continue
             try:
@@ -1084,9 +1101,11 @@ def run_cycle(
             st = state.load_state(state_path)
             mirror_shas = _mirror_shas(mirrors, config.repo, report)
 
+            listing_failed = False
             try:
                 prs = primary.list_open_prs(config.repo)
             except ForgeError as exc:
+                listing_failed = True
                 report.alerts.append(f"primary unreachable: {exc}")
                 log.warning("primary unreachable for %s: %s", config.repo, exc)
                 prs = []
@@ -1094,6 +1113,7 @@ def run_cycle(
                 # UltraQA round 2: a forge API SHAPE change (rows missing
                 # fields, unexpected types) is an external-surface failure,
                 # not a bug in the cycle — degrade this lane, never crash it.
+                listing_failed = True
                 report.alerts.append(f"primary list_open_prs degraded: {exc}")
                 log.warning("list_open_prs shape failure for %s (degraded): %s", config.repo, exc)
                 prs = []
@@ -1108,10 +1128,12 @@ def run_cycle(
                 prs = [p for p in prs if isinstance(p, PullRequest)]
 
             open_numbers = set()
+            truncated_by_deadline = False
             for pr in prs:
                 open_numbers.add(pr.number)
                 report.scanned += 1
                 if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
+                    truncated_by_deadline = True
                     report.alerts.append("cycle deadline reached — remaining PRs deferred to next cycle")
                     break
                 mirror_seen = pr.head_sha in mirror_shas
@@ -1157,7 +1179,12 @@ def run_cycle(
                     config, primary, state_path, shadow_sink, st, report, deadline,
                 )
 
-            state.prune_closed(st, open_numbers | merged_keep)
+            # MECE round-4 (luna F4-002): never prune on a listing FAILURE or
+            # deadline truncation — empty open_numbers would delete every
+            # per-PR record as if the PRs had closed (re-review storms + lost
+            # fix-depth/model-failure state on the next healthy cycle)
+            if not listing_failed and not truncated_by_deadline:
+                state.prune_closed(st, open_numbers | merged_keep)
 
             if run_issues and config.issues_enabled:
                 from . import issues as issues_lane

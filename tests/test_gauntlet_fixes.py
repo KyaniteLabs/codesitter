@@ -5,11 +5,19 @@ ADV-04 heading spoof in the posted comment. Each failure class pinned."""
 from __future__ import annotations
 
 import json
+import os
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from fl4write import config as cfg
+from fl4write import state as state_mod
 from fl4write.analyzer import analyze
-from fl4write.models import Finding, PullRequest
+from fl4write.engine import run_cycle
+from fl4write.forges import ForgeAdapter, ForgeError
+from fl4write.models import Finding, PullRequest, ReviewDoc
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -1136,3 +1144,211 @@ class TestMECERound3SolPins:
         drop_at = seg.find("_drop_askpass(pull_env)")
         checkout_at = seg.find("git\", \"checkout")
         assert 0 <= drop_at < checkout_at
+
+
+# ---------------------------------------------------------------------------
+# MECE round-4 luna DOM-C desk pins (F4-001..F4-005). WIP landed in the
+# previous container; these pins are the desk ruling's evidence contract.
+
+
+def _r4_date(days_ago: int, hhmm: str = "12:00:00") -> str:
+    """ISO merged_at safely inside the retro lookback for the next ~60 days
+    of test runs (fixed calendar dates rot — fixture time-rot law)."""
+    return (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y-%m-%d") + f"T{hhmm}Z"
+
+
+def _r4_pr(**over) -> PullRequest:
+    base = dict(forge="github", number=1, repo="KyaniteLabs/fl4write",
+                title="t", head_sha="a" * 40, author="dev")
+    base.update(over)
+    return PullRequest.model_validate(base)
+
+
+class _R4Forge(ForgeAdapter):
+    """Minimal engine-surface fake for the round-4 desk pins."""
+
+    name = "github"
+
+    def __init__(self, open_prs=None, merged=None, raise_list=False,
+                 annotations=None, files=None):
+        super().__init__(
+            cfg.ForgeBinding(role="primary", api_base="https://api.github.com", token_env="GHT")
+        )
+        self.open_prs = open_prs or []
+        self.merged = merged or []
+        self.raise_list = raise_list
+        self.annotations = annotations if annotations is not None else []
+        self.files = files if files is not None else set()
+        self.fix_attempts: list = []
+        self.issues_opened: list = []
+
+    def list_open_prs(self, repo):
+        if self.raise_list:
+            raise ForgeError("primary unreachable (test)")
+        return list(self.open_prs)
+
+    def list_merged_prs(self, repo, since_iso):
+        return list(self.merged)
+
+    def path_exists(self, repo, path):
+        return True
+
+    def get_persistent_comment(self, repo, number):
+        return None
+
+    def create_comment(self, repo, number, body):
+        return 1
+
+    def update_comment(self, repo, number, comment_id, body):
+        pass
+
+    def head_check_runs(self, repo):
+        return "deadbeef" + "0" * 32, [
+            {"id": 1, "name": "test", "status": "completed",
+             "conclusion": "failure", "output": {"summary": "2 tests failed"}}]
+
+    def check_annotations(self, repo, check_run_id):
+        return list(self.annotations)
+
+    def path_is_file(self, repo, path, ref=None):
+        return path in self.files
+
+
+def _r4_seed(sp, **extra):
+    state_dict = {"version": 1, "prs": {}, "merged_since": _r4_date(10)}
+    state_dict.update(extra)
+    state_mod.save_state(sp, state_dict)
+
+
+def _r4_cycle(forge, monkeypatch, sp, cfg_over=None, get_diff=None, run_fixes=False,
+              deadline=None):
+    if cfg_over is None:
+        cfg_over = {}
+    monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+    c = make_config(**cfg_over)
+    return run_cycle(c, sp, get_diff=get_diff or (lambda pr: ({"x.py"}, "diff")),
+                     run_fixes=run_fixes, deadline=deadline)
+
+
+_NO_EXTRA_LANES = {
+    "ci_watch": {"enabled": False},
+    "fix": {"enabled": False, "merge_own_prs": False},
+    "post_merge": {"enabled": False},
+}
+
+
+class TestMECERound4LunaPins:
+    """Round-4 luna DOM-C: stale-lock unlink race (F4-001), prune-on-outage /
+    prune-on-deadline (F4-002), null retro_seen state (F4-003), retro defer
+    parking (F4-004), ci-watch null annotation rows (F4-005)."""
+
+    def test_stale_lock_never_unlinks_a_live_holder(self, tmp_path, monkeypatch):
+        # F4-001: between reading a stale lock and unlinking it a live holder
+        # may have taken the lock — the unlink must re-validate first.
+        p = tmp_path / "cycle.lock"
+        dead = "0 0"
+        live = f"{os.getpid()} {int(time.time())}"
+        p.write_text(dead)
+        reads = iter([dead, live, live])  # stale read, then a fresh live holder
+        original_read = Path.read_text
+
+        def flip_read(self, *a, **k):
+            if str(self).endswith("cycle.lock"):
+                return next(reads)
+            return original_read(self, *a, **k)
+
+        monkeypatch.setattr(Path, "read_text", flip_read)  # Path is slot-ed: class-level
+        lock = state_mod.CycleLock(p)
+        with pytest.raises(state_mod.CycleLockHeld):
+            lock.__enter__()
+        assert p.exists(), "a live lock was unlinked under a racing holder"
+
+    def test_listing_failure_never_prunes_pr_records(self, tmp_path, monkeypatch):
+        # F4-002: an empty open-PR listing from a forge OUTAGE must not look
+        # like "all PRs closed" — records survive for the next healthy cycle.
+        sp = tmp_path / "s.json"
+        recs = {str(n): {"head_sha": "a" * 40, "outcome": "reviewed"} for n in (1, 2, 3)}
+        _r4_seed(sp, prs=recs)
+        forge = _R4Forge(raise_list=True)
+        cfg_over = dict(_NO_EXTRA_LANES)
+        cfg_over["omnisweep"] = {"enabled": False}
+        r = _r4_cycle(forge, monkeypatch, sp, cfg_over)
+        assert any("primary unreachable" in a for a in r.alerts)
+        assert set(state_mod.load_state(sp)["prs"]) == {"1", "2", "3"}
+
+    def test_deadline_truncation_never_prunes_pr_records(self, tmp_path, monkeypatch):
+        # F4-002: a deadline-truncated scan is not a closure signal either.
+        sp = tmp_path / "s.json"
+        recs = {str(n): {"head_sha": "a" * 40, "outcome": "reviewed"} for n in (1, 2, 3)}
+        _r4_seed(sp, prs=recs)
+        forge = _R4Forge(open_prs=[_r4_pr(number=n) for n in (1, 2, 3)])
+        cfg_over = dict(_NO_EXTRA_LANES)
+        cfg_over["omnisweep"] = {"enabled": False}
+        r = _r4_cycle(forge, monkeypatch, sp, cfg_over,
+                      deadline=time.monotonic())  # already past: first PR truncates
+        assert any("deadline reached" in a for a in r.alerts)
+        assert set(state_mod.load_state(sp)["prs"]) == {"1", "2", "3"}
+
+    def test_null_retro_seen_state_degrades(self, tmp_path, monkeypatch):
+        # F4-003: a persisted retro_seen: null (or wrong shape) must degrade
+        # to an empty seen-set, never crash the cycle.
+        sp = tmp_path / "s.json"
+        _r4_seed(sp, retro_seen=None)
+        forge = _R4Forge(merged=[_r4_pr(number=1, merged_at=_r4_date(20))])
+        cfg_over = dict(_NO_EXTRA_LANES)
+        cfg_over["retro_audit"] = {"enabled": True}
+        r = _r4_cycle(forge, monkeypatch, sp, cfg_over)
+
+        def fake_analyze(pr, files, text, config):
+            return ReviewDoc(pr=pr, findings=[])
+
+        monkeypatch.setattr("fl4write.analyzer.analyze", fake_analyze)
+        _r4_cycle(forge, monkeypatch, sp, cfg_over)  # re-run: seeded state was null
+        assert r is not None
+        assert state_mod.load_state(sp).get("retro_seen") == {"1": True}
+
+    def test_retro_defer_parked_after_bounded_retries(self, tmp_path, monkeypatch):
+        # F4-004: consecutive deferrals of one PR (model/env down) burn the
+        # retro lane every cycle — park after a bounded retry count, re-armed
+        # only by the next repo commit or state reset.
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _R4Forge(merged=[_r4_pr(number=1, merged_at=_r4_date(20))])
+        cfg_over = dict(_NO_EXTRA_LANES)
+        cfg_over["retro_audit"] = {"enabled": True}
+        r1 = _r4_cycle(forge, monkeypatch, sp, cfg_over, get_diff=lambda pr: None)
+        r2 = _r4_cycle(forge, monkeypatch, sp, cfg_over, get_diff=lambda pr: None)
+        r3 = _r4_cycle(forge, monkeypatch, sp, cfg_over, get_diff=lambda pr: None)
+        assert not any("parked" in a for a in r1.alerts + r2.alerts)
+        assert any("parked" in a for a in r3.alerts)
+        assert state_mod.load_state(sp).get("retro_seen") == {"1": True}
+        # parked PR is terminal: the 4th cycle stops re-listing it
+        r4 = _r4_cycle(forge, monkeypatch, sp, cfg_over, get_diff=lambda pr: None)
+        assert any("retro audit complete" in a for a in r4.alerts)
+
+    def test_null_annotation_rows_are_skipped(self, tmp_path, monkeypatch):
+        # F4-005: a null element inside the annotations list must be skipped,
+        # and the well-formed rows around it still processed.
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _R4Forge(
+            annotations=[
+                None,
+                {"path": "tests/test_x.py", "start_line": 12,
+                 "message": "assert 1 == 2", "level": "failure"},
+            ],
+            files={"tests/test_x.py"},
+        )
+
+        def fake_fix(pr, finding, config):
+            forge.fix_attempts.append((pr, finding))
+            return {"status": "pr_opened", "pr_number": 42}
+
+        monkeypatch.setattr("fl4write.executor.attempt_fix", fake_fix)
+        monkeypatch.setattr("fl4write.executor.open_issue",
+                            lambda repo, title, body: 1)
+        cfg_over = {"fix": {"enabled": True, "merge_own_prs": False},
+                    "omnisweep": {"enabled": False}}
+        _r4_cycle(forge, monkeypatch, sp, cfg_over, run_fixes=True)
+        assert len(forge.fix_attempts) == 1
+        assert forge.fix_attempts[0][1].path == "tests/test_x.py"
