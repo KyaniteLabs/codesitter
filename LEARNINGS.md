@@ -372,3 +372,17 @@ too (flush a fake summary then os._exit(0)) — pytest gates now require a host-
 errors=0), and NON-pytest runners FAIL CLOSED on the fix gate until a per-runner evidence
 mapping lands (fix lane: GitHub-only v1, zero landed fixes — blocking is free; the organic-PR
 verifier keeps rc-based verdicts for non-pytest, silent-exit labeled unproven). 384 tests green.
+
+## 43. The exhaustive loop is the instrument (2026-09-04, MECE round 1)
+CEO protocol correction: a gauntlet is not exhaustive until FRESH-EYES members of a diverse
+MECE team, re-auditing each round with a findings ledger, produce ZERO new valid findings on
+THREE CONSECUTIVE full rounds. Round 1 (terra/luna/M3/sol/glm over 5 MECE domains) proved the
+single-observer rounds 1-4 of the readiness pass were NOT exhaustive: it found 33 findings
+incl. a CRITICAL the earlier pass shipped (executed test code could read ~/.sinter/config.json
+= every org key via the sandbox HOME) and majors that invalidated shipped claims (junit
+"host-controlled" evidence was argv-visible to the same-user process; Forgejo pagination used
+per_page which the server ignores, silently capping every FJ list; the readiness
+missing-evidence cap was inert code; check-runs merge gate unpaginated; issues triage failures
+skipped forever). 28/33 fixed or ruled-by-design in round 1 across 7 commits; 5 open minors
+queued. Law: product gates (fix lane, merge, posting) need fresh-eyes MECE re-audit rounds to
+claim readiness; the earlier "battery complete" wording was withdrawn on the record.
