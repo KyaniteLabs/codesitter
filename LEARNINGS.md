@@ -366,4 +366,9 @@ green requires execution evidence: non-empty output (os._exit skips all flushing
 pytest summary line for pytest cmds; the verifier turns no-evidence rc-0 into a Critical
 "UNVERIFIED" finding instead of a clean verdict. **Law: exit codes are a promise, output is
 evidence — any auto-landing gate on a code-executing step (fix lane, verifier, CI-mimic) must
-require both.** 378 tests green. Sol audit round 3 in flight.
+require both.** Sol audit round 3 (GO-WITH-CHANGES) hardened further: output TEXT is forgeable
+too (flush a fake summary then os._exit(0)) — pytest gates now require a host-controlled
+--junitxml artifact written only by a suite that genuinely completes (tests>0, failures=0,
+errors=0), and NON-pytest runners FAIL CLOSED on the fix gate until a per-runner evidence
+mapping lands (fix lane: GitHub-only v1, zero landed fixes — blocking is free; the organic-PR
+verifier keeps rc-based verdicts for non-pytest, silent-exit labeled unproven). 384 tests green.
