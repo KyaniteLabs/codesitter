@@ -557,3 +557,16 @@ never certify content; envelope decode picks the OUTERMOST object whose span con
 whole-file anchors bound to real source length; severity gates cover the canonical rule family;
 negation is clause-level and shared by contradiction/scenario gates; diagnostics redact.
 
+## 56. Interrupted desks resume from artifacts, and arity tables rot (2026-09-04, MECE round 10)
+The round-10 desk was interrupted mid-fix (family emergency; dirty tree + 2 red pins + a
+dead session on a lane 502). Recovery worked from artifacts alone: git status (what was
+dirty), the pytest lastfailed cache (what was red), the /tmp/fl4gauntlet round ledger +
+round10-DOM-*.md recon outputs (what the round found), and the DSH session transcript tail
+(what the session was doing at the cut). Two real lessons from the round itself: (1) hand
+parsed pytest option tables rot — F8-006 was reopened TWICE in two rounds (-q swallowed the
+suite path; -k lost its value); the cure is an explicit arity model that FAILS CLOSED to
+UNVERIFIED on anything unmodeled, never a bigger table. (2) A second completion site leaks a
+completion gate: omni rows_bad blocked the empty-pending path but not the same-cycle
+finalize — a pin on the second site caught it. And one pin hygiene note: a regression pin
+must FAIL pre-fix; two of the round's first pins passed on the unfixed tree (weak
+discriminators) and were sharpened before close.
