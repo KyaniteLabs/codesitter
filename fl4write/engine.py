@@ -637,22 +637,43 @@ def _omnisweep_step(
         return
     if st.get("omni_complete"):
         report.omni_findings = len(st.get("omni_findings", []))  # F5-011
-        if not st.get("omni_published"):  # MECE round-5 (sol F5-002): a
-            # completed sweep whose issue create/update FAILED must retry the
-            # publication — the old fast path returned before the upsert and
-            # "retrying next cycle" was a lie
-            findings = st.get("omni_findings", [])
-            total = int(st.get("omni_total", 0) or 0)
-            if findings:
-                _omni_upsert_issue(config, primary, st, findings, total, total,
-                                   complete=True, report=report)
-                if not st.get("omni_published"):
-                    return  # publication still failing — retry next cycle
-            else:
-                st["omni_published"] = True  # clean sweep: nothing to publish
-        if config.omnisweep.fix and st.get("omni_findings"):
-            _omni_fix_phase(config, primary, st, report)
-        return
+        # F10-C002: a COMPLETED sweep is only complete for the HEAD it
+        # audited — if the forge reports a new head, restart from scratch
+        if st.get("omni_head"):
+            try:
+                _cur = primary.head_check_runs(config.repo)
+            except Exception:  # noqa: BLE001 - probe never blocks
+                _cur = None
+            if _cur and isinstance(_cur, (tuple, list)) and len(_cur) == 2 \
+                    and isinstance(_cur[0], str) and _cur[0] != st["omni_head"]:
+                st["omni_complete"] = False
+                st["omni_published"] = False
+                st["omni_cursor"] = ""
+                st["omni_findings"] = []
+                st["omni_next_id"] = 1
+                st["omni_head"] = _cur[0]
+                st.pop("omni_fp", None)
+                report.alerts.append(
+                    "omnisweep: HEAD changed after completion — re-auditing from scratch")
+        if not st.get("omni_complete"):
+            pass  # fell through to a fresh sweep below
+        else:
+            if not st.get("omni_published"):
+                # MECE round-5 (sol F5-002): a completed sweep whose final
+                # publication FAILED must retry it — the old fast path
+                # returned before the upsert and 'retrying next cycle' lied
+                findings = st.get("omni_findings", [])
+                total = int(st.get("omni_total", 0) or 0)
+                if findings:
+                    _omni_upsert_issue(config, primary, st, findings, total, total,
+                                       complete=True, report=report)
+                    if not st.get("omni_published"):
+                        return  # publication still failing — retry next cycle
+                else:
+                    st["omni_published"] = True  # clean sweep: nothing to publish
+            if config.omnisweep.fix and st.get("omni_findings"):
+                _omni_fix_phase(config, primary, st, report)
+            return
 
     tree = primary.list_tree_files(config.repo)
     if tree is None:
@@ -673,7 +694,18 @@ def _omnisweep_step(
         report.alerts.append(
             "omnisweep: tree listing TRUNCATED by the forge — completion BLOCKED; "
             "files past the truncation are unaudited (widen caps/excludes or split the repo)")
-    # row-shape guard: (path, size) pairs only; one garbage row must not abort
+    # row-shape guard: (path, size) pairs only; one garbage row must not
+    # abort. F10-C003: malformed rows mean the listing is NOT a trustworthy
+    # whole tree — completion is blocked while rows are bad
+    rows_bad = False
+    if len(files) != sum(1 for row in files
+                         if isinstance(row, (tuple, list)) and len(row) == 2
+                         and isinstance(row[0], str) and isinstance(row[1], int)
+                         and row[1] >= 0):
+        rows_bad = True
+        report.alerts.append(
+            "omnisweep: malformed tree rows dropped \u2014 completion BLOCKED "
+            "(retry next cycle)")
     files = [row for row in files
              if isinstance(row, (tuple, list)) and len(row) == 2
              and isinstance(row[0], str) and isinstance(row[1], int)
@@ -732,8 +764,8 @@ def _omnisweep_step(
     if not pending:
         # MECE round-5 (sol F5-001/007): shadow runs and truncated listings
         # must NOT set live completion — completion is a live-publishable,
-        # whole-tree claim
-        if config.shadow or truncated:
+        # whole-tree claim. F10-C003: malformed rows block it too
+        if config.shadow or truncated or rows_bad:
             return
         st["omni_complete"] = True
         st["omni_total"] = total
@@ -828,7 +860,10 @@ def _omnisweep_step(
     report.omni_scanned = scanned_this_cycle
     report.omni_findings = len(st.get("omni_findings", []))
     done = st.get("omni_cursor", "") >= scan[-1] if scan else True
-    if done and scanned_this_cycle and not truncated and not config.shadow:
+    # F10-C003: malformed rows make the listing an untrustworthy whole-tree
+    # claim — the same-cycle finalize must honor the same rows_bad gate as
+    # the empty-pending block above (round-10 pin caught the leak)
+    if done and scanned_this_cycle and not truncated and not rows_bad and not config.shadow:
         # finalized in the SAME cycle as the last file — no idle hourly hop.
         # MECE round-5 (sol F5-007/F5-001): a truncated tree or a shadow run
         # never finalizes — completion is a whole-tree, publishable claim
@@ -954,7 +989,13 @@ def _retro_sweep(
         return set()
 
     # row-shape guard (UltraQA round 2): one malformed merged row must not
-    # abort the sweep
+    # abort the sweep. F10-C001: a malformed listing must never become a
+    # terminal 'clean audit' — completion is blocked while rows are bad
+    _dropped_rows = sum(1 for p in listed if not isinstance(p, PullRequest))
+    if _dropped_rows:
+        report.alerts.append(
+            f"retro listing: {_dropped_rows} malformed merged rows \u2014 "
+            "completion BLOCKED (retry next cycle)")
     listed = [p for p in listed if isinstance(p, PullRequest)]
 
     # MECE round-2 (terra F2-002): JSON persistence turns int keys into
@@ -1062,8 +1103,10 @@ def _retro_sweep(
     if oldest_processed is None and not pending and not active_park and not config.shadow:
         # window exhausted between boundary and cursor — nothing left to audit
         # (also fires for repos with no merges in the window: stop re-listing).
-        # MECE round-6 (sol F6-E01): shadow runs never set live completion
-        st["retro_complete"] = True
+        # MECE round-6 (sol F6-E01): shadow runs never set live completion;
+        # F10-C001: neither do malformed listings
+        if not _dropped_rows:
+            st["retro_complete"] = True
         report.alerts.append(
             f"retro audit complete: {len(seen)} merged PRs within "
             f"{config.retro_audit.lookback_days}d swept"

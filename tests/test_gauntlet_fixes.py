@@ -3187,3 +3187,119 @@ class TestMECERound9SolA2:
     def test_gatekeeper_keep_schema_carries_rule_id(self):
         src = (REPO_ROOT / "fl4write/gatekeeper.py").read_text()
         assert '"keep": [{"path": str, "line": int, "rule_id": str, "reason": str}]' in src
+
+
+class TestMECERound10Pins:
+    """Round-10 desk: non-string model content (A01), fused negations (A02),
+    boolean anchors (A03), retro malformed completion (C001), completed-sweep
+    HEAD freshness (C002), omni malformed rows (C003)."""
+
+    def test_non_string_model_content_refused(self, monkeypatch):
+        import urllib.request as _ur
+
+        from fl4write.analyzer import _call_model
+        from fl4write import config as cfg2
+
+        monkeypatch.setenv("MK", "test-key")
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return (b'{"choices": [{"message": {"content": 5}, "finish_reason": '
+                        b'"stop"}], "usage": {}}')
+
+        monkeypatch.setattr(_ur, "urlopen", lambda *a, **k: _FakeResp())
+        route = cfg2.ModelRoute(endpoint="http://model/v1", model="t",
+                                key_env="MK", temperature=0.1, max_tokens=1024)
+        with pytest.raises(RuntimeError, match="payload-assert"):
+            _call_model(route, "prompt")
+
+    def test_contracted_negations_strip(self):
+        from fl4write.analyzer import _self_contradicting
+
+        assert _self_contradicting("The code cannot fail or crash. Tests pass.") is True
+        assert _self_contradicting("The guard doesn't fail or crash. This is fine.") is True
+
+    def test_bool_anchor_rejected(self, monkeypatch):
+        import json as _json
+
+        from fl4write.analyzer import analyze as _an
+        from fl4write.models import PullRequest as _PR
+
+        monkeypatch.setattr(
+            "fl4write.analyzer._call_model",
+            lambda route, prompt, mode="pr", system=None, **kw: _json.dumps(
+                {"findings": [{"rule_id": "secrets", "severity": "Critical",
+                               "path": "x.py", "line": True, "message": "m"}]}))
+        pr = _PR(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        doc = _an(pr, {"x.py"}, "diff x.py\n+ line\n", make_config())
+        assert not doc.findings, "boolean anchor fabricated a finding"
+
+    def test_retro_malformed_listing_blocks_completion(self, tmp_path, monkeypatch):
+        class _BadRow(_R4Forge):
+            def list_merged_prs(self, repo, since_iso):
+                return [None]
+
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _BadRow()
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(retro_audit={"enabled": True}, ci_watch={"enabled": False},
+                        omnisweep={"enabled": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"x.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert any("malformed merged rows" in a for a in r.alerts)
+        assert st.get("retro_complete") is not True
+
+    def test_completed_omni_restarts_on_head_change(self, tmp_path, monkeypatch):
+        sp = tmp_path / "s.json"
+        _r4_seed(sp, omni_complete=True, omni_published=True, omni_issue=1,
+                 omni_total=1, omni_head="a" * 40,
+                 omni_findings=[{"id": 1, "line": 1, "path": "a.py",
+                                 "rule": "secrets", "sev": "Major", "msg": "m"}])
+        forge = _SolForge()
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+
+        class _NewHead(_SolForge):
+            def head_check_runs(self, repo):
+                return "b" * 40, []
+
+        forge2 = _NewHead()
+        forge2.tree = ([("a.py", 10)], False)
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge2)
+
+        from fl4write.models import ReviewDoc
+
+        def fake_analyze(pr, files, text, config, mode="file"):
+            return ReviewDoc(pr=pr, findings=[])
+
+        monkeypatch.setattr("fl4write.analyzer.analyze", fake_analyze)
+        c = _sol_config(omnisweep={"enabled": True, "fix": False},
+                        ci_watch={"enabled": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"a.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert any("HEAD changed after completion" in a for a in r.alerts)
+        assert st.get("omni_complete") is True  # re-audited under the new head
+
+    def test_omni_malformed_tree_rows_block_completion(self, tmp_path, monkeypatch):
+        from fl4write.models import ReviewDoc
+
+        def fake_analyze(pr, files, text, config, mode="file"):
+            return ReviewDoc(pr=pr, findings=[])
+
+        monkeypatch.setattr("fl4write.analyzer.analyze", fake_analyze)
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _SolForge(tree=([None, ("a.py", 10)], False))
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(omnisweep={"enabled": True, "fix": False},
+                        ci_watch={"enabled": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"a.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert any("malformed tree rows" in a for a in r.alerts)
+        assert st.get("omni_complete") is not True

@@ -183,6 +183,10 @@ def _call_model(route: ModelRoute, prompt: str, mode: str = "pr", system: str | 
     choice = (data.get("choices") or [{}])[0]
     content = (choice.get("message") or {}).get("content", "")
     _usage = data.get("usage") or {}
+    if not isinstance(content, str):
+        # F10-A01: truthy non-string content (numbers, dicts) crashed the
+        # JSON scan with an uncaught TypeError and skipped the fallback
+        raise RuntimeError("model returned non-string content (payload-assert failed)")
     if not content:
         # F9-001: outcome events must carry ok — the caller emits ok=False;
         # an inconclusive event used to default 'healthy' in calibration
@@ -388,8 +392,26 @@ _NEGATED_DEFECT_SPAN_RE = re.compile(
     r"fail\w*|remote|risk)\b[^.!?\n]*[.!;]?")
 
 
+_CONTRACTIONS = {
+    "doesn\'t": "does not", "don\'t": "do not", "can\'t": "can not",
+    "cannot": "can not", "won\'t": "will not", "couldn\'t": "could not",
+    "shouldn\'t": "should not", "isn\'t": "is not", "aren\'t": "are not",
+    "didn\'t": "did not", "wouldn\'t": "would not", "mustn\'t": "must not",
+    "needn\'t": "need not", "hasn\'t": "has not", "haven\'t": "have not",
+}
+
+
+def _normalize_negations(text: str) -> str:
+    """F10-A02: fused negations ('doesn\'t fail', 'cannot crash') must join
+    the clause-level refutation scan."""
+    low = text.lower()
+    for k, v in _CONTRACTIONS.items():
+        low = low.replace(k, v)
+    return low
+
+
 def _self_contradicting(message: str) -> bool:
-    low = message.rstrip().lower()
+    low = _normalize_negations(message.rstrip().lower())
     # terminal scan on the RAW tail ("…but not a failure." refutes even though
     # the span stripper would remove its words) …
     terminal_refutes = any(re.search(p, low) for p in _CONTRADICT_TERMINAL)
@@ -483,6 +505,13 @@ def analyze(
     dropped: list[str] = []
     for item in items:
         try:
+            if not isinstance(item, dict):
+                raise ValueError("finding row not an object")
+            _ln = item.get("line")
+            if isinstance(_ln, bool) or (_ln is not None and not isinstance(_ln, int)):
+                # F10-A03: boolean anchors coerce to line 1 via pydantic and
+                # can fabricate a grounded finding
+                raise ValueError(f"finding line must be a real int, got {_ln!r}")
             f = Finding.model_validate(item)
         except Exception:  # malformed findings are dropped, logged
             # MECE round-6 (terra F6-003): redact BEFORE the length slice —
@@ -626,9 +655,9 @@ def analyze(
                          "denial", "remote", "overwrite", "destruct")
     for f in findings:
         if f.severity == "Critical":
-            low = f.message.lower()
-            # F9-A07: negated risk clauses ("no credible scenario ... remote
-            # exploitation") are refutations, not scenario evidence
+            low = _normalize_negations(f.message.lower())
+            # F9-A07/F10-A02: negated risk clauses ("no credible scenario ...",
+            # "cannot crash") are refutations, not scenario evidence
             low = _NEGATED_DEFECT_SPAN_RE.sub(" ", low)
             # MECE round-1 (terra F1-05): "test" as a bare substring
             # (attestation, template) is NOT failing-test evidence. Only the
