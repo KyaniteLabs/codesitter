@@ -4405,3 +4405,195 @@ class TestMECERound13OpsReal:
         r = ex._run(["git", "commit", "-q", "-m", "c"], cwd=repo, env=env)
         assert r.returncode == 0, r.stderr
         assert not marker.exists(), "hostile hook executed during privileged commit"
+
+
+class TestMECERound13Pins:
+    """Round-13 desk pins — DOM-A law probes (A1-A12/A15), B7 merge proof,
+    D1 cross-forge env, E1 attached options."""
+
+    def test_credential_assignment_redacted_and_anchored(self, monkeypatch):
+        # A1 (critical): low-entropy assignment values are literals AND never
+        # leak to the rendered body
+        import json as _j
+        from fl4write import renderer
+
+        seen = {}
+
+        def fake(route, prompt, mode="pr", system=None, **kw):
+            seen["prompt"] = prompt
+            return _j.dumps({"findings": [{"rule_id": "secrets",
+                                           "severity": "Critical",
+                                           "path": "conf.py", "line": 2,
+                                           "message": "hardcoded password in conf.py"}]})
+        monkeypatch.setattr("fl4write.analyzer._call_model", fake)
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        cfg_obj = make_config()
+        diff = ("diff --git a/conf.py b/conf.py\n"
+                "index 000..111\n--- a/conf.py\n+++ b/conf.py\n"
+                "+password=aaaaaaaaaaaaaaaa\n+line2\n")
+        # L1-B1 caps a BARE claim at Major (established law); the A1 fix is
+        # the FLOOR: an anchored low-entropy assignment is never Nit, and the
+        # value never leaks into the rendered body
+        doc = analyze(pr, {"conf.py"}, diff, cfg_obj)
+        assert len(doc.findings) == 1
+        assert doc.findings[0].severity in ("Critical", "Major")
+        body = renderer.render_review(pr, doc.findings, cfg_obj, review_hash="abc")
+        assert "aaaaaaaaaaaaaaaa" not in body
+        assert "aaaaaaaaaaaaaaaa" not in str(doc.digest)
+        # with an explicit scenario the anchored literal keeps Critical
+        seen.clear()
+        monkeypatch.setattr(
+            "fl4write.analyzer._call_model",
+            lambda route, prompt, mode="pr", system=None, **kw: _j.dumps(
+                {"findings": [{"rule_id": "secrets",
+                               "severity": "Critical",
+                               "path": "conf.py", "line": 2,
+                               "message": "hardcoded password leaks credentials"}]}))
+        doc2 = analyze(pr, {"conf.py"}, diff, cfg_obj)
+        assert doc2.findings and doc2.findings[0].severity == "Critical"
+
+    def test_escaped_key_ambiguity_and_single_object(self):
+        from fl4write.analyzer import extract_json
+
+        for hostile in ('{"\\u0066indings":[{"real":1}]} trailing {"findings":[]}',
+                        '{"\\u0066indings":[]} {"findings":[{"real":1}]}'):
+            try:
+                extract_json(hostile, envelope_key="findings")
+                raise AssertionError("distinct envelopes accepted")
+            except ValueError:
+                pass
+        out = extract_json('{"\\u0066indings":[{"real": 1}]} tail',
+                           envelope_key="findings")
+        assert out == {"findings": [{"real": 1}]}
+
+    def test_arrays_and_malformed_prefixes_refuse(self):
+        from fl4write.analyzer import extract_json
+        for hostile in ('[{"findings":[]}]', '{garbage {"findings":[]}'):
+            try:
+                extract_json(hostile, envelope_key="findings")
+                raise AssertionError("nested draft certified clean")
+            except ValueError:
+                pass
+
+    def test_think_close_whitespace_and_tabs(self):
+        from fl4write.analyzer import extract_json
+        for hostile in ("<think>{\"findings\": []}</think > done",
+                        "<THINK>{\"findings\": []}</THINK >"):
+            try:
+                extract_json(hostile, envelope_key="findings")
+                raise AssertionError("reasoning-only certified")
+            except ValueError:
+                pass
+
+    def test_zero_width_refutation_caught(self):
+        # A5: canonical controls BEFORE gates — a zero-width split refutation
+        # must not survive; the posted message never carries the raw controls
+        import json as _j
+
+        def fake(route, prompt, mode="pr", system=None, **kw):
+            return _j.dumps({"findings": [{"rule_id": "secrets-config",
+                                           "severity": "Critical", "path": "a.py",
+                                           "line": 1,
+                                           "message": "No iss\\u200bues found."}]})
+        monkeypatch = None
+        from fl4write.analyzer import _call_model as _orig
+        _orig2 = _orig
+        # drive through analyze with stubbed call
+        import fl4write.analyzer as an
+        old = an._call_model
+        an._call_model = fake
+        try:
+            pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+            doc = analyze(pr, {"a.py"}, "diff a.py\n+x\n", make_config())
+        finally:
+            an._call_model = old
+        assert not doc.findings  # self-refuting message dropped
+
+    def test_never_and_local_pass_claims(self):
+        # A6: 'never fail' refutes nothing to claim; a real defect after a
+        # never-clause survives the gates (see analyzer-gates suite pin)
+        import json as _j
+        import fl4write.analyzer as an
+        old = an._call_model
+        results = []
+
+        def fake(route, prompt, mode="pr", system=None, **kw):
+            return _j.dumps({"findings": results[0]})
+        an._call_model = fake
+        try:
+            pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+            cfg_obj = make_config(test_cmd="python3 -m pytest tests/")
+            results.append([{"rule_id": "testing-quality", "severity": "Critical",
+                             "path": "t.py", "line": 5, "category": "c",
+                             "message": "Tests never fail under this code."}])
+            doc = analyze(pr, {"t.py"}, "diff content t.py", cfg_obj)
+            assert not doc.findings or doc.findings[0].severity == "Major"
+        finally:
+            an._call_model = old
+
+    def test_scrub_escaped_alt_svg_and_tilde_fence(self):
+        from fl4write.scrub import scrub, assert_clean
+        out = scrub("![a\\]](https://evil.invalid/pixel) <svg><path/></svg>")
+        assert "evil" not in out
+        assert_clean(out)
+        from fl4write import renderer
+        assert "\\~~~" in renderer._md_escape_block("~~~python\nx")
+
+    def test_truncated_zero_findings_never_clean(self):
+        from fl4write import renderer
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        body = renderer.render_review(pr, [], make_config(), review_hash="abc",
+                                      diff_truncated=True)
+        assert "PARTIAL REVIEW" in body and "Go merge it" not in body
+
+    def test_quoted_path_terminal_quote_decodes(self):
+        from fl4write.analyzer import _git_diff_path
+        assert _git_diff_path(r'diff --git "a/foo\"" "b/foo\""') == 'foo"'
+        assert _git_diff_path(r'diff --git "a/caf\303\251.py" "b/caf\303\251.py"') == "café.py"
+
+    def test_injective_path_identity(self):
+        from fl4write import renderer
+        pairs = [("ab.py", "a\u200db.py"), ("a b.py", "a\nb.py")]
+        for a, b in pairs:
+            da, db = renderer.path_display(a), renderer.path_display(b)
+            assert da != db and "\n" not in da and "\n" not in db
+        f = Finding(rule_id="general", severity="Major", path="a\nb.py", line=1,
+                    message="m")
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        body = renderer.render_review(pr, [f], make_config(), review_hash="abc")
+        assert renderer.parse_finding_lines(body) == [("Major", "a\\nb.py", 1, "general")]
+
+    def test_prompt_carries_exact_source_literals(self, monkeypatch):
+        # A15: security-sensitive literals ride the prompt unrewritten
+        import json as _j
+        seen = {}
+
+        def fake(route, prompt, mode="pr", system=None, **kw):
+            seen["prompt"] = prompt
+            return _j.dumps({"findings": []})
+        monkeypatch.setattr("fl4write.analyzer._call_model", fake)
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        src = 'const x = "data:text/html;base64,PHNjcmlwdD4"; // <table><tr>'
+        analyze(pr, {"a.js"}, src, make_config())
+        assert "data:text/html;base64,PHNjcmlwdD4" in seen["prompt"]
+        assert "<table>" in seen["prompt"]
+
+    def test_merge_response_must_prove_completion(self, monkeypatch):
+        from fl4write import executor as ex
+
+        calls = []
+
+        def fake_gh(method, path, data=None):
+            calls.append((method, path))
+            if method == "GET" and "pulls?state=open" in path:
+                return [{"number": 3, "head": {"ref": "fl4write/fix-1",
+                                              "sha": "a" * 40},
+                         "user": {"login": "fl4write[bot]"}}]
+            if method == "GET" and "check-runs" in path:
+                return {"check_runs": []}
+            if method == "GET" and "status" in path:
+                return {"state": "success"}
+            return {"merged": False, "sha": "WRONG"}  # PUT does not prove
+        monkeypatch.setattr(ex, "_gh_api", fake_gh)
+        merged = ex.check_and_merge_own_prs(_sol_config(), "fl4write[bot]")
+        assert merged == []  # B7: unproven merge never reported merged
