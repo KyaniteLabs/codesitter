@@ -965,7 +965,7 @@ class TestMECERound2LunaPins:
         assert out == {"fixed_content": "ok"}
 
     def test_quoted_git_path_spans(self):
-        from fl4write.analyzer import _diff_path_texts, _diff_line_spans, _git_diff_path
+        from fl4write.analyzer import _diff_path_texts, _git_diff_path
         diff = ('diff --git "a/my file.py" "b/my file.py"\n'
                 "@@ -1 +1,2 @@\n def f():\n+    return 1\n")
         assert "my file.py" in _diff_path_texts(diff)
