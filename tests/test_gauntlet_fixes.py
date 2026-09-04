@@ -1352,3 +1352,40 @@ class TestMECERound4LunaPins:
         _r4_cycle(forge, monkeypatch, sp, cfg_over, run_fixes=True)
         assert len(forge.fix_attempts) == 1
         assert forge.fix_attempts[0][1].path == "tests/test_x.py"
+
+    def test_gatekeeper_count_on_comment_is_per_pr_not_cycle_wide(self, tmp_path, monkeypatch):
+        # F4-006: two PRs reviewed in one cycle, gatekeeper drops 1 finding on
+        # each — each comment must claim its OWN filtered count (1), never the
+        # cycle-wide cumulative (2) that leaks PR #1's count into PR #2's body.
+        class _CommentForge(_R4Forge):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                self.posts: list[tuple[int, str]] = []
+
+            def create_comment(self, repo, number, body):
+                self.posts.append((number, body))
+                return len(self.posts)
+
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _CommentForge(open_prs=[_r4_pr(number=n) for n in (1, 2)])
+        cfg_over = dict(_NO_EXTRA_LANES)
+
+        def fake_analyze(pr, files, text, config):
+            return ReviewDoc(pr=pr, findings=[
+                Finding(rule_id="secrets", severity="Nit", path="x.py", line=1,
+                        message=f"nit {pr.number} a"),
+                Finding(rule_id="secrets", severity="Nit", path="x.py", line=2,
+                        message=f"nit {pr.number} b"),
+            ])
+
+        def fake_gatekeeper(findings, config):
+            return findings[:-1], 1, False  # drop exactly one per review
+
+        monkeypatch.setattr("fl4write.analyzer.analyze", fake_analyze)
+        monkeypatch.setattr("fl4write.gatekeeper.filter_findings", fake_gatekeeper)
+        _r4_cycle(forge, monkeypatch, sp, cfg_over)
+        assert [n for n, _ in forge.posts] == [1, 2]
+        for number, body in forge.posts:
+            assert "🧹 1 nits filtered" in body, f"PR #{number} claims a cycle-wide count"
+            assert "🧹 2" not in body

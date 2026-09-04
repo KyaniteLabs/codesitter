@@ -178,9 +178,11 @@ def _review_pr(
 
     deterministic = [f for f in findings if f.category == "CI"]
     findings = [f for f in findings if f.category != "CI"] + doc.findings
+    dropped_here = 0  # MECE round-4 (luna F4-006): per-PR count for the comment
     if findings and config.gatekeeper:
         findings, dropped, failed_open = gatekeeper.filter_findings(findings, config)
         report.gatekeeper_dropped += dropped
+        dropped_here = dropped
         if failed_open:
             report.gatekeeper_failed += 1
     # the deterministic verify finding is NEVER gatekeeper-droppable (A4)
@@ -193,7 +195,7 @@ def _review_pr(
         previous = _prior_findings(existing[1])
     body = renderer.render_review(
         pr, findings, config, rh, previous,
-        gatekeeper_dropped=report.gatekeeper_dropped or 0,
+        gatekeeper_dropped=dropped_here or 0,
         diff_truncated=bool(doc.digest.get("_diff_truncated")),
         post_merge=post_merge,
     )
@@ -850,9 +852,11 @@ def _retro_review_pr(
         return "deferred"  # retro never caps: the cursor already passed it; retry is free
 
     findings = doc.findings
+    dropped_here = 0  # MECE round-4 (luna F4-006): per-PR count for the comment
     if findings and config.gatekeeper:
         findings, dropped, _fo = gatekeeper.filter_findings(findings, config)
         report.gatekeeper_dropped += dropped
+        dropped_here = dropped
 
     if findings and config.retro_audit.freshness_gate:
         fresh: list = []
@@ -877,7 +881,7 @@ def _retro_review_pr(
         previous = _prior_findings(existing[1])
     body = renderer.render_review(
         pr, findings, config, rh, previous, post_merge=True,
-        gatekeeper_dropped=report.gatekeeper_dropped or 0,
+        gatekeeper_dropped=dropped_here or 0,
         diff_truncated=bool(doc.digest.get("_diff_truncated")),
     )
     if config.shadow:
