@@ -48,13 +48,15 @@ fi
 # alerts, and counts; scheduler FAILURE is a loud exit, never 0-ok/0-err
 # (Sol#1: a dead scheduler used to look like a healthy empty cycle).
 mkdir -p logs
-PLAN=$(python3 -m fl4write.tiers --plan *.fl4write.yaml 2>>"$LOG")
-# MECE round-1 (glm F1-1): also refuse a plan that is not JSON at all
+python3 -m fl4write.tiers --plan *.fl4write.yaml > /tmp/fl4write-plan.json 2>>"$LOG"
+PLAN_RC=$?
+PLAN=$(cat /tmp/fl4write-plan.json 2>/dev/null)
+# MECE round-2 (sol F2-001): keep the scheduler's OWN exit status; also
+# refuse output that is not JSON at all
 case "$PLAN" in
-    ""|'{'*) ;;
-    *) PLAN="" ;;
+    ""|'{'*) PLAN="" ;;
 esac
-if [ $? -ne 0 ] || [ -z "$PLAN" ]; then
+if [ $PLAN_RC -ne 0 ] || [ -z "$PLAN" ]; then
     echo "$(date -Iseconds) ERR: tier scheduler failed — fleet NOT cycled this hour" >> "$LOG"
     exit 1
 fi
@@ -109,7 +111,11 @@ run_one() {
 export -f run_one
 export LOG
 
-printf '%s\0' "${DUE_FILES[@]}" | xargs -0 -P "$POOL" -I{} bash -c 'run_one "$@"' _ {}
+# MECE round-2 (sol F2-002): an empty due list must not feed xargs a NUL
+# empty record (phantom worker error); the aggregate below prints the line
+if [ "${#DUE_FILES[@]}" -gt 0 ]; then
+    printf '%s\0' "${DUE_FILES[@]}" | xargs -0 -P "$POOL" -I{} bash -c 'run_one "$@"' _ {}
+fi
 
 # aggregate: MISSING result file = ERR, never silence (the Critic's law)
 OK=0; ERR=0

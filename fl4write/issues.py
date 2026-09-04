@@ -82,7 +82,21 @@ def triage_issue(issue: dict[str, Any], config: RepoConfig) -> dict[str, Any] | 
     )
     try:
         response = _call_model(config.model, prompt, system=triage_system + "\n\n" + SYSTEM_PROMPT_ADDENDUM)
-        return extract_json(response, envelope_key="labels") if '"labels"' in response else extract_json(response)
+        raw = extract_json(response, envelope_key="labels") if '"labels"' in response else extract_json(response)
+        # MECE round-1 (luna F1-009): triage fields are model-controlled —
+        # coerce/validate types so a hostile or malformed payload cannot
+        # inject a label list or urgency we never sanctioned
+        labels = raw.get("labels")
+        raw["labels"] = [str(l)[:60] for l in labels if isinstance(l, (str, int))][:8] \
+            if isinstance(labels, list) else []
+        raw["is_duplicate"] = bool(raw.get("is_duplicate"))
+        raw["is_regression"] = bool(raw.get("is_regression"))
+        for key in ("duplicate_hint", "draft_reply", "regression_version"):
+            v = raw.get(key)
+            raw[key] = scrub.scrub(str(v))[:500] if v is not None else None
+        urg = str(raw.get("urgency", "low")).lower()
+        raw["urgency"] = urg if urg in ("low", "medium", "high") else "low"
+        return raw
     except Exception as exc:  # audit A6b: fail-open means except Exception
         log.warning("issue triage failed for #%s: %s", issue.get("number"), exc)
         return None

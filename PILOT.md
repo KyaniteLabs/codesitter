@@ -41,7 +41,9 @@ resolution across the org AND user-account installations).
 ## Monitoring (fl4write PM)
 
 - **Telemetry** = the hourly runner.log line + `~/.fl4write/*.state.json`.
-  A green cycle is `31 ok / 0 errors` with zero ALERT lines.
+  A green cycle is the hourly aggregate (`~N ok / 0 errors` where N ≈ due
+  repos this hour) with zero ALERT lines — the pilot-era `31 ok` constant
+  died with fleet growth (F2-007 doc truth).
 - **PM review cadence**: each session reads runner.log since last look;
   anything anomalous (crash loops, model_down persistence, double posts,
   ALERT repeats) files to the map (KyaniteLabs/.github #63) and

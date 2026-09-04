@@ -1,6 +1,6 @@
 # FL4WRITE (`fl4write`)
 
-**Capability-grounded review:** every finding cites one of 19 production-hardening capabilities (from the org's own CheckYourself system). Readiness score per repo.
+**Capability-grounded review:** findings ground in the configured rule set (the org's own CheckYourself capabilities merge into every config); the ``general`` rule remains the bounded fallback for defects no capability names (F2-004 doc truth). Readiness score per repo.
 
 **Day-1 state (2026-09-02):** 54 repos across GitHub + Forgejo (own bot identity on both); five review modes live (open-PR, post-merge, retro, ci_watch, omnisweep full-tree); fix lane working (first real fix: Epoch #199); verify-tests runs the diff's own tests deterministically; plus-ultra telemetry stream + Quality Loop (issue #5). 224 tests.
 

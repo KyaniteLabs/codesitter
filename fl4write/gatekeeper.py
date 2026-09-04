@@ -125,23 +125,27 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
         # L2: demotions apply ONLY to kept findings and only DOWNWARD
         demote = _demotions(parsed, config.severity_vocab)
         demoted_ids = []
+        # MECE round-1 (terra F1-021): the applied set is keyed by
+        # (path, line, rule_id) — two findings on one line under different
+        # rules must each get their own requested demotion
         applied: set = set()
         for f in kept:
-            target = demote.get((f.path, f.line, f.rule_id))
+            key3 = (f.path, f.line, f.rule_id)
+            target = demote.get(key3)
             if target is None:
                 # (path,line) match WITHOUT rule match is ambiguous (Sol#3):
                 # only apply when exactly one finding holds that line
                 same_line = [g for g in kept if (g.path, g.line) == (f.path, f.line)]
-                if len(same_line) == 1 and (f.path, f.line) not in applied:
+                if len(same_line) == 1 and (f.path, f.line) not in {(p, l) for p, l, _ in applied}:
                     target = next((v for (p, ln, r), v in demote.items()
                                    if (p, ln) == (f.path, f.line)), None)
-            if (f.path, f.line) in applied:
+            if key3 in applied:
                 continue
             if target and config.severity_vocab.index(target) > config.severity_vocab.index(f.severity):
                 log.info("gatekeeper demoted %s:%s (%s) %s->%s", f.path, f.line, f.rule_id, f.severity, target)
                 demoted_ids.append(f"{f.path}:{f.line} ({f.rule_id}) {f.severity}->{target}")
                 f.severity = target
-                applied.add((f.path, f.line))
+                applied.add(key3)
         from . import telemetry as _tel
         _tel.emit("gatekeeper", repo=config.repo, kept=len(kept),
                   dropped=len(findings) - len(kept), demoted=demoted_ids)

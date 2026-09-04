@@ -368,8 +368,10 @@ pytest summary line for pytest cmds; the verifier turns no-evidence rc-0 into a 
 evidence — any auto-landing gate on a code-executing step (fix lane, verifier, CI-mimic) must
 require both.** Sol audit round 3 (GO-WITH-CHANGES) hardened further: output TEXT is forgeable
 too (flush a fake summary then os._exit(0)) — pytest gates now require a host-controlled
---junitxml artifact written only by a suite that genuinely completes (tests>0, failures=0,
-errors=0), and NON-pytest runners FAIL CLOSED on the fix gate until a per-runner evidence
+--junitxml artifact as COMPLETION evidence (tests>0, failures=0, errors=0). Honest
+boundary (MECE round-1 F1-002/round-2 F2-005): the path is argv-visible to the same-user
+test process, so a DETERMINED in-process adversary can forge it — the artifact defeats
+accidental-kill and flush-then-exit classes; OS privilege separation is the real cure, and NON-pytest runners FAIL CLOSED on the fix gate until a per-runner evidence
 mapping lands (fix lane: GitHub-only v1, zero landed fixes — blocking is free; the organic-PR
 verifier keeps rc-based verdicts for non-pytest, silent-exit labeled unproven). 384 tests green.
 
