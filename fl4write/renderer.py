@@ -21,6 +21,7 @@ vanishing silently.
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from . import scrub
 from .config import RepoConfig
@@ -73,6 +74,9 @@ def _md_escape_block(text: str) -> str:
     in the posted comment (UltraQA round 1, ADV-04: a scrubbed message still
     rendered "### 🔴 Critical — fake.py:99 — general" as real structure)."""
     out = re.sub(r"(`{3,})", "``", text)
+    # F13-A9: tilde fences are CommonMark structure too — an unclosed
+    # ~~~ swallowed the urgency line, footer, and marker into a code block
+    out = re.sub(r"(?m)^ {0,3}(~{3,})", lambda m: "\\" + m.group(1), out)
     # F9-A11: CommonMark treats up to THREE leading spaces as an ATX heading,
     # and '>' blockquote lines can still carry structure
     out = re.sub(r"(?m)^( {0,3})(#{1,6})(?=\s)",
@@ -89,15 +93,43 @@ def parse_finding_lines(body: str) -> list[tuple[str, str, int, str]]:
     ]
 
 
+_CONTROL_ESCAPES = {}
+
+
+def _escape_path(path: str) -> str:
+    """F13-A12 (reopened F9-A09/F12-A6): the display transform is an
+    INJECTIVE encoding of the raw path — backslash, newline, CR and every
+    control/format codepoint become visible escapes, so distinct raw paths
+    (a b vs a\nb; ab vs a\u200db) can never collapse onto one lifecycle
+    identity. Rendered paths show the escapes; parse/compare uses the same
+    encoding on both sides, so equality is byte-faithful."""
+    out = []
+    for ch in str(path):
+        cp = ord(ch)
+        if cp in (0x5C,):  # backslash first: double it
+            out.append("\\\\")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\r":
+            out.append("\\r")
+        elif cp in (0x09, 0x0A):
+            out.append(ch)
+        elif unicodedata.category(ch) in ("Cc", "Cf"):
+            out.append(f"\\u{cp:04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def path_display(path: str) -> str:
     """Display form of a repo-controlled path in rendered comments: control/
-    bidi scrubbed, credential-shaped runs redacted. F9-A09: characters are
-    NEVER deleted or aliased — '_' and friends are kept, and F11-A5 keeps a
-    literal backtick too (replacing it with ' collapsed 'a`b.py' and
-    "a'b.py" onto one lifecycle identity). Backtick-bearing paths are fenced
-    with a wider backtick run at the span sites (_code_span)."""
-    out = scrub.scrub(str(path))  # control/bidi chars first (sol F4-005)
-    return scrub.redact_credentials(out.replace("\n", " ").replace("\r", " "))
+    bidi escaped via the injective _escape_path, credential-shaped runs
+    redacted. F9-A09: characters are NEVER deleted or aliased — '_' kept,
+    F11-A5 keeps a literal backtick (run-widened fences at the span sites).
+    F13-A12: the encoding is injective so lifecycle identity never collapses
+    distinct paths, while the output stays single-line and control-free."""
+    out = _escape_path(path)
+    return scrub.redact_credentials(out)
 
 
 def _code_span(text: str) -> str:
@@ -189,13 +221,17 @@ def render_review(
 
     head = "## 🔍 FL4WRITE review (post-merge)\n\n" if post_merge else "## 🔍 FL4WRITE review\n\n"
 
+    # F13-A10: truncation is an independent state — a truncated review with
+    # ZERO findings used to render the clean 'Go merge it' celebration
+    if diff_truncated:
+        head += "⚠️ **PARTIAL REVIEW — the diff was truncated; the file set "
+        head += "below the limit is NOT a clean bill**\n\n"
+
     if findings or resolved:
         head += _severity_table(findings) + "\n\n"
         head += f"`{pr.repo}#{pr.number}` @ `{pr.head_sha[:8]}` · {len(findings)} findings"
         if gatekeeper_dropped:
             head += f" · 🧹 {gatekeeper_dropped} nits filtered"
-        if diff_truncated:
-            head += " · ⚠️ **partial review — diff was truncated**"
         head += "\n\n"
         sections = []
         if findings:
@@ -213,10 +249,14 @@ def render_review(
                 f"({f.rule_id})" for f in resolved)
             sections.append(f"### ✅ Resolved since last review\n\n{lines}")
         body = "\n\n---\n\n".join(sections)
-    elif post_merge:
+    elif post_merge and not diff_truncated:
         body = _TONES[tone] + "## ✨ Clean review — nothing to fix.\n\nMerged in good shape. ✅"
-    else:
+    elif not diff_truncated:
         body = _TONES[tone] + "## ✨ Clean review — nothing to fix.\n\nGo merge it. 🎉"
+    else:
+        # F13-A10: zero-finding TRUNCATED review — no merge encouragement,
+        # the banner above already carries the disclosure
+        body = _TONES[tone] + "Review incomplete (diff truncated) — no merge signal.\n"
 
     footer = (
         f"\n\n---\n"

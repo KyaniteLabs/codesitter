@@ -27,6 +27,10 @@ _DATA_URL_RE = re.compile(r"data:[^\s\"')]+", re.IGNORECASE)
 _BASE64_IMG_RE = re.compile(r"!\[[^\]]*\]\([^)]*base64[^)]*\)", re.IGNORECASE)
 _REMOTE_SRC_RE = re.compile(r"<\s*(img|source|script|iframe)[^>]*src\s*=", re.IGNORECASE)
 _REMOTE_IMG_RE = re.compile(r"!\[[^\]]*\]\(\s*https?://[^)]*\)", re.IGNORECASE)  # exfil beacon
+# F13-A7 (reopened F11-A6/F12-A4): alt text may contain ESCAPED brackets
+# ('![a\\]](https://…)') — the plain class above cannot match them
+_ESC_ALT_IMG_RE = re.compile(
+    r"!\[(?:[^\[\]]|\\.)*\]\(\s*(?:https?:)?//[^)]*\)", re.IGNORECASE)
 # F11-A6 (round 11, luna-max DOM-A): remote images also ride in as REFERENCE
 # links ("![x][id]" + "[id]: https://evil/...") and protocol-relative URLs
 # ("![x](//host/pixel)") — both are attacker-controlled loads in the posted
@@ -45,13 +49,22 @@ _SRCSET_RE = re.compile(
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 _HIDDEN_TAG_RE = re.compile(
     r"</?\s*(details|summary|script|style|iframe|h[1-6]|table|thead|tbody|tr|th|td|"
-    r"div|section|article|blockquote|pre|hr)\b[^>]*>", re.IGNORECASE)
+    r"div|section|article|blockquote|pre|hr|svg|math|object|embed|form)\b[^>]*>",
+    re.IGNORECASE)
+# F13-A8: scrub and assert_clean must speak the same language — inline
+# display/visibility declarations are neutralized HERE so posted prose that
+# legitimately mentions them does not crash the render assert
+_HIDDEN_STYLE_RE = re.compile(
+    r"(?:display|visibility)\s*:\s*(?:none|hidden)", re.IGNORECASE)
 # Our persistent-comment marker must be minted only by the renderer.
 _MARKER_RE = re.compile(r"(?:fl4write|codesitter):v\d+:[0-9a-fA-F]+")
 
 
-def scrub(text: str) -> str:
-    """Category-strip untrusted text. Idempotent. Never raises."""
+def controls(text: str) -> str:
+    """Strip ONLY control/format characters (keep \n/\t) — no content
+    rewriting. The canonical form used BEFORE semantic gates and as the
+    identity basis, so a zero-width char can never hide a refutation from
+    the contradiction scan while the posted text normalizes later (F13-A5)."""
     if not isinstance(text, str):
         return ""
     out = []
@@ -63,10 +76,18 @@ def scrub(text: str) -> str:
         if unicodedata.category(ch) in _CONTROL_CATEGORIES:
             continue  # drop bidi overrides, zero-widths, ANSI, etc.
         out.append(ch)
-    s = "".join(out)
+    return "".join(out)
+
+
+def scrub(text: str) -> str:
+    """Category-strip untrusted text. Idempotent. Never raises."""
+    if not isinstance(text, str):
+        return ""
+    s = controls(text)
     s = _DATA_URL_RE.sub("[scrubbed-data-url]", s)
     s = _BASE64_IMG_RE.sub("[scrubbed-image]", s)
     s = _REMOTE_IMG_RE.sub("[image removed]", s)
+    s = _ESC_ALT_IMG_RE.sub("[image removed]", s)
     s = _PROTOCOL_RELATIVE_IMG_RE.sub("[image removed]", s)
     s = _IMG_REF_USAGE_RE.sub("[image removed]", s)
     s = _ANGLE_IMG_RE.sub("[image removed]", s)
@@ -81,6 +102,7 @@ def scrub(text: str) -> str:
         # the remainder of the rendered comment — remove any leftover opener
         s = s.split("<!--", 1)[0] + s.split("<!--", 1)[1].replace("<!--", "")
     s = _HIDDEN_TAG_RE.sub("", s)
+    s = _HIDDEN_STYLE_RE.sub("hidden-style", s)
     s = _MARKER_RE.sub("[scrubbed-marker]", s)
     return s
 
@@ -120,6 +142,15 @@ def redact_credentials(text: str) -> str:
     import re as _re
     for p in _SECRET_PREFIX:
         out = _re.sub(re.escape(p) + r"[A-Za-z0-9_\-]{8,}", "[redacted]", out)
+    # F13-A1 (CRITICAL, reopened F1-013): credential ASSIGNMENT values are
+    # redacted regardless of entropy — 'password=aaaaaaaaaaaaaaaa' is a real
+    # hard-coded credential even though its Shannon entropy is ~0
+    _ASSIGN_KEY = (
+        r"(?:password|passwd|secret|token|api[_-]?key|access[_-]?key|"
+        r"client[_-]?secret|auth(?:orization)?|private[_-]?key)\b\s*[:=]\s*"
+        r"['\"]?([A-Za-z0-9_\-./+]{4,})['\"]?")
+    out = _re.sub(_ASSIGN_KEY,
+                  lambda m: out[m.start():m.start(1)] + "[redacted]", out)
     return out
 
 
@@ -141,7 +172,7 @@ def assert_clean(text: str) -> None:
             continue
         if unicodedata.category(ch) in _CONTROL_CATEGORIES:
             raise ValueError(f"unscrubbed control char U+{cp:04X} in output")
-    for pattern in (_DATA_URL_RE, _BASE64_IMG_RE, _REMOTE_IMG_RE,
+    for pattern in (_DATA_URL_RE, _BASE64_IMG_RE, _REMOTE_IMG_RE, _ESC_ALT_IMG_RE,
                     _PROTOCOL_RELATIVE_IMG_RE, _IMG_REF_USAGE_RE,
                     _REMOTE_IMG_REF_DEF_RE, _ANGLE_IMG_RE, _SRCSET_RE,
                     _REMOTE_SRC_RE, _MARKER_RE):
@@ -151,7 +182,7 @@ def assert_clean(text: str) -> None:
     # review even when every regex pattern above is clean (markers are
     # STRUCTURAL: bare words like 'hidden' or diff arrows must not trip)
     low = text.lower()
-    if "<!--" in low or re.search(r"<\s*/?\s*(style|script|template|iframe|svg|math)", low) \
+    if "<!--" in low or re.search(r"<\s*/?\s*(style|script|template|iframe|svg|math|object|embed)", low) \
             or re.search(r"(?:display|visibility)\s*:\s*(?:none|hidden)", low) \
             or re.search(r"<\s*[a-z]+[^>]*\bhidden\b", low):
         raise ValueError("unscrubbed html comment/hidden structure in output")

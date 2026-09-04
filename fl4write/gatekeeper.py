@@ -203,7 +203,9 @@ def filter_findings(findings: list[Finding], config: RepoConfig) -> tuple[list[F
                 log.info("gatekeeper demoted %s:%s (%s) %s->%s",
                          _scrub.inline(f.path, 200), f.line, _scrub.inline(f.rule_id, 60),
                          f.severity, target)
-                demoted_ids.append(f"{f.path}:{f.line} ({f.rule_id}) {f.severity}->{target}")
+                demoted_ids.append(f"{_scrub.inline(f.path, 200)}:{f.line} "
+                                  f"({_scrub.inline(f.rule_id, 60)}) "
+                                  f"{f.severity}->{target}")
                 f.severity = target
                 applied.add(key3)
         from . import telemetry as _tel

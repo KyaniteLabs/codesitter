@@ -130,6 +130,11 @@ def readiness_score(findings_by_severity: dict[str, int],
     if major > 0:
         score = min(score, CAP_P1)
 
+    # RULED-PARTIAL (round 13, sol DOM-A A14, reopened F8-A02): category
+    # weights participate ONLY in the missing-COVERAGE deduction below —
+    # the scoring API receives severity totals, not per-category finding
+    # risk. Documented behavior now matches code; per-category weighted
+    # risk scoring needs engine-side category persistence (tracked).
     # MECE round-8 (luna-max-2 F8-A02): the documented SCORING_CATEGORIES
     # weights were dead data — readiness depended only on counts/severity,
     # so a Major in an 8-weight category scored the same as one in a
