@@ -43,7 +43,7 @@ _IMG_REF_USAGE_RE = re.compile(r"!\[[^\]]*\]\[[^\]]*\]", re.IGNORECASE)
 # F12-A4 (reopened F11-A6): angle-bracket image destinations ('![x](<https://…>)')
 # and <img srcset="…"> survive the inline-URL scrub
 _ANGLE_IMG_RE = re.compile(
-    r"!\[[^\]]*\]\(\s*<[^>]*https?://[^>]*>\s*\)", re.IGNORECASE)
+    r"!\[[^\]]*\]\(\s*<[^>]*(?:https?:)?//[^>]*>\s*\)", re.IGNORECASE)  # F14-A03: incl protocol-relative
 _SRCSET_RE = re.compile(
     r"<\s*(img|source)[^>]*\bsrcset\s*=[^>]*>", re.IGNORECASE)
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)

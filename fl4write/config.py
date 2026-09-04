@@ -28,6 +28,40 @@ _TONE_PATTERN = "^(quiet|balanced|assertive|roast)$"
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _strict_bools_and_numbers(cls, raw):
+        """F14-D004 (reopened F7-D009/F13-D006): strictness lives IN the
+        model, not only in load_config preprocessing — public
+        RepoConfig.model_validate must refuse 'shadow: "false"' (used to
+        coerce to live False), 'enabled: "yes"', and boolean numerics."""
+        if not isinstance(raw, dict):
+            return raw
+        from typing import get_args, get_origin
+
+        for _k, _v in raw.items():
+            _f = cls.model_fields.get(_k)
+            if _f is None:
+                continue
+            _ann = _f.annotation
+            _has_bool = _ann is bool
+            _has_num = False
+            if get_origin(_ann) is not None:
+                for _a in get_args(_ann):
+                    if _a is bool:
+                        _has_bool = True
+                    if _a in (int, float):
+                        _has_num = True
+            elif _ann in (int, float):
+                _has_num = True
+            if _v is None:
+                continue
+            if _has_bool and not isinstance(_v, bool):
+                raise ValueError(f"config field {_k!r} must be a boolean, got {_v!r}")
+            if _has_num and isinstance(_v, bool):
+                raise ValueError(f"config field {_k!r} must be a number, got boolean")
+        return raw
+
 
 def _int_field_names() -> set[str]:
     """Lazy: model classes below this point register at import time."""
@@ -230,6 +264,14 @@ class RepoConfig(_StrictModel):
         _fallback = raw.get("fallback_model") or {}
         _key_envs = {(_model.get("key_env") or ""), (_fallback.get("key_env") or "")}
         _key_envs.discard("")
+        # F14-D001 (CRITICAL, reopened F12-D005/F13-D001): the GitHub App
+        # auth implicitly exports the forge credential as GH_TOKEN and
+        # CODESITTER_GITHUB_TOKEN — a model key_env using either name would
+        # receive the App token as the model endpoint's Bearer
+        for _reserved in ("GH_TOKEN", "CODESITTER_GITHUB_TOKEN"):
+            if _reserved in _key_envs:
+                raise ValueError(
+                    f"model key_env {_reserved!r} is reserved for forge app auth")
         _forges = raw.get("forges")
         if isinstance(_forges, dict):
             _seen_envs: dict[str, str] = {}
@@ -259,6 +301,9 @@ class RepoConfig(_StrictModel):
         for rule_id in v:
             if not rule_id or rule_id.strip() != rule_id:
                 raise ValueError(f"invalid rule id: {rule_id!r}")
+            if any(ord(c) < 0x20 or c.isspace() for c in rule_id):
+                # F14-A08: control-bearing rule ids crashed the render assert
+                raise ValueError(f"rule id contains control/whitespace: {rule_id!r}")
         return v
 
     @field_validator("severity_vocab")

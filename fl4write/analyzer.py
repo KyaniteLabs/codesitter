@@ -51,7 +51,8 @@ def _git_diff_path(line: str) -> str | None:
     # rstrip('"') trimmed real content characters (a file named foo\" lost
     # its quote and its secrets finding was demoted). Scan for the closing
     # quote honoring backslash escapes, then ast-decode the whole token.
-    i = line.find(" b/")
+    i = line.rfind(" b/")  # F14-A01: unquoted paths may contain spaces —
+    # the LAST ' b/' token is the new-file side (git quotes only when needed)
     quoted = False
     if i != -1:
         tok = line[i + 3:]
@@ -280,13 +281,24 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
         # F9-A02: a response that is ONLY a reasoning block must never be
         # certified as an empty/clean final review
         raise ValueError("response contains only a <think> reasoning block — refusing")
-    if envelope_key and closed_think and not _re.search(
-            re.escape(f'"{envelope_key}"') + r"\s*:", cleaned):
+    _final_envelope = False
+    if envelope_key:
+        if _re.search(re.escape(f'"{envelope_key}"') + r"\s*:", cleaned):
+            _final_envelope = True
+        else:
+            try:
+                _w2, _ = _json.JSONDecoder(
+                    object_pairs_hook=_reject_dup_keys).raw_decode(cleaned.strip())
+                if isinstance(_w2, dict) and envelope_key in _w2:
+                    _final_envelope = True  # F14-A07: escaped-key envelope
+            except ValueError:
+                pass
+    if envelope_key and closed_think and not _final_envelope:
         # the only envelope occurrence lives inside a CLOSED reasoning block
-        # (F12-A1: the check is whitespace-tolerant — a pretty-printed final
-        # envelope after </think> used to be refused)
+        # (F12-A1: the check is whitespace-tolerant - a pretty-printed final
+        # envelope after  response used to be refused)
         raise ValueError(
-            "response carries a reasoning block and no final envelope — refusing")
+            "response carries a reasoning block and no final envelope - refusing")
     candidates = [cleaned]
     if envelope_key:
         # envelope-aware: raw_decode from the LAST '{"key"' occurrence parses
@@ -478,7 +490,8 @@ _NEGATED_DEFECT_SPAN_RE = re.compile(
     r"[^.!?\n]{0,80}?\b(?:fail\w*|crash\w*|exploit\w*|leak\w*|bypass\w*|"
     r"throw\w*|vulnerab\w*|break\w*|corrupt\w*|error\w*|remote|unauthor\w*)\b"
     r"(?:(?!\b(?:but|yet|however|though)\b)[^.!?\n])*[.!;]?"
-    r"|\bno (?:credible|real|actual|known|possible) (?:scenario|way|path|means|route)"
+    r"|\bno (?:(?:credible|real|actual|known|possible|realistic) )?"
+    r"(?:scenario|way|path|means|route|possibility|risk|chance|vector)"
     r"[^.!?\n]{0,120}?\b(?:exploit\w*|execution|leak\w*|bypass\w*|access|crash\w*|"
     r"fail\w*|remote|risk)\b"
     r"(?:(?!\b(?:but|yet|however|though)\b)[^.!?\n])*[.!;]?")
@@ -625,6 +638,7 @@ def analyze(
 
     findings: list[Finding] = []
     dropped: list[str] = []
+    _diff_truncated = len(diff_text or "") > MAX_DIFF_CHARS
     for item in items:
         try:
             if not isinstance(item, dict):
@@ -652,6 +666,11 @@ def analyze(
             continue
         if f.path not in diff_files:
             dropped.append(f"path not in diff {f.path}:{f.line}")
+            continue
+        if _diff_truncated and f.path not in _diff_path_texts(diff_text or ""):
+            # F14-A02: with a truncated diff, an absent hunk map means the
+            # finding's evidence is simply NOT HERE — never accept it
+            dropped.append(f"no hunks in truncated diff {f.path}:{f.line}")
             continue
         if f.line <= 0:
             # unanchored (15% of live sweep findings were line-0): a finding

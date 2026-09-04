@@ -152,7 +152,10 @@ def readiness_score(findings_by_severity: dict[str, int],
     # missing evidence in critical categories (MECE round-1, terra F1-11: the
     # cap applies when ANY critical category lacks evidence, not only when ALL
     # four do — a run that only checked "Auth & Access" must not score 100)
-    critical_cats = {"Data & Storage", "Auth & Access", "Secrets & Config", "Testing & Quality"}
+    # F14-A09 (reopened F13-A14/F1-022): derive criticality from the table —
+    # Security & Privacy is the highest-weight category and must cap
+    critical_cats = {"Data & Storage", "Auth & Access", "Secrets & Config",
+                     "Testing & Quality", "Security & Privacy"}
     if categories_checked is not None and not critical_cats.issubset(categories_checked):
         score = min(score, CAP_MISSING_CRITICAL)
 

@@ -2888,8 +2888,15 @@ class TestMECERound8Pins:
              "user": {"login": "dev"}},
             {"number": "junk", "merged": True, "merged_at": "2026-09-02T00:00:00Z"},
         ]
-        out = fj.list_merged_prs("o/r", "2000-01-01T00:00:00Z")
-        assert [p.number for p in out] == [7]
+        # F14-D007: dropped rows make the enumeration INCOMPLETE — the
+        # adapter raises so the engine can hold watermarks and the prune
+        # barrier instead of trusting a filtered list as complete
+        from fl4write.forges import ForgeError as _FE
+        try:
+            fj.list_merged_prs("o/r", "2000-01-01T00:00:00Z")
+            raise AssertionError("incomplete enumeration returned as complete")
+        except _FE:
+            pass
 
     def test_cli_missing_config_is_clean_exit_2(self, capsys, monkeypatch):
         import sys as _sys

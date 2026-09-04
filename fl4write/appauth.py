@@ -117,8 +117,12 @@ def get_installation_token(repo: str | None = None) -> str:
             f"app token response: malformed envelope ({type(data).__name__})"
         )
     token = data.get("token")
-    if not isinstance(token, str) or not token:
-        raise RuntimeError("app token response: empty token — refusing to cache/export")
+    # F14-D013 (reopened F10-D006): whitespace/control-bearing tokens are
+    # unusable — "   " used to be cached and exported, failing auth for the
+    # whole cache lifetime while the CLI still selected the bot identity
+    if not isinstance(token, str) or not token or token != token.strip() \
+            or any(ord(c) < 0x20 for c in token):
+        raise RuntimeError("app token response: unusable token — refusing to cache/export")
     _TOKEN_CACHE[installation_id] = (token, time.time())
     return token
 

@@ -132,6 +132,19 @@ def path_display(path: str) -> str:
     return scrub.redact_credentials(out)
 
 
+def path_key(path: str) -> str:
+    """F14-A04/A05 (reopened F13-A12/F12-A6): the LIFECYCLE identity form
+    stored in finding lines. It is the escape-encoded path — and when
+    display redaction would alias two distinct paths ('a/AKIA...py' vs
+    'a/[redacted].py' both render '[redacted]'), the whole path is
+    hex-encoded instead, keeping the encoding injective. Body round-trips
+    return this exact string; comparisons never re-encode it."""
+    out = _escape_path(path)
+    if scrub.redact_credentials(out) != out:
+        return "".join(f"\\u{ord(c):04x}" for c in path)
+    return out
+
+
 def _code_span(text: str) -> str:
     """CommonMark-safe code span: delimiter run = 1 + the longest backtick
     run inside the content — a single-backtick span cannot carry a literal
@@ -163,8 +176,9 @@ def render_finding(f: Finding, tone: str, post_merge: bool = False) -> str:
     # strips structure chars and redacts credential-shaped runs
     safe_rule = str(f.rule_id).replace("`", "")
     # F11-A5: the path:line span uses a backtick-RUN fence when the path
-    # itself carries a backtick, so identity survives byte-exact
-    span = _code_span(f"{path_display(f.path)}:{f.line}")
+    # itself carries a backtick, so identity survives byte-exact.
+    # F14-A04/A05: the span stores the injective path_key form.
+    span = _code_span(f"{path_key(f.path)}:{f.line}")
     parts: list[str] = [
         FINDING_LINE_FMT.format(emoji=emoji, sev=f.severity, span=span,
                                 rule=safe_rule),
@@ -214,10 +228,13 @@ def render_review(
     # MECE round-2 (luna F2-004): identity comparisons use the DISPLAY path on
     # both sides — previous findings parsed back from a comment already carry
     # display forms; raw current paths are normalized to match
-    previous_keys = {(path_display(f.path), f.line, f.rule_id) for f in (previous_findings or [])}
-    current_keys = {(path_display(f.path), f.line, f.rule_id) for f in findings}
+    # F14-A04: previous findings already carry the identity form in their
+    # parsed path — never re-encode them (double-escaping made unchanged
+    # findings flip to 🆕 and prior ones resolve)
+    previous_keys = {(f.path, f.line, f.rule_id) for f in (previous_findings or [])}
+    current_keys = {(path_key(f.path), f.line, f.rule_id) for f in findings}
     resolved = [f for f in (previous_findings or [])
-                if (path_display(f.path), f.line, f.rule_id) not in current_keys]
+                if (f.path, f.line, f.rule_id) not in current_keys]
 
     head = "## 🔍 FL4WRITE review (post-merge)\n\n" if post_merge else "## 🔍 FL4WRITE review\n\n"
 
@@ -238,14 +255,14 @@ def render_review(
             sections.append(
                 _TONES[tone]
                 + "\n---\n\n".join(
-                    ("🆕 " if (path_display(f.path), f.line, f.rule_id) not in previous_keys else "")
+                    ("🆕 " if (path_key(f.path), f.line, f.rule_id) not in previous_keys else "")
                     + render_finding(f, tone, post_merge)
                     for f in findings
                 )
             )
         if resolved:
             lines = "\n".join(
-                f"- ✅ {_code_span('~' + path_display(f.path) + ':' + str(f.line))} "
+                f"- ✅ {_code_span('~' + path_key(f.path) + ':' + str(f.line))} "
                 f"({f.rule_id})" for f in resolved)
             sections.append(f"### ✅ Resolved since last review\n\n{lines}")
         body = "\n\n---\n\n".join(sections)

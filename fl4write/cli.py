@@ -73,17 +73,26 @@ def make_get_diff(repo: str):
         forever (LEARNINGS #3, reborn on the error path — audit C1)."""
         try:
             text = _gh("pr", "diff", str(pr.number), "--repo", repo)
-        except RuntimeError:
-            # Oversized diffs (GitHub 406 >20k lines). MECE round-6 (luna-max
-            # F6-302): the old fallback returned file NAMES plus a literal
-            # sentence as the 'diff' — the analyzer then reviewed names
-            # without content (vacuous premise, LEARNINGS #3 class) and the
-            # SHA got marked reviewed. Honest: defer (the engine retries and
-            # alerts); no pseudo-diff, no reviewed-on-nothing.
-            log.warning("diff unavailable for %s#%s: oversized (>20k lines) — deferred",
-                        repo, pr.number)
+        except RuntimeError as exc:
+            # F14-D015: only the ACTUAL oversized response is labeled
+            # oversized — every other gh failure (missing binary, timeout,
+            # auth, transport) was mislabeled and hid the real cause
+            _msg = str(exc)
+            if "406" in _msg or "Not Acceptable" in _msg or ">20k" in _msg:
+                log.warning("diff unavailable for %s#%s: oversized (>20k lines) — deferred",
+                            repo, pr.number)
+            else:
+                log.warning("diff unavailable for %s#%s: %s", repo, pr.number,
+                            _msg[:160])
             return None
-        files = set(re.findall(r"^\+\+\+ b/(.+)$", text, re.MULTILINE))
+        # F14-D012: files come from the shared diff --git header parser —
+        # the '+++ b/...' scan missed quoted/control-bearing paths
+        from .analyzer import _git_diff_path
+        files = {p for line in text.splitlines()
+                 if line.startswith("diff --git ")
+                 for p in [_git_diff_path(line)] if p}
+        if not files:
+            files = set(re.findall(r"^\+\+\+ b/(.+)$", text, re.MULTILINE))
         return files, text
 
     return get_diff
@@ -181,6 +190,10 @@ def _cycle_budget_s() -> int | None:
     if budget_s <= 0:
         print(f"FL4WRITE_CYCLE_BUDGET_S must be positive, got {budget_s}", file=sys.stderr)
         return None
+    if budget_s > 86400:
+        print(f"FL4WRITE_CYCLE_BUDGET_S too large (max 86400), got {budget_s}",
+              file=sys.stderr)
+        return None  # F14-D016: an unbounded budget overflowed the deadline
     return budget_s
 
 
@@ -229,7 +242,10 @@ def main() -> int:
                 _detail = []
         if not _detail:
             _detail = [type(exc).__name__]
-        log.error("config load failed for %s: %s", config_path, exc)
+        # F14-D002: NEVER log the raw exception — pydantic embeds the
+        # input_value (a secret-bearing field printed its value verbatim)
+        log.error("config load failed for %s: fields=%s", config_path,
+                  "; ".join(_detail)[:200])
         print(f"config error: {'; '.join(_detail)[:200]} — see log for detail",
               file=sys.stderr)
         return 2
@@ -277,9 +293,12 @@ def main() -> int:
             # MECE round-7 (sol F7-D008): mirror ONLY into GitHub-host
             # bindings — a Forgejo mirror must never receive the GitHub App
             # token (its own credential is its own token_env)
+            # F14-D003 (reopened F3-D003): bind the minted token
+            # UNCONDITIONALLY — the old 'only if unset' kept a personal PAT in
+            # the adapter while comments were searched as fl4write[bot],
+            # producing unrecognized persistent comments and repeated posts
             for binding in config.forges.values():
-                if binding.token_env and not os.environ.get(binding.token_env) \
-                        and _gh_host(binding.api_base):
+                if binding.token_env and _gh_host(binding.api_base):
                     os.environ[binding.token_env] = os.environ.get("CODESITTER_GITHUB_TOKEN", "")
             config = config.model_copy(update={"bot_login": "fl4write[bot]"})
         except Exception as exc:

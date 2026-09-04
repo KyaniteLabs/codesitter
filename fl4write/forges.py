@@ -12,6 +12,7 @@ Adapter laws (ralplan-approved):
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
@@ -47,19 +48,31 @@ _CHECK_RUN_PAGE_CAP = 100
 LEGACY_BOT_LOGINS = ("kyanitelabs[bot]", "fl4write[bot]")
 
 
+def _log_row(adapter_name, label, row) -> str:
+    """F14-D014: malformed-row logs carry forge content — credential-shaped
+    titles used to print verbatim; redact before truncation."""
+    from . import scrub as _scrub
+    return f"{adapter_name} {label}: {_scrub.redact_credentials(str(row))[:120]}"
+
+
 def is_own_identity(author: str, bot_login: str) -> bool:
     return author == bot_login or author in LEGACY_BOT_LOGINS
 
 
 def _parse_iso(raw: str):
     """ISO timestamps from forges (trailing Z) and from our own state file
-    (+00:00) into one comparable datetime; None when unparseable."""
+    (+00:00) into one comparable datetime; None when unparseable.
+    F14-D011: timezone-NAIVE stamps are refused — comparing them with the
+    aware watermark raised TypeError and discarded every valid sibling row."""
     from datetime import datetime
 
     try:
-        return datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
         return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
 
 
 class ForgeError(RuntimeError):
@@ -120,10 +133,12 @@ class ForgeAdapter:
                 time.sleep(1)
                 return self._call(method, path, payload, _retry=False)
             raise ForgeError(f"{self.name} {method} {path}: {exc}") from exc
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
+        except (OSError, UnicodeDecodeError, ValueError,
+               http.client.HTTPException) as exc:
             # F6-306: ConnectionReset/other OSErrors and decode failures used
             # to escape as raw exceptions past the ForgeError boundary.
-            # F12-D008: ValueError (malformed URL from a bad api_base) too
+            # F12-D008: ValueError (malformed URL from a bad api_base) too.
+            # F14-D006: IncompleteRead and friends (http.client) too
             if method == "GET" and _retry:
                 time.sleep(1)
                 return self._call(method, path, payload, _retry=False)
@@ -157,7 +172,7 @@ class ForgeAdapter:
                 time.sleep(1)
                 return self._call_text(method, path, _retry=False)
             raise ForgeError(f"{self.name} {method} {path}: {exc}") from exc
-        except (OSError, UnicodeDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, http.client.HTTPException) as exc:
             # F6-306: same wrap as _call
             if method == "GET" and _retry:
                 time.sleep(1)
@@ -354,7 +369,12 @@ class ForgeAdapter:
             files = []
             listing_truncated = bool(tree.get("truncated"))
             for e in tree.get("tree") or []:
-                if not isinstance(e, dict) or e.get("type") != "blob":
+                if not isinstance(e, dict):
+                    # F14-D009: garbage rows are invisible files — the
+                    # listing is untrustworthy, mark truncated
+                    listing_truncated = True
+                    continue
+                if e.get("type") != "blob":
                     continue
                 # F11-001 (round 11, terra DOM-D, reopened F10-C003): rows must
                 # NOT be coerced into validity — {path:0,size:true} used to
@@ -388,7 +408,11 @@ class ForgeAdapter:
         # raise raw AttributeError out of the adapter
         if not isinstance(data, dict):
             return None
-        if data.get("encoding") != "base64" or not data.get("content"):
+        # F14-D017: content must be a real string before normalization —
+        # int/list/dict contents raised raw AttributeError on .split()
+        if data.get("encoding") != "base64" \
+                or not isinstance(data.get("content"), str) \
+                or not data.get("content"):
             return None
         try:
             # MECE round-1 (sol F1-003): validate=True rejects lenient garbage
@@ -447,7 +471,7 @@ class ForgeAdapter:
             )
         except Exception as exc:  # noqa: BLE001 — pydantic rejection of a
             # still-odd row degrades THIS row; the listing survives
-            log.warning("%s PR row rejected (%s): %s", self.name, exc, str(p)[:120])
+            log.warning("%s PR row rejected (%s): %s", self.name, exc, _log_row(self.name, "", p))
             return None
 
     def create_comment(self, repo: str, number: int, body: str) -> int:  # pragma: no cover
@@ -464,14 +488,22 @@ class GitHubAdapter(ForgeAdapter):
     def list_open_prs(self, repo: str) -> list[PullRequest]:
         data = self._paginated(f"/repos/{repo}/pulls?state=open", page_size=50)
         prs = []
+        self._pr_rows_dropped = 0
         for p in data:
             if not isinstance(p, dict):  # F7-D004/F10-D001: one bad row never
                 continue  # kills the page translation (log-loud below)
             pr = self._row_pr(repo, p)
             if pr is None:
-                log.warning("%s open-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                log.warning(_log_row(self.name, "open-pr row malformed (skipped)", p))
                 continue
             prs.append(pr)
+        # F14-D007: malformed rows were discarded — the enumeration is
+        # INCOMPLETE; returning a filtered list as complete lets the engine
+        # prune live state or advance watermarks past unseen rows
+        if getattr(self, "_pr_rows_dropped", 0):
+            raise ForgeError(
+                f"{self.name} list_open_prs on {repo}: listing incomplete "
+                f"({self._pr_rows_dropped} malformed row(s) dropped)")
         return prs
 
     def list_merged_prs(self, repo: str, since_iso: str) -> list[PullRequest]:
@@ -484,8 +516,10 @@ class GitHubAdapter(ForgeAdapter):
         )
         since = _parse_iso(since_iso)
         prs = []
+        self._pr_rows_dropped = 0
         for p in data:
             if not isinstance(p, dict):  # F7-D004: row guard
+                self._pr_rows_dropped = getattr(self, "_pr_rows_dropped", 0) + 1
                 continue
             merged_raw = p.get("merged_at")
             if not isinstance(merged_raw, str) or not merged_raw:
@@ -495,7 +529,7 @@ class GitHubAdapter(ForgeAdapter):
                 # F11-003 (round 11, terra DOM-D): an unparseable merged_at is
                 # not a merge event — translating it would let a malformed row
                 # into the post-merge review lane
-                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                log.warning(_log_row(self.name, "merged-pr row malformed (skipped)", p))
                 continue
             # STRICT less-than: PRs merged in the SAME second as the watermark
             # stay visible. Bulk waves merge same-second; if the per-cycle cap
@@ -505,10 +539,17 @@ class GitHubAdapter(ForgeAdapter):
                 continue
             pr = self._row_pr(repo, p)
             if pr is None:
-                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                log.warning(_log_row(self.name, "merged-pr row malformed (skipped)", p))
                 continue
             prs.append(pr)
         prs.sort(key=lambda pr: pr.merged_at)  # oldest first: catch-up order
+        # F14-D007: malformed rows were discarded — the enumeration is
+        # INCOMPLETE; returning a filtered list as complete lets the engine
+        # prune live state or advance watermarks past unseen rows
+        if getattr(self, "_pr_rows_dropped", 0):
+            raise ForgeError(
+                f"{self.name} list_merged_prs on {repo}: listing incomplete "
+                f"({self._pr_rows_dropped} malformed row(s) dropped)")
         return prs
 
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:
@@ -524,13 +565,23 @@ class GitHubAdapter(ForgeAdapter):
             cid = c.get("id")
             cbody = c.get("body")
             cuser = c.get("user")
+            # F14-D008: an OWN marked comment with an unusable id is
+            # UNCERTAIN, never absence — the engine used to create a duplicate
+            if isinstance(cbody, str) and isinstance(cuser, dict) \
+                    and isinstance(cuser.get("login"), str) \
+                    and any(prefix in cbody for prefix in renderer.LEGACY_MARKER_PREFIXES) \
+                    and is_own_identity(cuser.get("login"), self.bot_login) \
+                    and (isinstance(cid, bool) or not isinstance(cid, int) or cid <= 0):
+                raise ForgeError(
+                    f"{self.name} comment on {repo}#{number}: own marker with "
+                    "unusable id — refusing (at-most-once)")
             if not isinstance(cid, int) or isinstance(cid, bool) or cid <= 0 \
                     or not isinstance(cbody, str) \
                     or not isinstance(cuser, dict) \
                     or not isinstance(cuser.get("login"), str):
                 # F7-D005: rows need usable identity fields before marker
                 # matching — malformed forge content never escapes
-                log.warning("%s comment row malformed (skipped): %s", self.name, str(c)[:120])
+                log.warning(_log_row(self.name, "comment row malformed (skipped)", c))
                 continue
             body = cbody
             author = cuser.get("login").lower()
@@ -596,6 +647,10 @@ class GitHubAdapter(ForgeAdapter):
                 if not isinstance(_cr, list):
                     raise ForgeError(f"{self.name} check_runs not a list on {repo}")
                 batch = list(_cr)
+                if not all(isinstance(c, dict) for c in batch):
+                    # F14-D010: malformed check-run rows make the page
+                    # untrustworthy — partial results can certify green
+                    raise ForgeError(f"{self.name} check-runs rows malformed on {repo}")
                 check_runs += batch
                 if len(batch) < 100:
                     break
@@ -640,14 +695,23 @@ class ForgejoAdapter(ForgeAdapter):
     def list_open_prs(self, repo: str) -> list[PullRequest]:
         data = self._paginated(f"/repos/{repo}/pulls?state=open", page_size=50)
         prs = []
+        self._pr_rows_dropped = 0
         for p in data:
             if not isinstance(p, dict):  # F7-D004: row guard
+                self._pr_rows_dropped = getattr(self, "_pr_rows_dropped", 0) + 1
                 continue
             pr = self._row_pr(repo, p)
             if pr is None:
-                log.warning("%s open-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                log.warning(_log_row(self.name, "open-pr row malformed (skipped)", p))
                 continue
             prs.append(pr)
+        # F14-D007: malformed rows were discarded — the enumeration is
+        # INCOMPLETE; returning a filtered list as complete lets the engine
+        # prune live state or advance watermarks past unseen rows
+        if getattr(self, "_pr_rows_dropped", 0):
+            raise ForgeError(
+                f"{self.name} list_open_prs on {repo}: listing incomplete "
+                f"({self._pr_rows_dropped} malformed row(s) dropped)")
         return prs
 
     def list_merged_prs(self, repo: str, since_iso: str) -> list[PullRequest]:
@@ -656,9 +720,10 @@ class ForgejoAdapter(ForgeAdapter):
         data = self._paginated(f"/repos/{repo}/pulls?state=closed", page_size=50)
         since = _parse_iso(since_iso)
         prs = []
+        self._pr_rows_dropped = 0
         for p in data:
             if not isinstance(p, dict):  # F8-004: per-row guard like GitHub
-                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                self._pr_rows_dropped = getattr(self, "_pr_rows_dropped", 0) + 1
                 continue
             merged_raw = p.get("merged_at")
             if (not isinstance(merged_raw, str) or not merged_raw
@@ -667,7 +732,7 @@ class ForgejoAdapter(ForgeAdapter):
             merged = _parse_iso(merged_raw)
             if merged is None:
                 # F11-003: an unparseable timestamp is not a merge event
-                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                log.warning(_log_row(self.name, "merged-pr row malformed (skipped)", p))
                 continue
             # STRICT less-than: PRs merged in the SAME second as the watermark
             # stay visible. Bulk waves merge same-second; if the per-cycle cap
@@ -677,10 +742,17 @@ class ForgejoAdapter(ForgeAdapter):
                 continue
             pr = self._row_pr(repo, p)
             if pr is None:
-                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                log.warning(_log_row(self.name, "merged-pr row malformed (skipped)", p))
                 continue
             prs.append(pr)
         prs.sort(key=lambda pr: pr.merged_at)
+        # F14-D007: malformed rows were discarded — the enumeration is
+        # INCOMPLETE; returning a filtered list as complete lets the engine
+        # prune live state or advance watermarks past unseen rows
+        if getattr(self, "_pr_rows_dropped", 0):
+            raise ForgeError(
+                f"{self.name} list_merged_prs on {repo}: listing incomplete "
+                f"({self._pr_rows_dropped} malformed row(s) dropped)")
         return prs
 
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:
@@ -694,13 +766,23 @@ class ForgejoAdapter(ForgeAdapter):
             cid = c.get("id")
             cbody = c.get("body")
             cuser = c.get("user")
+            # F14-D008: an OWN marked comment with an unusable id is
+            # UNCERTAIN, never absence — the engine used to create a duplicate
+            if isinstance(cbody, str) and isinstance(cuser, dict) \
+                    and isinstance(cuser.get("login"), str) \
+                    and any(prefix in cbody for prefix in renderer.LEGACY_MARKER_PREFIXES) \
+                    and is_own_identity(cuser.get("login"), self.bot_login) \
+                    and (isinstance(cid, bool) or not isinstance(cid, int) or cid <= 0):
+                raise ForgeError(
+                    f"{self.name} comment on {repo}#{number}: own marker with "
+                    "unusable id — refusing (at-most-once)")
             if not isinstance(cid, int) or isinstance(cid, bool) or cid <= 0 \
                     or not isinstance(cbody, str) \
                     or not isinstance(cuser, dict) \
                     or not isinstance(cuser.get("login"), str):
                 # F7-D005: rows need usable identity fields before marker
                 # matching — malformed forge content never escapes
-                log.warning("%s comment row malformed (skipped): %s", self.name, str(c)[:120])
+                log.warning(_log_row(self.name, "comment row malformed (skipped)", c))
                 continue
             body = cbody
             author = cuser.get("login").lower()
@@ -817,7 +899,9 @@ class ForgejoAdapter(ForgeAdapter):
                     return []
                 if t.get("truncated"):
                     truncated = True
-                tree_cache[sha] = [e for e in (t.get("tree") or []) if isinstance(e, dict)]
+                # F14-D009: keep RAW rows — a premature dict-filter here hid
+                # garbage from the row guards below (which mark truncated)
+                tree_cache[sha] = list(t.get("tree") or [])
                 return tree_cache[sha]
 
             def push_task(sha: str, prefix: str) -> None:
@@ -904,7 +988,14 @@ class ForgejoAdapter(ForgeAdapter):
             return None
         if not raw or not raw.startswith("diff --git"):
             return None
-        files = set(re.findall(r"^\+\+\+ b/(.+)$", raw, re.MULTILINE))
+        # F14-D012: shared diff --git header parser (quoted/control-bearing
+        # paths used to be invisible and every finding rejected as off-diff)
+        from .analyzer import _git_diff_path
+        files = {p for line in raw.splitlines()
+                 if line.startswith("diff --git ")
+                 for p in [_git_diff_path(line)] if p}
+        if not files:
+            files = set(re.findall(r"^\+\+\+ b/(.+)$", raw, re.MULTILINE))
         if not files:
             return None
         return files, raw
@@ -912,17 +1003,18 @@ class ForgejoAdapter(ForgeAdapter):
 
 def _is_github_base(api_base: str) -> bool:
     """MECE round-7 (sol F7-D007) + round-8 (terra F8-001): the GitHub route
-    carries the App credential — it requires EXACT hostname equality AND
-    https. Plaintext http://api.github.com must never receive the token."""
+    carries the App credential — EXACT hostname equality AND https required.
+    F14-D005: EVERY urlsplit property access is guarded — a malformed port
+    used to raise raw ValueError out of CLI routing."""
     from urllib.parse import urlsplit
 
     try:
         parts = urlsplit(api_base)
-    except ValueError:
+        return (parts.scheme == "https"
+                and parts.hostname == "api.github.com"
+                and parts.port in (None, 443))
+    except (ValueError, TypeError):
         return False
-    return (parts.scheme == "https"
-            and parts.hostname == "api.github.com"
-            and parts.port in (None, 443))
 
 
 def adapter_for(binding: ForgeBinding) -> ForgeAdapter:
