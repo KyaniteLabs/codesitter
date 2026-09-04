@@ -404,12 +404,18 @@ _OMNI_FIX_ATTEMPTS_PER_CYCLE = 3
 
 
 def _omni_readiness(findings: list[dict]) -> tuple[int, str]:
-    """CheckYourself-style readiness score from the sweep's findings."""
-    from .capabilities import readiness_score, score_label
+    """CheckYourself-style readiness score from the sweep's findings.
+    MECE round-1 (terra F1-11): the missing-evidence cap was INERT — no caller
+    ever passed categories_checked. Now derived from each finding's rule
+    category, so a sweep that never checked e.g. Auth & Access is capped."""
+    from .capabilities import CAPABILITIES, readiness_score, score_label
     from collections import Counter
 
     sev = Counter(f.get("sev", f.get("severity", "Nit")) for f in findings)
-    score = readiness_score(dict(sev))
+    rule_to_cat = {rid: cat for rid, cat, _, _ in CAPABILITIES}
+    cats = {rule_to_cat.get(f.get("rule_id", ""), "")
+            for f in findings if rule_to_cat.get(f.get("rule_id", ""))}
+    score = readiness_score(dict(sev), categories_checked=cats)
     return score, score_label(score)
 
 

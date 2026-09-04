@@ -711,3 +711,167 @@ class TestMECERound1Pins:
             assert summary.get("triaged", 0) == 0  # not counted, watermark not advanced
         finally:
             an._call_model = orig
+
+
+class TestMECEReadinessCap:
+    def test_partial_critical_coverage_is_capped(self):
+        from fl4write.capabilities import readiness_score
+        # only Auth & Access checked; three critical categories lack evidence
+        score = readiness_score({}, categories_checked={"Auth & Access"})
+        assert score < 100
+
+    def test_all_critical_categories_checked_not_capped_by_missing(self):
+        from fl4write.capabilities import readiness_score
+        score = readiness_score({}, categories_checked={
+            "Data & Storage", "Auth & Access", "Secrets & Config", "Testing & Quality"})
+        assert score == 100
+
+    def test_omni_readiness_passes_categories(self):
+        from fl4write.engine import _omni_readiness
+        findings = [{"sev": "Nit", "rule_id": "auth-permissions"}]
+        score, label = _omni_readiness(findings)
+        assert score < 100  # capped: other critical categories unchecked
+
+
+class TestMECETerraPins:
+    """Terra DOM-A round-1 findings: secrets null-fallback (F1-02), line
+    grounding (F1-03), L1-B1 failing-test evidence (F1-05), per-path L1-B3
+    anchoring (F1-06), unclosed HTML comment (F1-07), backtick path
+    injection (F1-08), colon-path parse roundtrip (F1-09), gatekeeper
+    rule-keyed applied set (F1-10)."""
+
+    def test_findings_null_routes_to_fallback(self, monkeypatch):
+        calls = []
+        import json as _json
+        from fl4write.analyzer import analyze
+        from fl4write.models import PullRequest
+        import fl4write.analyzer as an
+
+        def fake_model(route, prompt, mode="pr", system=None):
+            calls.append(route.model)
+            return _json.dumps({"findings": None}) if len(calls) == 1 else _json.dumps({"findings": []})
+        orig = an._call_model
+        try:
+            an._call_model = fake_model
+            pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+            raw = {"repo": "o/r",
+                   "forges": {"github": {"role": "primary", "api_base": "http://x", "token_env": "T"}},
+                   "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+                   "fallback_model": {"endpoint": "http://f/v1", "model": "fb", "key_env": "K"},
+                   "review": {"secrets": "x"},
+                   "severity_vocab": ["Critical", "Major", "Minor", "Nit"],
+                   "shadow": False, "ci_watch": {"enabled": False},
+                   "fix": {"enabled": False}}
+            c = cfg.RepoConfig.model_validate(raw)
+            doc = analyze(pr, {"x.py"}, "diff", c)
+            assert len(calls) == 2  # fallback was tried
+            assert doc is not None
+        finally:
+            an._call_model = orig
+
+    def test_line_beyond_diff_grounded_out(self, monkeypatch):
+        diff = ("diff --git a/x.py b/x.py\n"
+                "@@ -1,1 +1,3 @@\n def f():\n+    return 1\n+    return 2\n")
+        import json as _json
+        from fl4write.analyzer import analyze
+        from fl4write.models import PullRequest
+        import fl4write.analyzer as an
+        diff = ("diff --git a/x.py b/x.py\n"
+                "@@ -1,1 +1,3 @@\n def f():\n+    return 1\n+    return 2\n")
+        item = {"rule_id": "security-threat", "severity": "Critical", "path": "x.py",
+                "line": 999999, "category": "c",
+                "message": "the diff line 999999 is exploited: arbitrary exec"}
+        orig = an._call_model
+        try:
+            an._call_model = lambda *a, **k: _json.dumps({"findings": [item]})
+            pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+            raw = {"repo": "o/r",
+                   "forges": {"github": {"role": "primary", "api_base": "http://x", "token_env": "T"}},
+                   "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+                   "review": {"secrets": "x", "security-threat": "s"},
+                   "severity_vocab": ["Critical", "Major", "Minor", "Nit"],
+                   "shadow": False, "ci_watch": {"enabled": False}, "fix": {"enabled": False}}
+            c = cfg.RepoConfig.model_validate(raw)
+            doc = analyze(pr, {"x.py"}, diff, c)
+            assert doc.findings == []  # anchored beyond the diff -> dropped
+        finally:
+            an._call_model = orig
+
+    def test_line_inside_diff_survives(self, monkeypatch):
+        diff = ("diff --git a/x.py b/x.py\n"
+                "@@ -1,1 +1,3 @@\n def f():\n+    return 1\n+    return 2\n")
+        from fl4write.analyzer import _line_outside_diff
+        assert not _line_outside_diff("x.py", 3, diff)
+        assert not _line_outside_diff("x.py", 1, diff)
+        assert _line_outside_diff("x.py", 999999, diff)
+
+    def test_attestation_not_test_evidence(self, monkeypatch):
+        # "attestation" contains the substring "test" — not a failing-test cite
+        item = _item("The attestation step is misconfigured.", rule="general", sev="Critical")
+        doc = _analyze(monkeypatch, item)
+        assert doc.findings and doc.findings[0].severity == "Major"
+
+    def test_testing_critical_with_failure_wording_kept(self, monkeypatch):
+        item = _item("The diff test test_x.py fails against the changed code: red assertion.",
+                     rule="testing-quality", sev="Critical")
+        doc = _analyze(monkeypatch, item, config=make_config(test_cmd="pytest"))
+        assert doc.findings and doc.findings[0].severity == "Critical"
+
+    def test_unrelated_diff_credential_does_not_anchor(self, monkeypatch):
+        # L1-B3 per-path: credential lives in other.py's chunk, finding is x.py
+        fake_ak = "AKIA" + "IOSFODNN7EXAMPLE"  # assembled: no literal in source
+        diff = (f"diff --git a/other.py b/other.py\n@@ -1 +1 @@\n-sk-\n+{fake_ak}\n"
+                "diff --git a/x.py b/x.py\n@@ -1 +1 @@\n-old\n+new\n")
+        import json as _json
+        from fl4write.analyzer import analyze
+        from fl4write.models import PullRequest
+        import fl4write.analyzer as an
+        item = {"rule_id": "secrets", "severity": "Critical", "path": "x.py", "line": 1,
+                "category": "c", "message": "x.py exposes a credential-like value in code"}
+        orig = an._call_model
+        try:
+            an._call_model = lambda *a, **k: _json.dumps({"findings": [item]})
+            pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+            raw = {"repo": "o/r",
+                   "forges": {"github": {"role": "primary", "api_base": "http://x", "token_env": "T"}},
+                   "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+                   "review": {"secrets": "x"},
+                   "severity_vocab": ["Critical", "Major", "Minor", "Nit"],
+                   "shadow": False, "ci_watch": {"enabled": False}, "fix": {"enabled": False}}
+            c = cfg.RepoConfig.model_validate(raw)
+            doc = analyze(pr, {"other.py", "x.py"}, diff, c)
+            assert len(doc.findings) == 1
+            assert doc.findings[0].severity == "Nit"  # no literal in x.py's chunk
+        finally:
+            an._call_model = orig
+
+    def test_unclosed_html_comment_scrubbed(self):
+        from fl4write.scrub import scrub
+        out = scrub("visible text <!-- never closed")
+        assert "<!--" not in out
+        assert scrub("a <!-- closed --> b") == "a  b"
+
+    def test_backtick_in_path_does_not_break_heading(self):
+        from fl4write import renderer
+        from fl4write.models import Finding
+        f = Finding(rule_id="general", severity="Major",
+                    path="src/`evil`.py", line=1, category="CI",
+                    message="issue in file", proposal="")
+        body = renderer.render_review(
+            PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40),
+            [f], make_config(), review_hash="abc")
+        parsed = renderer.parse_finding_lines(body)
+        # backticks are stripped from rendered paths (structure safety);
+        # roundtrip identity for backtick filenames is intentionally lost
+        assert parsed == [("Major", "src/evil.py", 1, "general")]
+
+    def test_colon_path_roundtrip(self):
+        from fl4write import renderer
+        from fl4write.models import Finding
+        f = Finding(rule_id="general", severity="Major",
+                    path="dir/a:b.py", line=12, category="CI",
+                    message="colon-path issue", proposal="")
+        body = renderer.render_review(
+            PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40),
+            [f], make_config(), review_hash="abc")
+        assert renderer.parse_finding_lines(body) == [("Major", "dir/a:b.py", 12, "general")]

@@ -41,6 +41,45 @@ log = logging.getLogger("fl4write.analyzer")
 
 MAX_DIFF_CHARS = 60_000
 
+
+def _diff_path_texts(diff_text: str) -> dict[str, str]:
+    """Split a unified diff into {path: its hunks} for per-path grounding."""
+    out: dict[str, str] = {}
+    cur: str | None = None
+    parts: list[str] = []
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            if cur is not None:
+                out[cur] = "\n".join(parts)
+            m = re.search(r" b/([^ \t]+)$", line)
+            cur = m.group(1) if m else None
+            parts = []
+        elif cur is not None:
+            parts.append(line)
+    if cur is not None:
+        out[cur] = "\n".join(parts)
+    return out
+
+
+def _diff_line_spans(diff_text: str) -> dict[str, list[tuple[int, int]]]:
+    """New-file line spans per path from the hunk headers (@@ -a,b +c,d @@)."""
+    spans: dict[str, list[tuple[int, int]]] = {}
+    cur: str | None = None
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            m = re.search(r" b/([^ \t]+)$", line)
+            cur = m.group(1) if m else None
+            spans.setdefault(cur or "", [])
+        elif cur is not None and line.startswith("@@"):
+            m = re.search(r"\+(\d+)(?:,(\d+))? @@", line)
+            if m:
+                start = int(m.group(1))
+                count = int(m.group(2) or "1")
+                spans.setdefault(cur, []).append((start, start + max(count - 1, 0)))
+    return spans
+
+
+
 _SYSTEM = (
     "You are a code reviewer. You receive a diff, repo law, and a severity "
     'vocabulary. Reply ONLY with JSON: {"findings": [{"rule_id": str, '
@@ -211,6 +250,18 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
     raise ValueError(f"no parseable JSON object (head: {cleaned[:60]!r})")
 
 
+
+
+def _line_outside_diff(path: str, line: int, diff_text: str) -> bool:
+    """True when `line` is implausible for `path` in this diff: beyond every
+    new-file hunk span plus slack. Unchanged files (no hunks) are not judged.
+    (MECE round-1, terra F1-03 — 999999-on-50-lines class.)"""
+    spans = _diff_line_spans(diff_text).get(path)
+    if not spans:
+        return False
+    slack = 60
+    return not any(s - slack <= line <= e + slack for s, e in spans)
+
 def _path_ignored(path: str, config: RepoConfig) -> bool:
     patterns = (config.path_filters or {}).get("ignore", [])
     return any(fnmatch.fnmatch(path, pat) for pat in patterns)
@@ -312,6 +363,11 @@ def analyze(
             continue
         try:
             raw = extract_json(content, envelope_key="findings")
+            if not isinstance(raw.get("findings"), list):
+                # MECE round-1 (terra F1-02): a parseable-but-empty envelope
+                # ({"findings": null}) is an ANOMALY, not a clean review —
+                # route to the fallback lane like any parse failure
+                raise ValueError("findings field missing or not a list")
             _tel.emit("parse", model=route.model, ok=True)
             break  # transport + parse both good
         except ValueError as exc:
@@ -352,6 +408,11 @@ def analyze(
             # unanchored (15% of live sweep findings were line-0): a finding
             # the model could not anchor to a real line is not reviewable
             dropped.append(f"unanchored line={f.line} {f.path} ({f.rule_id})")
+            continue
+        if _line_outside_diff(f.path, f.line, diff_text):
+            # MECE round-1 (terra F1-03): the anchor must plausibly exist in
+            # the changed file (a probe posted line 999999 on a 50-line diff)
+            dropped.append(f"line {f.line} beyond diff spans {f.path} ({f.rule_id})")
             continue
         # L1-B4 severity-integrity gate (2026-09-03 adjudication sample, council
         # consult CTO+CS): a finding whose own body concludes "passes / no issue /
@@ -425,10 +486,14 @@ def analyze(
     # Sol#1: verify the ANCHORED SOURCE (the diff), never the model's echo —
     # a real credential the model described without quoting stayed Critical
     # in the diff but the old message-only check demoted it to Nit.
-    diff_has_credential = _has_credential(diff_text or "")
+    # MECE round-1 (terra F1-06): anchoring is PER-PATH — a credential in an
+    # unrelated file of the same diff must not keep a different finding
+    # Critical (previously one whole-diff scan anchored every secrets finding).
+    diff_chunks = _diff_path_texts(diff_text or "")
     for f in findings:
         if f.severity == "Critical" and f.rule_id == "secrets":
-            has_literal = diff_has_credential or _has_credential(f.message)
+            chunk = diff_chunks.get(f.path, "")
+            has_literal = _has_credential(chunk) or _has_credential(f.message)
             if not has_literal:
                 f.severity = "Nit"
                 log.info("demoted secrets-Critical->Nit (no literal in diff or message): %s:%s",
@@ -444,7 +509,12 @@ def analyze(
     for f in findings:
         if f.severity == "Critical":
             low = f.message.lower()
-            has_test = "test" in low or f.rule_id == "tests"
+            # MECE round-1 (terra F1-05): "test" as a bare substring
+            # (attestation, template) is NOT failing-test evidence. Only the
+            # testing rule families citing actual failure wording qualify.
+            testing_family = f.rule_id in ("tests", "testing-quality")
+            has_test = testing_family and bool(re.search(
+                r"\b(fail(s|ed|ing|ure)?s?|break(s|ing)?|broke(n)?|red)\b", low))
             has_scenario = any(m in low for m in _SCENARIO_MARKERS)
             if not (has_test or has_scenario):
                 f.severity = "Major"

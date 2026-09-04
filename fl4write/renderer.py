@@ -38,7 +38,7 @@ _URGENCY_POST_MERGE = {"Critical": "🚨 **Landed on main** — fix-forward stro
 # SAME format, defined once. Groups: sev, path, line, rule.
 FINDING_LINE_FMT = "### {emoji} {sev} — `{path}:{line}` — `{rule}`"
 FINDING_LINE_RE = re.compile(
-    r"^(?:🆕 )?### \S+ (?P<sev>Critical|Major|Minor|Nit) — `(?P<path>[^:`]+):(?P<line>\d+)` — `(?P<rule>[^`]+)`",
+    r"^(?:🆕 )?### \S+ (?P<sev>Critical|Major|Minor|Nit) — `(?P<path>.+?):(?P<line>\d+)` — `(?P<rule>[^`]+)`",
     re.MULTILINE,
 )
 
@@ -82,8 +82,13 @@ def render_finding(f: Finding, tone: str, post_merge: bool = False) -> str:
     """One finding as a section with emoji badge + collapsible fix proposal."""
     emoji = _SEVERITY_EMOJI.get(f.severity, "⚪")
     urgency = (_URGENCY_POST_MERGE if post_merge else _URGENCY).get(f.severity, "")
+    # MECE round-1 (terra F1-08): repo-controlled paths are untrusted text —
+    # a backtick/newline in a filename must not break the heading structure
+    safe_path = str(f.path).replace("`", "").replace("\n", " ").replace("\r", " ")
+    safe_rule = str(f.rule_id).replace("`", "")
     parts: list[str] = [
-        FINDING_LINE_FMT.format(emoji=emoji, sev=f.severity, path=f.path, line=f.line, rule=f.rule_id),
+        FINDING_LINE_FMT.format(emoji=emoji, sev=f.severity, path=safe_path,
+                                line=f.line, rule=safe_rule),
         "",
     ]
     parts.append(_md_escape_block(f.message))

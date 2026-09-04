@@ -54,6 +54,10 @@ def scrub(text: str) -> str:
     s = _REMOTE_IMG_RE.sub("[image removed]", s)
     s = _REMOTE_SRC_RE.sub("&lt;remote-src ", s)
     s = _HTML_COMMENT_RE.sub("", s)
+    if "<!--" in s:
+        # MECE round-1 (terra F1-07): an UNCLOSED comment opener can swallow
+        # the remainder of the rendered comment — remove any leftover opener
+        s = s.split("<!--", 1)[0] + s.split("<!--", 1)[1].replace("<!--", "")
     s = _HIDDEN_TAG_RE.sub("", s)
     s = _MARKER_RE.sub("[scrubbed-marker]", s)
     return s
