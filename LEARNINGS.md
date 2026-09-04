@@ -399,3 +399,17 @@ Law: tests resolve repo paths from the test file (Path(__file__).resolve().paren
 author/machine-specific absolutes are host-contaminated claims; a pin that only proves something
 about THIS laptop is not a pin. Fixed in f068269 (REPO_ROOT), #12 closed with evidence.
 
+## 45. Shadow is a dry run, not a preview (2026-09-04, MECE round 5)
+Sol DOM-C reopened the shadow lifecycle with probes: shadow runs advanced LIVE discovery/action
+belts — the post-merge watermark, retro_seen/cursor/completion, omnisweep completion, and
+(historically) ci_acted — so the live cutover no-opped over what shadow had only LOOKED at, and
+omnisweep completion without publication meant "retrying next cycle" was a lie (the complete
+fast path returned before the upsert). Also in the same desk pass: a kill between the retro
+checkpoint and its deferred-classification save permanently skipped a PR; a truncated tree
+rendered COMPLETE; an abort rendered terminal; parked retro PRs promised re-arm "on the next
+repo commit" that could never come. Laws: shadow belts are separate (pm_shadow_seen /
+retro_shadow_seen) and live runs ignore them; state checkpoints happen only AFTER outcome
+classification; completion is a whole-tree, published claim (omni_published retry contract);
+aborts and truncations are never COMPLETE; parked state carries an expiry and re-arms
+automatically. Regression pins: 9 red-pre-fix across engine/state/tiers.
+

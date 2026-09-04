@@ -156,17 +156,48 @@ def load_state(path: Path) -> dict[str, Any]:
                                 path, len(bad))
                     data = dict(data)
                     data["prs"] = {k: v for k, v in prs.items() if k not in bad}
-                return data
+                return _normalize_aux(data)
             log.warning("state %s version ok but shape wrong; bounded reconcile", path)
         else:
             log.warning("state %s has unknown version %r; bounded reconcile", path, data.get("version"))
     except FileNotFoundError:
         pass
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # MECE round-5 (sol F5-004): invalid UTF-8 escaped load_state as an
+        # uncaught UnicodeDecodeError — same corrupt-state reconcile as bad JSON
         log.warning("state %s corrupt (%s); bounded reconcile — per-PR memory lost", path, exc)
     except OSError as exc:
         raise StateIOError(f"state {path} unreadable ({exc}) — aborting cycle, will retry") from exc
     return json.loads(json.dumps(_FRESH_STATE))
+
+
+def _normalize_aux(data: dict[str, Any]) -> dict[str, Any]:
+    """MECE round-5 (sol F5-004): lane belts/counters read back through raw
+    int()/comparison operations — a hand-edited or partially-written value of
+    the wrong type must degrade to a safe default, never TypeError a cycle.
+    Only the fields with DIRECT type-dependent readers are normalized; the
+    rest ride as-is (a future reader normalizes at its own boundary)."""
+    out = dict(data)
+    for key in ("merged_since", "retro_cursor"):
+        v = out.get(key)
+        if v is not None and not isinstance(v, str):
+            log.warning("state %s: non-string %r dropped (bounded reconcile)", key, v)
+            out.pop(key, None)
+    for key in ("retro_seen", "retro_parked", "pm_shadow_seen", "retro_shadow_seen",
+                "model_failures", "omni_file_fails"):
+        v = out.get(key)
+        if v is not None and not isinstance(v, dict):
+            log.warning("state %s: non-dict %r dropped (bounded reconcile)", key, v)
+            out.pop(key, None)
+    for key in ("retro_defer:",):  # prefix keys: retro_defer:<num>:<sha> -> int
+        for k in [k for k in out if k.startswith(key)]:
+            v = out[k]
+            try:
+                out[k] = int(v)
+            except (TypeError, ValueError):
+                log.warning("state %s: non-int %r dropped (bounded reconcile)", k, v)
+                out.pop(k, None)
+    return out
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
@@ -193,12 +224,34 @@ def mark_reviewed(state: dict[str, Any], pr_number: int, head_sha: str, outcome:
 
 def prune_closed(state: dict[str, Any], open_numbers: set[int]) -> None:
     """Drop records for PRs neither open nor carrying fix state — state files
-    otherwise grow without bound."""
+    otherwise grow without bound. MECE round-5 (sol F5-010): the SAME bounded-
+    growth law applies to top-level lane belts — per-SHA model-failure keys
+    whose PR is gone, expired retro parks, and ci_acted markers (insertion-
+    bounded) were never collected."""
     state["prs"] = {
         n: rec
         for n, rec in state["prs"].items()
         if int(n) in open_numbers or "fix_depth" in rec or "model_failures" in rec
     }
+    mf = state.get("model_failures")
+    if isinstance(mf, dict):  # keys "{pr}:{sha10}"
+        state["model_failures"] = {
+            k: v for k, v in mf.items()
+            if isinstance(k, str) and k.split(":", 1)[0].isdigit()
+            and int(k.split(":", 1)[0]) in open_numbers
+        }
+    parked = state.get("retro_parked")
+    if isinstance(parked, dict):
+        import time as _t
+        now_i = int(_t.time())
+        state["retro_parked"] = {
+            k: v for k, v in parked.items()
+            if isinstance(v, int) and v > now_i  # expired parks are garbage
+        }
+    ci_keys = [k for k in state if k.startswith("ci_acted:")]
+    if len(ci_keys) > 100:  # insertion-ordered: drop the oldest markers
+        for k in ci_keys[: len(ci_keys) - 100]:
+            state.pop(k, None)
 
 
 # Post-merge sweep watermark. Unlike the open-PR path (where correctness NEVER

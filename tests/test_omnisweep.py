@@ -150,7 +150,13 @@ class TestSweepLaws:
         r = _run(forge, monkeypatch, tmp_path / "s.json",
                  omnisweep={"enabled": True, "max_total_files": 10})
         assert any("ABORTED" in a for a in r.alerts)
-        assert state.load_state(tmp_path / "s.json")["omni_complete"]  # terminal: no retry loop
+        # MECE round-5 (sol F5-007): an abort is NOT a completion — nothing
+        # claims COMPLETE and nothing is published (the alert repeats until
+        # the cap/excludes are fixed)
+        st = state.load_state(tmp_path / "s.json")
+        assert st.get("omni_complete") is not True
+        assert st.get("omni_published") is not True
+        assert st.get("omni_total") == 50
 
     def test_findings_compacted_no_proposals(self, tmp_path, monkeypatch):
         forge = OmniForge(model_findings=[F1, F2])

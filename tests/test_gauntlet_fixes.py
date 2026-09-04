@@ -1308,23 +1308,48 @@ class TestMECERound4LunaPins:
         assert state_mod.load_state(sp).get("retro_seen") == {"1": True}
 
     def test_retro_defer_parked_after_bounded_retries(self, tmp_path, monkeypatch):
-        # F4-004: consecutive deferrals of one PR (model/env down) burn the
-        # retro lane every cycle — park after a bounded retry count, re-armed
-        # only by the next repo commit or state reset.
+        # F4-004 + F5-009 (rework): consecutive deferrals of one PR park it
+        # for a bounded window — retried automatically AFTER the window (no
+        # false "re-arms on the next repo commit" promise, no manual reset).
+        import fl4write.engine as eng_mod
+
         sp = tmp_path / "s.json"
         _r4_seed(sp)
         forge = _R4Forge(merged=[_r4_pr(number=1, merged_at=_r4_date(20))])
         cfg_over = dict(_NO_EXTRA_LANES)
         cfg_over["retro_audit"] = {"enabled": True}
+        saves: list[dict] = []
+        orig_save = state_mod.save_state
+
+        def spy_save(path, st):
+            saves.append(dict(st))
+            return orig_save(path, st)
+
+        monkeypatch.setattr("fl4write.engine.state.save_state", spy_save)
         r1 = _r4_cycle(forge, monkeypatch, sp, cfg_over, get_diff=lambda pr: None)
         r2 = _r4_cycle(forge, monkeypatch, sp, cfg_over, get_diff=lambda pr: None)
         r3 = _r4_cycle(forge, monkeypatch, sp, cfg_over, get_diff=lambda pr: None)
         assert not any("parked" in a for a in r1.alerts + r2.alerts)
-        assert any("parked" in a for a in r3.alerts)
-        assert state_mod.load_state(sp).get("retro_seen") == {"1": True}
-        # parked PR is terminal: the 4th cycle stops re-listing it
+        assert any("parked 24h" in a for a in r3.alerts)
+        st = state_mod.load_state(sp)
+        assert 1 not in st.get("retro_seen", {})  # never permanently seen
+        assert str(1) in st.get("retro_parked", {})  # parked with an expiry
+        # F5-003: no save may ever carry the pre-classification seen-set —
+        # every checkpoint must reflect the corrected (post-deferral) state
+        assert not any("1" in s.get("retro_seen", {}) for s in saves), \
+            "a checkpoint persisted the pre-deferral seen-set (kill-window skip)"
+        # parked PR is excluded while the window is active: 4th cycle idles
         r4 = _r4_cycle(forge, monkeypatch, sp, cfg_over, get_diff=lambda pr: None)
-        assert any("retro audit complete" in a for a in r4.alerts)
+        assert not any("parked" in a or "retro audit complete" in a for a in r4.alerts)
+        # F5-009: after the window expires the PR is retried automatically
+        base = eng_mod.time.time()
+        monkeypatch.setattr(eng_mod.time, "time", lambda: base + 90000)
+        r5 = _r4_cycle(forge, monkeypatch, sp, cfg_over, get_diff=lambda pr: None)
+        assert not any("parked" in a for a in r5.alerts)  # retried, not parked
+        r6 = _r4_cycle(forge, monkeypatch, sp, cfg_over, get_diff=lambda pr: None)
+        assert not any("parked" in a for a in r6.alerts)
+        r7 = _r4_cycle(forge, monkeypatch, sp, cfg_over, get_diff=lambda pr: None)
+        assert any("parked 24h" in a for a in r7.alerts)  # re-parked (still down)
 
     def test_null_annotation_rows_are_skipped(self, tmp_path, monkeypatch):
         # F4-005: a null element inside the annotations list must be skipped,
@@ -1646,3 +1671,242 @@ class TestMECERound5LunaPins:
         assert cli_mod._cycle_budget_s() == 840
         monkeypatch.setenv("FL4WRITE_CYCLE_BUDGET_S", "120")
         assert cli_mod._cycle_budget_s() == 120
+
+
+class _SolForge(_R4Forge):
+    """DOM-C desk forge: canned omni tree, issue ops with injectable failure,
+    comments recorded, annotations surface."""
+
+    def __init__(self, merged=None, tree=([("a.py", 10)], False), open_issue_result=1,
+                 annotations=None):
+        super().__init__(merged=merged)
+        self.tree = tree
+        self.open_issue_result = open_issue_result
+        self.open_issue_calls = 0
+        self.update_issue_calls = 0
+        self.issue_update_result = True
+        self.posts: list[tuple[int, str]] = []
+        self.annotations = annotations if annotations is not None else []
+
+    def create_comment(self, repo, number, body):
+        self.posts.append((number, body))
+        return len(self.posts)
+
+    def list_tree_files(self, repo):
+        return self.tree
+
+    def open_issue(self, repo, title, body):
+        self.open_issue_calls += 1
+        return self.open_issue_result
+
+    def update_issue(self, repo, number, body):
+        self.update_issue_calls += 1
+        return self.issue_update_result
+
+    def head_check_runs(self, repo):
+        return "d" * 40, []
+
+    def check_annotations(self, repo, check_run_id):
+        return list(self.annotations)
+
+    def path_is_file(self, repo, path, ref=None):
+        return True
+
+    def get_file(self, repo, path, ref):
+        return "x = 1"
+
+
+def _sol_config(**over):
+    raw = {
+        "repo": "o/r",
+        "forges": {"github": {"role": "primary", "api_base": "https://api.github.com",
+                              "token_env": "GHT"}},
+        "model": {"endpoint": "http://model/v1", "model": "t", "key_env": "MK"},
+        "review": {"secrets": "x"},
+        "severity_vocab": ["Critical", "Major", "Minor", "Nit"],
+        "fix": {"enabled": False, "merge_own_prs": False},
+        "ci_watch": {"enabled": False},
+        "shadow": False,
+    }
+    raw.update(over)
+    return cfg.RepoConfig.model_validate(raw)
+
+
+class TestMECERound5SolPins:
+    """Round-5 sol DOM-C desk: shadow/live belt separation (F5-001),
+    omnisweep publication retry (F5-002) + truncation honesty (F5-007) +
+    report math (F5-011), state-loader reconcile (F5-004), prune GC (F5-010),
+    tiers version + cold classification (F5-005/006). F5-003/009 live in the
+    reworked TestMECERound4LunaPins parking pin."""
+
+    # -- F5-001: shadow never advances the live post-merge watermark --------
+
+    def test_shadow_postmerge_does_not_advance_watermark(self, tmp_path, monkeypatch):
+        from fl4write.models import ReviewDoc
+
+        def fake_analyze(pr, files, text, config):
+            return ReviewDoc(pr=pr, findings=[
+                Finding(rule_id="secrets", severity="Major", path="x.py", line=1,
+                        message="live finding")])
+
+        monkeypatch.setattr("fl4write.analyzer.analyze", fake_analyze)
+        monkeypatch.setattr("fl4write.gatekeeper.filter_findings",
+                            lambda findings, config: (findings, 0, False))
+        sp = tmp_path / "s.json"
+        _r4_seed(sp, merged_since=_r4_date(10))
+        forge = _SolForge(merged=[_r4_pr(number=1, merged_at=_r4_date(3))])
+        cfg_over = {"post_merge": {"enabled": True, "initial_lookback_h": 168},
+                    "ci_watch": {"enabled": False},
+                    "fix": {"enabled": False, "merge_own_prs": False},
+                    "shadow": True}
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        cfg = _sol_config(**cfg_over)
+        run_cycle(cfg, sp, get_diff=lambda pr: ({"x.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert st.get("merged_since") == _r4_date(10), "shadow advanced the watermark"
+        assert st.get("pm_shadow_seen", {}).get("1") == "a" * 40
+        assert forge.posts == []
+        # live cutover: the same PR is re-reviewed, posted, and the watermark
+        # then advances
+        cfg_live = cfg.model_copy(update={"shadow": False})
+        run_cycle(cfg_live, sp, get_diff=lambda pr: ({"x.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert forge.posts, "live cutover never posted the shadow-reviewed PR"
+        assert st["merged_since"] == _r4_date(3)
+        assert not st.get("pm_shadow_seen"), "live run still honors the belt"
+
+    # -- F5-002: completed omnisweep retries its final publication ----------
+
+    def _seed_omni_complete(self, sp, published=False):
+        state_mod.save_state(sp, {
+            "version": 1, "prs": {}, "merged_since": _r4_date(10),
+            "omni_complete": True, "omni_published": published, "omni_total": 1,
+            "omni_findings": [{"id": 1, "path": "a.py", "line": 1, "rule": "secrets",
+                               "sev": "Major", "msg": "m", "via": "t"}],
+        })
+
+    def _omni_run(self, tmp_path, monkeypatch, forge, sp, open_result):
+        forge.open_issue_result = open_result
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(omnisweep={"enabled": True, "fix": False})
+        return run_cycle(c, sp, get_diff=lambda pr: ({"a.py"}, "diff"))
+
+    def test_omni_final_publication_retried_after_failure(self, tmp_path, monkeypatch):
+        sp = tmp_path / "s.json"
+        self._seed_omni_complete(sp)
+        forge = _SolForge()
+        r1 = self._omni_run(tmp_path, monkeypatch, forge, sp, open_result=None)
+        assert any("publication failed" in a or "creation failed" in a for a in r1.alerts)
+        st = state_mod.load_state(sp)
+        assert st["omni_complete"] is True and st.get("omni_published") is not True
+        # next cycle retries the upsert instead of returning on the fast path
+        r2 = self._omni_run(tmp_path, monkeypatch, forge, sp, open_result=7)
+        st = state_mod.load_state(sp)
+        assert st.get("omni_issue") == 7 and st["omni_published"] is True
+        assert forge.open_issue_calls == 2
+        assert not any("publication failed" in a for a in r2.alerts)
+
+    def test_omni_report_math_on_complete_fast_path(self, tmp_path, monkeypatch):
+        sp = tmp_path / "s.json"
+        self._seed_omni_complete(sp, published=True)
+        forge = _SolForge()
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(omnisweep={"enabled": True, "fix": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"a.py"}, "diff"))
+        assert r.omni_findings == 1  # F5-011: not the default zero
+
+    # -- F5-007: a truncated listing never completes -------------------------
+
+    def test_truncated_tree_never_completes(self, tmp_path, monkeypatch):
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _SolForge(tree=([], True))
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(omnisweep={"enabled": True, "fix": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"a.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert any("TRUNCATED" in a for a in r.alerts)
+        assert st.get("omni_complete") is not True, "truncated sweep rendered COMPLETE"
+        assert st.get("omni_published") is not True
+
+    # -- F5-004: corrupt-state loader reconcile ------------------------------
+
+    def test_load_state_reconciles_corruption_classes(self, tmp_path):
+        from fl4write.state import load_state
+
+        p = tmp_path / "s.json"
+        # invalid UTF-8 bytes: was an uncaught UnicodeDecodeError
+        p.write_bytes(b'{"version": 1, "prs": {}, "\xff\xfe": 1}')
+        st = load_state(p)
+        assert isinstance(st, dict) and st["prs"] == {}
+        # wrong-typed lane fields normalize to safe defaults at load
+        p.write_text('{"version": 1, "prs": {}, "merged_since": 12345, '
+                     '"retro_seen": null, "retro_defer:1:aaaaaaaaaa": "3x", '
+                     '"model_failures": [1, 2]}', encoding="utf-8")
+        st = load_state(p)
+        assert "merged_since" not in st and "retro_defer:1:aaaaaaaaaa" not in st
+        assert "model_failures" not in st
+        assert st.get("retro_seen") is None  # None degrades at the engine belt (F4-003)
+        # well-typed values ride through untouched
+        p.write_text('{"version": 1, "prs": {}, "merged_since": "2026-09-01T00:00:00Z", '
+                     '"retro_seen": {"1": true}}', encoding="utf-8")
+        st = load_state(p)
+        assert st["merged_since"] == "2026-09-01T00:00:00Z"
+        assert st["retro_seen"] == {"1": True}
+
+    # -- F5-010: bounded top-level lane belts ---------------------------------
+
+    def test_prune_garbage_collects_top_level_belts(self, tmp_path):
+        from fl4write.state import prune_closed
+
+        st = {"prs": {"1": {"head_sha": "a"}},
+              "model_failures": {"1:aaaa": 5, "9:bbbb": 3},  # 9 closed
+              "retro_parked": {"2": 1, "3": 2 ** 40},  # 2 expired
+              "ci_acted:" + "a" * 40: True}
+        for i in range(105):
+            st[f"ci_acted:{i:040d}"] = True
+        prune_closed(st, {1})
+        assert "9:bbbb" not in st["model_failures"]
+        assert "1:aaaa" in st["model_failures"]
+        assert "2" not in st["retro_parked"] and "3" in st["retro_parked"]
+        assert sum(1 for k in st if k.startswith("ci_acted:")) <= 100
+
+    # -- F5-005/006: tier scheduler -------------------------------------------
+
+    def _tier_state(self, tmp_path, monkeypatch, version=1, merged_since=None):
+        import fl4write.tiers as tiers_mod
+
+        monkeypatch.setattr(tiers_mod, "STATE_DIR", tmp_path)
+        return tiers_mod
+
+    def test_tier_unknown_version_is_unknown_warm(self, tmp_path, monkeypatch):
+        tiers_mod = self._tier_state(tmp_path, monkeypatch)
+        p = tiers_mod._state_path("o/r")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('{"version": 999, "prs": {}}', encoding="utf-8")
+        tier, reason = tiers_mod.classify("o/r", True, None, 1_000_000_000)
+        assert tier == "warm" and "UNKNOWN" in reason
+
+    def test_tier_ancient_watermark_stays_cold(self, tmp_path, monkeypatch):
+        tiers_mod = self._tier_state(tmp_path, monkeypatch)
+        p = tiers_mod._state_path("o/r")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('{"version": 1, "prs": {}, "merged_since": "2000-01-01T00:00:00Z"}',
+                     encoding="utf-8")
+        tier, _reason = tiers_mod.classify("o/r", True, 1_000_000_000 - 8 * 86400, 1_000_000_000)
+        assert tier == "cold"  # pushed 8d ago + ancient watermark: no activity
+        tier2, _r2 = tiers_mod.classify("o/r", True, 1_000_000_000 - 8 * 86400,
+                                        1_000_000_000 + 1)
+        p.write_text('{"version": 1, "prs": {}, "merged_since": "2026-09-01T00:00:00Z"}',
+                     encoding="utf-8")
+        # recent watermark within 7d of `now` upgrades to warm
+        import time as _t
+        recent = (int(_t.time()) - 2 * 86400)
+        from datetime import datetime, timezone
+        iso = datetime.fromtimestamp(recent, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        p.write_text('{"version": 1, "prs": {}, "merged_since": "' + iso + '"}',
+                     encoding="utf-8")
+        tier3, reason3 = tiers_mod.classify("o/r", True, 1_000_000_000 - 8 * 86400,
+                                            _t.time())
+        assert tier3 == "warm" and "wm_recent=True" in reason3
+        assert tier == "cold" or True  # placeholder guard (assert above is real)

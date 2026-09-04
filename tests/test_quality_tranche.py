@@ -446,7 +446,8 @@ class TestOmniFixStale:
             fix={"enabled": True, "merge_own_prs": False},
         )
         sp = tmp_path / "s.json"
-        st = {"version": 1, "prs": {}, "omni_complete": True, "omni_head": "d" * 40,
+        st = {"version": 1, "prs": {}, "omni_complete": True,
+              "omni_published": True, "omni_issue": 1, "omni_head": "d" * 40,
               "omni_findings": [{"id": 1, "path": "gone.py", "line": 1, "rule": "secrets",
                                   "sev": "Major", "msg": "m", "via": "t", "fix_stale": True}]}
         state.save_state(sp, st)
@@ -477,6 +478,12 @@ class TestOmniFixStale:
 
             def path_exists(self, repo, path):
                 return False  # the file is gone — would gate anyway
+
+            def open_issue(self, repo, title, body):
+                return 1
+
+            def update_issue(self, repo, number, body):
+                return True
 
         monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: FakeForge())
         monkeypatch.setattr("fl4write.executor.attempt_fix", must_not_attempt)

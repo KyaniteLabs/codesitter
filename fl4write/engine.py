@@ -349,8 +349,18 @@ def _post_merge_sweep(
     terminal = 0  # watermark position: PRs terminally processed, oldest first
     reviewed_budget = 0
     considered: set[int] = set()
+    # MECE round-5 (sol F5-001): shadow runs keep their own dedupe belt and
+    # never advance the live watermark — a shadow-reviewed merged PR must be
+    # re-reviewed (posted) after the live cutover
+    pm_shadow: dict[str, str] = {}
+    if config.shadow:
+        sb = st.get("pm_shadow_seen")
+        if isinstance(sb, dict):
+            pm_shadow = {str(k): v for k, v in sb.items() if isinstance(v, str)}
     for pr in merged_prs:
         considered.add(pr.number)
+        if config.shadow and pm_shadow.get(str(pr.number)) == pr.head_sha:
+            continue  # already shadow-reviewed at this SHA — belt, not terminal
         if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
             report.alerts.append("post-merge sweep deferred — cycle deadline reached")
             break
@@ -379,13 +389,21 @@ def _post_merge_sweep(
             break  # do not advance the watermark past unprocessed PRs
         state.save_state(state_path, st)  # checkpoint after each merged PR
         reviewed_budget += 1
-        if outcome in ("reviewed", "shadow", "model-failed-cap"):
-            if outcome in ("reviewed", "shadow"):
+        if outcome == "shadow":
+            pm_shadow[str(pr.number)] = pr.head_sha
+            report.postmerge_reviewed += 1
+            continue  # NOT terminal — the live cutover re-reviews and posts
+        if outcome in ("reviewed", "model-failed-cap"):
+            if outcome == "reviewed":
                 report.postmerge_reviewed += 1
             terminal += 1
         else:
             break  # deferred (diff/model): watermark stops before this PR
 
+    if config.shadow and pm_shadow:
+        st["pm_shadow_seen"] = pm_shadow
+    elif not config.shadow and isinstance(st.get("pm_shadow_seen"), dict):
+        st.pop("pm_shadow_seen", None)
     if terminal:
         terminal_prs = [p for p in merged_prs[:terminal]]
         state.advance_merged_watermark(st, terminal_prs[-1].merged_at)
@@ -546,6 +564,20 @@ def _omnisweep_step(
     from .analyzer import ModelUnavailable, analyze
 
     if st.get("omni_complete"):
+        report.omni_findings = len(st.get("omni_findings", []))  # F5-011
+        if not st.get("omni_published"):  # MECE round-5 (sol F5-002): a
+            # completed sweep whose issue create/update FAILED must retry the
+            # publication — the old fast path returned before the upsert and
+            # "retrying next cycle" was a lie
+            findings = st.get("omni_findings", [])
+            total = int(st.get("omni_total", 0) or 0)
+            if findings:
+                _omni_upsert_issue(config, primary, st, findings, total, total,
+                                   complete=True, report=report)
+                if not st.get("omni_published"):
+                    return  # publication still failing — retry next cycle
+            else:
+                st["omni_published"] = True  # clean sweep: nothing to publish
         if config.omnisweep.fix and st.get("omni_findings"):
             _omni_fix_phase(config, primary, st, report)
         return
@@ -563,7 +595,12 @@ def _omnisweep_step(
         report.alerts.append("omnisweep: tree files not a list (skipped this cycle)")
         return
     if truncated:
-        report.alerts.append("omnisweep: tree listing TRUNCATED by the forge — sweep may miss files")
+        # MECE round-5 (sol F5-007): a known-truncated listing must NEVER
+        # render COMPLETE — completion is a correctness claim about the whole
+        # tree, and the alert alone used to be followed by omni_complete=True
+        report.alerts.append(
+            "omnisweep: tree listing TRUNCATED by the forge — completion BLOCKED; "
+            "files past the truncation are unaudited (widen caps/excludes or split the repo)")
     # row-shape guard: (path, size) pairs only; one garbage row must not abort
     files = [row for row in files
              if isinstance(row, (tuple, list)) and len(row) == 2
@@ -586,15 +623,30 @@ def _omnisweep_step(
             f"omnisweep ABORTED: tree has {total} files exceeds "
             f"max_total_files={config.omnisweep.max_total_files} — widen the cap or narrow excludes"
         )
-        st["omni_complete"] = True
+        # MECE round-5 (sol F5-007): an abort is NOT a completion — no
+        # omni_complete, nothing publishable; the sweep re-lists and re-alerts
+        # each cycle until the cap/excludes are fixed
+        st["omni_total"] = total
+        report.omni_findings = len(st.get("omni_findings", []))
         return
 
     cursor = st.get("omni_cursor", "")
     pending = [p for p in scan if p > cursor][: config.omnisweep.max_files_per_cycle]
     if not pending:
+        # MECE round-5 (sol F5-001/007): shadow runs and truncated listings
+        # must NOT set live completion — completion is a live-publishable,
+        # whole-tree claim
+        if config.shadow or truncated:
+            return
         st["omni_complete"] = True
+        st["omni_total"] = total
         findings = st.get("omni_findings", [])
+        report.omni_scanned = len(scan)
+        report.omni_findings = len(findings)
         _omni_upsert_issue(config, primary, st, findings, len(scan), len(scan), complete=True, report=report)
+        if not st.get("omni_published"):
+            report.alerts.append("omnisweep: final audit-issue publication failed — retrying next cycle")
+            return  # retry via the complete fast path before anything else
         report.alerts.append(f"omnisweep complete: {len(findings)} findings across {total} files")
         if config.omnisweep.fix and findings:
             _omni_fix_phase(config, primary, st, report)
@@ -666,9 +718,12 @@ def _omnisweep_step(
     report.omni_scanned = scanned_this_cycle
     report.omni_findings = len(st.get("omni_findings", []))
     done = st.get("omni_cursor", "") >= scan[-1] if scan else True
-    if done and scanned_this_cycle:
-        # finalized in the SAME cycle as the last file — no idle hourly hop
+    if done and scanned_this_cycle and not truncated and not config.shadow:
+        # finalized in the SAME cycle as the last file — no idle hourly hop.
+        # MECE round-5 (sol F5-007/F5-001): a truncated tree or a shadow run
+        # never finalizes — completion is a whole-tree, publishable claim
         st["omni_complete"] = True
+        st["omni_total"] = total
         unscannable = len(st.get("omni_unscannable", []))
         report.alerts.append(
             f"omnisweep complete: {report.omni_findings} findings across {total} files"
@@ -678,9 +733,19 @@ def _omnisweep_step(
             config, primary, st, st.get("omni_findings", []),
             total, total, complete=True, report=report,
         )
+        if not st.get("omni_published"):
+            # MECE round-5 (sol F5-002): the completion is recorded but the
+            # final publication failed — the next cycle's complete fast path
+            # retries the upsert before doing anything else
+            report.alerts.append("omnisweep: final audit-issue publication failed — retrying next cycle")
+            return
         if config.omnisweep.fix and st.get("omni_findings"):
             _omni_fix_phase(config, primary, st, report)
     else:
+        if config.shadow:
+            return  # shadow sweeps never touch live progress belts
+        if truncated and done and not scanned_this_cycle:
+            return  # truncated completion-blocked: retry next cycle, no update
         _omni_upsert_issue(
             config, primary, st, st.get("omni_findings", []),
             len([p for p in scan if p <= st.get("omni_cursor", "")]), total, complete=False, report=report,
@@ -693,7 +758,9 @@ def _omni_upsert_issue(
 ) -> None:
     """Create-or-edit the ONE audit issue per repo, through the adapter.
     Shadow mode touches nothing. Findings live in state — an issue failure
-    degrades to next-cycle retry, never data loss."""
+    degrades to next-cycle retry, never data loss. On a COMPLETE publish the
+    state records omni_published — the retry contract the complete fast path
+    honors (MECE round-5, sol F5-002)."""
     if config.shadow or not findings:
         return
     if complete:
@@ -704,6 +771,9 @@ def _omni_upsert_issue(
     if number:
         if not primary.update_issue(config.repo, number, body):
             report.alerts.append(f"omnisweep: issue #{number} update failed — retrying next cycle")
+            return
+        if complete:
+            st["omni_published"] = True
         return
     created = primary.open_issue(
         config.repo, f"omnisweep: full-tree audit of {config.repo}", body,
@@ -712,6 +782,8 @@ def _omni_upsert_issue(
         report.alerts.append("omnisweep: audit-issue creation failed — retrying next cycle")
         return
     st["omni_issue"] = created
+    if complete:
+        st["omni_published"] = True
 
 
 def _retro_sweep(
@@ -762,9 +834,28 @@ def _retro_sweep(
     if not isinstance(_rs, dict):
         _rs = {}  # MECE round-4 (luna F4-003): null/wrong-shape state degrades
     seen: set[int] = {int(k) for k in _rs if str(k).isdigit()}
+    # MECE round-5 (sol F5-001): shadow runs keep their own dedupe belt and
+    # never touch live cursors/belts — the live cutover must re-audit what
+    # shadow only looked at
+    shadow_belt: dict[str, str] = {}
+    if config.shadow:
+        sb = st.get("retro_shadow_seen")
+        if isinstance(sb, dict):
+            shadow_belt = {str(k): v for k, v in sb.items() if isinstance(v, str)}
+    parked = st.get("retro_parked", {})
+    if not isinstance(parked, dict):
+        parked = {}
+    now_i = int(time.time())
+    # MECE round-5 (sol F5-009): parked PRs re-arm AUTOMATICALLY after their
+    # window — no false "re-arms on the next repo commit" promise, no manual
+    # reset needed
+    active_park = {int(k) for k, v in parked.items()
+                   if str(k).isdigit() and str(v).isdigit() and int(v) > now_i}
     pending = sorted(
         (p for p in listed
-         if p.merged_at <= cursor and p.number not in seen),
+         if p.merged_at <= cursor and p.number not in seen
+         and p.number not in active_park
+         and (not config.shadow or shadow_belt.get(str(p.number)) != p.head_sha)),
         key=lambda p: p.merged_at,
         reverse=True,  # newest unprocessed first: recent mistakes matter most
     )[: config.retro_audit.max_per_cycle]
@@ -779,7 +870,8 @@ def _retro_sweep(
         seen.add(pr.number)
         st["retro_seen"] = {int(n): True for n in seen}
         if not state.needs_review(st, pr.number, pr.head_sha):
-            oldest_processed = pr.merged_at
+            if not config.shadow:
+                oldest_processed = pr.merged_at
             continue  # already reviewed at this SHA while it was open — nothing to catch
         try:
             outcome = _retro_review_pr(
@@ -793,7 +885,11 @@ def _retro_sweep(
             st["retro_seen"] = {int(n): True for n in seen}
             state.save_state(state_path, st)
             break
-        state.save_state(state_path, st)
+        if outcome == "shadow":
+            shadow_belt[str(pr.number)] = pr.head_sha
+            if not config.shadow:
+                oldest_processed = pr.merged_at
+            continue
         if outcome == "deferred":
             seen.discard(pr.number)  # retry next cycle
             st["retro_seen"] = {n: True for n in seen}
@@ -804,17 +900,32 @@ def _retro_sweep(
             tries = int(st.get(key, 0)) + 1
             st[key] = tries
             if tries >= 3:
-                report.alerts.append(
-                    f"retro #{pr.number}: deferred {tries}x (model/env) — parked; "
-                    "re-arms on the next repo commit or state reset")
+                # MECE round-5 (sol F5-009): parked entries carry an expiry —
+                # the PR is retried automatically after the window, re-parked
+                # only while the deferral cause persists
                 st.pop(key, None)
-                st.setdefault("retro_seen", {})[int(pr.number)] = True
+                st["retro_parked"] = {**{str(k): v for k, v in parked.items()},
+                                      str(pr.number): int(time.time()) + 86400}
+                parked = st["retro_parked"]
+                report.alerts.append(
+                    f"retro #{pr.number}: deferred {tries}x (model/env) — parked 24h; "
+                    "retried automatically after the window")
+            state.save_state(state_path, st)  # MECE round-5 (sol F5-003): the
+            # corrected seen-set/park state is saved HERE — the old
+            # save-before-classification checkpointed the pre-discard seen-set
+            # (a kill between the two left the PR permanently skipped)
             break
         oldest_processed = pr.merged_at
 
+    if config.shadow and shadow_belt:
+        st["retro_shadow_seen"] = shadow_belt
+        while len(st["retro_shadow_seen"]) > 2000:  # bounded belt
+            st["retro_shadow_seen"].pop(next(iter(st["retro_shadow_seen"])))
+    elif not config.shadow and isinstance(st.get("retro_shadow_seen"), dict):
+        st.pop("retro_shadow_seen", None)  # live runs stop honoring the belt
     if oldest_processed:
         st["retro_cursor"] = oldest_processed
-    if oldest_processed is None and not pending:
+    if oldest_processed is None and not pending and not active_park:
         # window exhausted between boundary and cursor — nothing left to audit
         # (also fires for repos with no merges in the window: stop re-listing)
         st["retro_complete"] = True
@@ -997,6 +1108,11 @@ def _ci_watch_step(
                 ann_line = int(a.get("start_line") or a.get("line") or 0) or 1
             except (TypeError, ValueError):
                 ann_line = 1
+            # MECE round-5 (sol F5-008): every annotation field is forge-
+            # external — a numeric/object message crashed the slice below
+            msg = a.get("message")
+            if not isinstance(msg, str):
+                msg = str(msg) if msg is not None else ""
             findings.append(
                 Finding(
                     rule_id="ci",
@@ -1004,7 +1120,7 @@ def _ci_watch_step(
                     path=scrub.inline(str(a["path"]), 200),
                     line=ann_line,
                     category="CI",
-                    message=scrub.scrub(f"[{scrub.inline(name, 60)}] {a['message'][:400]}"),
+                    message=scrub.scrub(f"[{scrub.inline(name, 60)}] {msg[:400]}"),
                 )
             )
 

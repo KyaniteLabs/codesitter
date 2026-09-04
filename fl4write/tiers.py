@@ -34,6 +34,10 @@ from pathlib import Path
 
 TIER_CADENCE_S = {"hot": 3600, "warm": 4 * 3600, "cold": 24 * 3600}
 STATE_DIR = Path.home() / ".fl4write"
+try:
+    from .state import STATE_VERSION  # one source of truth (state.py)
+except ImportError:  # pragma: no cover - standalone invocation
+    STATE_VERSION = 1
 
 
 def _known_repo(repo: str) -> bool:
@@ -53,7 +57,10 @@ def _state_path(repo: str) -> Path:
 
 def _read_state(repo: str) -> dict | None:
     """None = missing or unusable (UNKNOWN class — never 'inactive'). Valid
-    JSON with the wrong SHAPE (a list, a string) is also unusable (Sol#9)."""
+    JSON with the wrong SHAPE (a list, a string) is also unusable (Sol#9).
+    MECE round-5 (sol F5-005): an unknown STATE VERSION is unusable too —
+    the canonical loader reconciles unknown versions; a scheduler that called
+    them healthy would park a future-format state as cold."""
     p = _state_path(repo)
     try:
         st = json.loads(p.read_text(encoding="utf-8"))
@@ -61,6 +68,8 @@ def _read_state(repo: str) -> dict | None:
         return None
     if not isinstance(st, dict) or not isinstance(st.get("prs", {}), dict):
         return None  # shape-corrupt = UNKNOWN, never a crash (Sol#9)
+    if st.get("version") != STATE_VERSION:
+        return None  # unknown/future format = UNKNOWN, never cold (F5-005)
     return st
 
 
@@ -119,12 +128,29 @@ def classify(repo: str, forge_github: bool, pushed_epoch: float | None,
         base = "cold"
     else:
         base = "warm"  # probe failed for this repo — never fail toward cold
-    # local activity refines upward: watermark advanced or open PRs present
+    # local activity refines upward: open PRs, or a RECENT post-merge
+    # watermark. MECE round-5 (sol F5-006): the watermark alone is durable
+    # historical state, not current activity — an ancient watermark used to
+    # upgrade every post-merge-enabled repo out of cold forever.
     has_open = bool(st.get("prs"))
+    wm_recent = False
     wm = st.get("merged_since")
-    if base == "cold" and (has_open or wm):
+    if isinstance(wm, str) and wm:
+        import calendar
+        from datetime import datetime as _dt
+
+        try:
+            wm_epoch = calendar.timegm(time.strptime(wm, "%Y-%m-%dT%H:%M:%SZ"))
+        except ValueError:
+            try:
+                wm_epoch = _dt.fromisoformat(wm.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                wm_epoch = None
+        if wm_epoch is not None:
+            wm_recent = (now - wm_epoch) < 7 * 86400
+    if base == "cold" and (has_open or wm_recent):
         base = "warm"
-    return base, f"pushed={'recent' if base == 'hot' else base}; open_prs={has_open}; wm={bool(wm)}"
+    return base, f"pushed={'recent' if base == 'hot' else base}; open_prs={has_open}; wm_recent={wm_recent}"
 
 
 def due(configs: list[tuple[str, str, bool]], now: float | None = None,
