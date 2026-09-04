@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 
+from . import scrub
 from .config import RepoConfig
 from .models import Finding, PullRequest
 
@@ -91,7 +92,7 @@ def render_finding(f: Finding, tone: str, post_merge: bool = False) -> str:
                                 line=f.line, rule=safe_rule),
         "",
     ]
-    parts.append(_md_escape_block(f.message))
+    parts.append(_md_escape_block(scrub.redact_credentials(f.message)))
     if f.proposal:
         parts += [
             "",
@@ -99,7 +100,7 @@ def render_finding(f: Finding, tone: str, post_merge: bool = False) -> str:
             "<summary>💡 How to fix</summary>",
             "",
             "````",
-            _md_escape_block(f.proposal),
+            _md_escape_block(scrub.redact_credentials(f.proposal)),
             "````",
             "",
             "</details>",
@@ -172,7 +173,6 @@ def render_review(
     )
     out = head + body + footer
 
-    from . import scrub
 
     scrub.assert_clean(out.replace(MARKER.format(review_hash=review_hash), ""))
     return out

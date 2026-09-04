@@ -914,3 +914,35 @@ class TestMECESolPins:
         from fl4write.cli import _unknown_flags
         assert _unknown_flags(["c", "cfg.yaml", "--lvie"]) == ["--lvie"]
         assert _unknown_flags(["c", "cfg.yaml", "--live", "--fixes"]) == []
+
+
+class TestMECERedaction:
+    """F1-013: credential-shaped text is redacted at posting surfaces."""
+
+    def test_prefix_secret_redacted(self):
+        from fl4write.scrub import redact_credentials, inline
+        assert "ghp_" + "A" * 12 not in redact_credentials("token " + "ghp_" + "A" * 12)
+        assert "[redacted]" in redact_credentials("ghp_" + "A" * 12)
+        assert "AKIA" + "B" * 16 not in inline("leak " + "AKIA" + "B" * 16)
+
+    def test_high_entropy_run_redacted(self):
+        from fl4write.scrub import redact_credentials
+        out = redact_credentials("literal Zx9QwErTyUiOpAsD12345 here")
+        assert "Zx9QwErTyUiOpAsD12345" not in out
+
+    def test_identifiers_survive(self):
+        from fl4write.scrub import redact_credentials
+        s = "uses documentQuerySelector and getElementById on the page"
+        assert redact_credentials(s) == s
+
+    def test_rendered_comment_redacts(self):
+        from fl4write import renderer
+        from fl4write.models import Finding
+        f = Finding(rule_id="secrets", severity="Critical", path="x.py", line=1,
+                    category="CI", message="leaked literal ghp_" + "A" * 20,
+                    proposal="use env var")
+        body = renderer.render_review(
+            PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40),
+            [f], make_config(), review_hash="abc")
+        assert "ghp_" + "A" * 20 not in body
+        assert "[redacted]" in body

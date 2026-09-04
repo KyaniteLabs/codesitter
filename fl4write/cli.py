@@ -180,7 +180,13 @@ def main() -> int:
     live = "--live" in sys.argv
     run_fixes = "--fixes" in sys.argv
     run_issues = "--issues" in sys.argv
-    config = load_config(sys.argv[1])
+    # MECE round-2 (glm F2-107): the config path may appear after flags —
+    # take the first NON-flag argument instead of blind argv[1]
+    config_path = next((a for a in sys.argv[1:] if not a.startswith("--")), None)
+    if not config_path:
+        print("usage: python3 -m fl4write.cli <config.yaml> [--live]", file=sys.stderr)
+        return 2
+    config = load_config(config_path)
     if "--omni" in sys.argv:
         # One-shot prelaunch kick: a NORMAL run_cycle (CycleLock, deadline,
         # one-state-owner all preserved) with the per-cycle file cap raised —
@@ -205,17 +211,21 @@ def main() -> int:
 
         def diff_getter(pr: PullRequest):  # noqa: E731 - closure over adapter
             return native.get_pr_diff(config.repo, pr.number)
-    # GitHub App auth: every interaction signed as fl4write[bot].
+    # GitHub App auth: every github.com interaction signed as fl4write[bot].
     # Installation resolved PER REPO — the app has separate org and user
-    # installations and a token from the wrong one 404s.
-    try:
-        from .appauth import install_token_to_env
+    # installations and a token from the wrong one 404s. MECE round-2 (glm
+    # F2-105): Forgejo-primary repos skipped entirely — minting for a repo
+    # with no GH installation failed + fell back to PAT EVERY cycle (noise +
+    # wrong login on the FJ surface).
+    if "api.github.com" in primary_binding.api_base:
+        try:
+            from .appauth import install_token_to_env
 
-        install_token_to_env(repo=config.repo)
-        config = config.model_copy(update={"bot_login": "fl4write[bot]"})
-    except Exception as exc:
-        print(f"WARNING: GitHub App auth failed ({exc}); falling back to PAT", file=sys.stderr)
-        config = config.model_copy(update={"bot_login": "simongonzalezdc"})
+            install_token_to_env(repo=config.repo)
+            config = config.model_copy(update={"bot_login": "fl4write[bot]"})
+        except Exception as exc:
+            print(f"WARNING: GitHub App auth failed ({exc}); falling back to PAT", file=sys.stderr)
+            config = config.model_copy(update={"bot_login": "simongonzalezdc"})
     _org_model_keys()
     state_path = Path.home() / ".fl4write" / f"{config.repo.replace('/', '__')}.state.json"
     budget_s = int(os.environ.get("FL4WRITE_CYCLE_BUDGET_S", "840"))
@@ -262,7 +272,6 @@ def format_cycle_line(report, config) -> str:
         f"fix_merged={report.fix_prs_merged} issues_triaged={report.issues_triaged} "
         f"acceptance={report.acceptance.get('rate', 'n/a')}"
     )
-    return 0
 
 
 if __name__ == "__main__":

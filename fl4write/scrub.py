@@ -63,12 +63,50 @@ def scrub(text: str) -> str:
     return s
 
 
+# High-entropy or prefixed runs that look like credentials (MECE round-1,
+# terra F1-013): redacted at RENDER/posting time so a model-quoted literal is
+# never duplicated onto a more public surface. Kept out of analyzer grounding
+# (L1-B3 needs the literal before posting decisions).
+_SECRET_PREFIX = ("ghp_", "gho_", "github_pat_", "sk-", "sk_", "AKIA",
+                  "xoxb-", "xoxp-", "glpat-", "AIza")
+_REDACT_RUN_RE = re.compile(r"[A-Za-z0-9_\-]{16,}")
+# Long camelCase identifiers that look high-entropy but are code, not secrets
+_KNOWN_IDENTIFIERS = {"documentQuerySelector", "getElementById", "getElementByClassName"}
+
+
+def _entropy(s: str) -> float:
+    import math
+    if not s:
+        return 0.0
+    freq = {c: s.count(c) for c in set(s)}
+    return -sum((n / len(s)) * math.log2(n / len(s)) for n in freq.values())
+
+
+def redact_credentials(text: str) -> str:
+    """Replace credential-shaped strings with [redacted]. Prefix runs always;
+    16+ char runs only when high-entropy (a real secret, not an identifier).
+    Apply at posting surfaces, never on analyzer grounding paths."""
+    if not isinstance(text, str) or not text:
+        return text
+    out = text
+    for m in _REDACT_RUN_RE.finditer(text):
+        tok = m.group(0)
+        if tok not in _KNOWN_IDENTIFIERS and (any(
+                tok.startswith(p) for p in _SECRET_PREFIX) or _entropy(tok) >= 3.5):
+            out = out.replace(tok, "[redacted]", 1)
+    # prefix-marked tokens not caught by the 16+ run rule (shorter prefixes)
+    import re as _re
+    for p in _SECRET_PREFIX:
+        out = _re.sub(re.escape(p) + r"[A-Za-z0-9_\-]{8,}", "[redacted]", out)
+    return out
+
+
 def inline(text: str, limit: int | None = None) -> str:
     """Scrub + collapse to ONE line for list/title renderings (issue bodies,
     escalation bullets, PR titles): finding text with newlines must never
     break a bullet list or mint fake entries (UltraQA round 1, ADV-04/P3 —
     scrub keeps \n structural, which is right for prose but wrong here)."""
-    s = scrub(text)
+    s = redact_credentials(scrub(text))
     s = " ".join(s.split()) if s else ""
     return s[:limit] if limit else s
 
