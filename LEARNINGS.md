@@ -388,3 +388,14 @@ missing-evidence cap was inert code; check-runs merge gate unpaginated; issues t
 skipped forever). 28/33 fixed or ruled-by-design in round 1 across 7 commits; 5 open minors
 queued. Law: product gates (fix lane, merge, posting) need fresh-eyes MECE re-audit rounds to
 claim readiness; the earlier "battery complete" wording was withdrawn on the record.
+
+## 44. Regression pins are host-independent or they are not pins (2026-09-04, MECE round 4)
+Two round-3 regression pins opened the reviewed source via a HARDCODED MAC-LOCAL absolute path
+(/Users/simongonzalezdecruz/workspaces/fl4write/...). Green on this laptop; CI red on EVERY
+push from ~01:52Z (FileNotFoundError on the Ubuntu runner) until the bot's own ci_watch lane
+filed fl4write #12 — a red stretch during which the README still claimed "CI on every push":
+the honest-status rule means re-checking the CI badge, not the local suite, before quoting it.
+Law: tests resolve repo paths from the test file (Path(__file__).resolve().parent.parent) —
+author/machine-specific absolutes are host-contaminated claims; a pin that only proves something
+about THIS laptop is not a pin. Fixed in f068269 (REPO_ROOT), #12 closed with evidence.
+
