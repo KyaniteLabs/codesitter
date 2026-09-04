@@ -375,11 +375,22 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             return {"status": "testfail", "reason": "tests failed with fix applied"}
 
         _run(["git", "add", "--", finding.path], cwd=workdir)
+        commit_env = _sandbox_env()
+        # MECE round-3 (sol F3-003): the sandbox strips git identity vars and
+        # HOME (~/.gitconfig) — every automated commit silently failed
+        # "Please tell me who you are" (0 landed fixes explained). Identity is
+        # explicit and bot-scoped.
+        commit_env.update({
+            "GIT_AUTHOR_NAME": "fl4write[bot]",
+            "GIT_AUTHOR_EMAIL": "fl4write@kyanitelabs.tech",
+            "GIT_COMMITTER_NAME": "fl4write[bot]",
+            "GIT_COMMITTER_EMAIL": "fl4write@kyanitelabs.tech",
+        })
         commit = _run(
             ["git", "commit", "-q", "-m",
              f"fix({finding.rule_id}): {scrub.inline(finding.message, 60)}\n\n"
              "Co-authored-by: fl4write <fl4write@kyanitelabs.tech>"],
-            cwd=workdir, env=_sandbox_env(),
+            cwd=workdir, env=commit_env,
         )
         if commit.returncode != 0:
             # empty commit vs environmental failure must be told apart (A8):
@@ -564,7 +575,6 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
                 page += 1
             runs = [c for c in check_runs if c.get("status") == "completed"]
             pending = [c for c in check_runs if c.get("status") != "completed"]
-            pending = [c for c in checks.get("check_runs", []) if c.get("status") != "completed"]
             # Non-vacuous gate: no checks at all is NOT green; pending runs
             # are NOT green (all([]) used to bless both).
             ci_green = bool(runs) and not pending and all(c.get("conclusion") == "success" for c in runs)

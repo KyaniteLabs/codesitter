@@ -914,6 +914,8 @@ class TestMECESolPins:
         from fl4write.cli import _unknown_flags
         assert _unknown_flags(["c", "cfg.yaml", "--lvie"]) == ["--lvie"]
         assert _unknown_flags(["c", "cfg.yaml", "--live", "--fixes"]) == []
+        # F3-004: --shadow is refused (fake-safety trap removed)
+        assert _unknown_flags(["c", "cfg.yaml", "--shadow"]) == ["--shadow"]
 
 
 class TestMECERedaction:

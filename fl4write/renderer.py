@@ -81,11 +81,14 @@ def parse_finding_lines(body: str) -> list[tuple[str, str, int, str]]:
 
 def path_display(path: str) -> str:
     """Display form of a repo-controlled path in rendered comments: structure
-    characters removed and credential-shaped runs redacted (terra F1-08,
-    luna F2-003). Lifecycle comparisons MUST go through this same transform
-    on both sides (F2-004) so identity survives display loss."""
-    return scrub.redact_credentials(
-        str(path).replace("`", "").replace("\n", " ").replace("\r", " "))
+    and markdown-emphasis characters removed, credential-shaped runs redacted
+    (terra F1-08, luna F2-003; MECE round-3 M3: a filename like
+    `weird*name*.py` rendered as emphasis). Lifecycle comparisons MUST go
+    through this same transform on both sides (F2-004)."""
+    out = str(path)
+    for ch in ("`", "*", "_", "[", "]", "#"):
+        out = out.replace(ch, "")
+    return scrub.redact_credentials(out.replace("\n", " ").replace("\r", " "))
 
 
 def render_finding(f: Finding, tone: str, post_merge: bool = False) -> str:

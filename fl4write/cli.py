@@ -155,7 +155,10 @@ def _probe_adoption(config, forge_adapter=None) -> None:
         logging.getLogger("fl4write.cli").warning("adoption probe negative for %s", config.repo)
 
 
-_KNOWN_FLAGS = ("--live", "--fixes", "--issues", "--omni", "--shadow", "--once", "--sweep")
+_KNOWN_FLAGS = ("--live", "--fixes", "--issues", "--omni")
+# MECE round-3 (terra F3-004): shadow is the DEFAULT (log-only) mode and
+# --live flips it off — a whitelisted --shadow flag was a fake-safety trap
+# (--live --shadow ran LIVE). Only flags the CLI actually acts on are known.
 
 
 def _unknown_flags(argv: list[str]) -> list[str]:
@@ -222,6 +225,13 @@ def main() -> int:
             from .appauth import install_token_to_env
 
             install_token_to_env(repo=config.repo)
+            # MECE round-3 (terra F3-003): adapters read the token under the
+            # BINDING's token_env name (e.g. CODESITTER_GITHUB_TOKEN in fleet
+            # configs, GHT in tests) — mirror the minted token there or the
+            # adapter runs unauthenticated
+            for binding in config.forges.values():
+                if binding.token_env and not os.environ.get(binding.token_env):
+                    os.environ[binding.token_env] = os.environ.get("CODESITTER_GITHUB_TOKEN", "")
             config = config.model_copy(update={"bot_login": "fl4write[bot]"})
         except Exception as exc:
             print(f"WARNING: GitHub App auth failed ({exc}); falling back to PAT", file=sys.stderr)
