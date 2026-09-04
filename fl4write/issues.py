@@ -89,7 +89,7 @@ def triage_issue(issue: dict[str, Any], config: RepoConfig) -> dict[str, Any] | 
         # coerce/validate types so a hostile or malformed payload cannot
         # inject a label list or urgency we never sanctioned
         labels = raw.get("labels")
-        raw["labels"] = [str(l)[:60] for l in labels if isinstance(l, (str, int))][:8] \
+        raw["labels"] = [str(lb)[:60] for lb in labels if isinstance(lb, (str, int))][:8] \
             if isinstance(labels, list) else []
         raw["is_duplicate"] = bool(raw.get("is_duplicate"))
         raw["is_regression"] = bool(raw.get("is_regression"))
