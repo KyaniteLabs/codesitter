@@ -1954,3 +1954,75 @@ class TestMECERound5GlmPins:
         monkeypatch.setattr("fl4write.gatekeeper._call_model", fake_model2)
         kept2, _dropped2, failed2 = filter_findings([f_secrets, f_tests], c)
         assert failed2 is False and len(kept2) == 2
+
+
+class TestMECERound6Pins:
+    """Round-6 desk: envelope duplicate-key refusal (terra F6-001), message
+    credential redaction at construction (terra F6-002), redact-before-slice
+    in drop logs (terra F6-003), executor lenient base64 (luna F6-001),
+    telemetry calibration corrupt-stream tolerance (luna F6-002)."""
+
+    def test_extract_json_refuses_duplicate_envelope_keys(self):
+        from fl4write.analyzer import extract_json
+
+        with pytest.raises(ValueError):
+            extract_json('{"fixed_content":"SAFE","fixed_content":"CHANGED"}',
+                         envelope_key="fixed_content")
+        with pytest.raises(ValueError):
+            extract_json('{"fixed_content": "SAFE",\n "fixed_content": "CHANGED"}',
+                         envelope_key="fixed_content")
+        # single-key payloads still parse
+        out = extract_json('{"fixed_content": "ok"}', envelope_key="fixed_content")
+        assert out == {"fixed_content": "ok"}
+
+    def test_finding_messages_redacted_at_construction(self, monkeypatch):
+        cred = "ghp_" + "A" * 20  # split literal: fleet scanner law
+        doc = _analyze(monkeypatch, {
+            "rule_id": "secrets", "severity": "Major", "path": "x.py",
+            "line": 5, "message": f"token {cred} left in code"})
+        assert cred not in doc.findings[0].message
+        assert "[redacted]" in doc.findings[0].message
+
+    def test_malformed_finding_log_redacts_before_slicing(self, monkeypatch, caplog):
+        import json as _json
+        import logging
+
+        from fl4write.analyzer import analyze as _analyze_fn
+
+        cred = "ghp_" + "B" * 20  # split literal
+        # prefix overhead ~27 chars + padding puts the token start at byte 76,
+        # so the OLD slice-then-redact order leaked 'ghpB' into the drop log
+        item = {"rule_id": "r" * 49, "message": cred, "severity": "Major"}
+        monkeypatch.setattr(
+            "fl4write.analyzer._call_model",
+            lambda route, prompt, mode="pr", system=None, **kw: _json.dumps({"findings": [item]}))
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        with caplog.at_level(logging.INFO, logger="fl4write.analyzer"):
+            _analyze_fn(pr, {"x.py"}, "diff x.py", make_config())
+        assert "ghp" not in caplog.text, "credential fragment leaked into drop logs"
+
+    def test_executor_file_fetch_rejects_invalid_and_empty_base64(self, monkeypatch):
+        import base64 as _b64
+
+        from fl4write import executor as ex
+
+        monkeypatch.setattr(ex, "_gh_api", lambda m, p, data=None: {
+            "encoding": "base64", "content": "!!!!"})
+        assert ex._get_file_content("o/r", "x.py", "a" * 40) is None  # invalid
+        monkeypatch.setattr(ex, "_gh_api", lambda m, p, data=None: {
+            "encoding": "base64", "content": _b64.b64encode(b"").decode()})
+        assert ex._get_file_content("o/r", "x.py", "a" * 40) is None  # empty premise
+        monkeypatch.setattr(ex, "_gh_api", lambda m, p, data=None: {
+            "encoding": "base64",
+            "content": _b64.b64encode(b"x = 1").decode()})
+        assert ex._get_file_content("o/r", "x.py", "a" * 40) == "x = 1"  # valid
+
+    def test_calibration_snapshot_survives_corrupt_stream(self, monkeypatch, tmp_path):
+        from fl4write import telemetry as tel
+
+        p = tmp_path / "telemetry.jsonl"
+        p.write_bytes(b'{"kind": "model_call", "model": "t", "ok": true}\n'
+                      b'{"kind": "model_call", "model": "\xff\xfe"}\n')
+        monkeypatch.setattr(tel, "_path", lambda: p)
+        out = tel.calibration_snapshot()
+        assert isinstance(out, dict)  # never raises on corrupt bytes

@@ -93,7 +93,11 @@ def calibration_snapshot(recent: int = 500) -> dict[str, Any]:
     docstring promised a per-route severity mix this aggregation never
     computed — body now matches the promise). Returns {} when empty."""
     try:
-        lines = _path().read_text(encoding="utf-8").strip().splitlines()[-recent * 3:]
+        # MECE round-6 (luna F6-002): the stream may hold corrupt bytes (kill
+        # mid-append) — telemetry never raises by contract, and this call runs
+        # AFTER the cycle in the CLI; a UnicodeDecodeError here crashed the
+        # process on the way out
+        lines = _path().read_text(encoding="utf-8", errors="replace").strip().splitlines()[-recent * 3:]
     except OSError:
         return {}
     models: dict[str, dict[str, int]] = {}

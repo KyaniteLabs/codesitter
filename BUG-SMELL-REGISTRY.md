@@ -50,4 +50,5 @@ no triage. Curated outcomes live in LEARNINGS.md.
 - 2026-09-04 round-5 luna DOM-D — adapter row containment for annotations/tree walks, model-route NaN/Inf/<=0 accepted, FL4WRITE_CYCLE_BUDGET_S raw ValueError → 4 pins (47ea58c)
 - 2026-09-04 round-5 terra DOM-B — issues-lane failed post skipped forever after later watermark advance (F1-07 reopened), raw f.path in fixlane/executor/ci escalation bodies → 2 pins (fbdcdaf)
 - 2026-09-04 round-4 M3 DOM-D desk — comment scan depth 10→100 pages, _call_text ignores Retry-After, slash-branch URL corruption, unbounded check-runs scan; nested-YAML-dup claim INVALID by probe → 4 pins (fbdcdaf)
+- 2026-09-04 round-6 terra DOM-A + luna DOM-B — dup-key envelope bypasses distinct-refusal, credential egress to gatekeeper prompt (render-only redaction), drop-log slice-before-redact leak, executor lenient base64 empty-file premise (F1-024 reopened), post-cycle telemetry UnicodeDecodeError → LEARNINGS #46; 5 pins
 

@@ -149,7 +149,20 @@ def _get_file_content(repo: str, path: str, ref: str) -> str | None:
             log.warning("contents API returned no base64 content for %s@%s (encoding=%s)",
                         path, ref[:8], data.get("encoding"))
             return None
-        return base64.b64decode(data["content"]).decode("utf-8")
+        # MECE round-6 (luna F6-001, reopened F1-024): lenient b64decode made
+        # an invalid payload ("!!!!") decode to b"" and return an EMPTY file —
+        # the vacuous-premise law was bypassed and the model could fabricate a
+        # whole-file fix from nothing. validate=True rejects garbage; empty
+        # decodes return None, never "".
+        try:
+            raw = base64.b64decode(data["content"], validate=True)
+        except (binascii.Error, ValueError) as exc:
+            log.warning("file fetch invalid base64 for %s@%s: %s", path, ref[:8], exc)
+            return None
+        if not raw:
+            log.warning("file fetch empty payload for %s@%s (rejected)", path, ref[:8])
+            return None
+        return raw.decode("utf-8")
     except (urllib.error.HTTPError, urllib.error.URLError, UnicodeDecodeError,
             binascii.Error) as exc:  # binascii: forged/invalid base64 payloads
         # (MECE round-1, luna F1-10)

@@ -218,6 +218,22 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
     import json as _json
     import re as _re
 
+    # MECE round-6 (terra F6-001): Python JSON keeps the LAST duplicate key
+    # silently — one object with two envelope keys
+    # ({"fixed_content":"SAFE","fixed_content":"injected"}) decoded to the
+    # attacker-chosen value and BYPASSED the distinct-envelope refusal.
+    # Duplicate keys anywhere in a decoded object are ambiguous: refuse
+    # (callers degrade) instead of consuming last-wins content.
+    def _reject_dup_keys(pairs):
+        out: dict = {}
+        for k, v in pairs:
+            if k in out:
+                raise ValueError(f"duplicate JSON key {k!r}")
+            out[k] = v
+        return out
+
+    strict_decoder = _json.JSONDecoder(object_pairs_hook=_reject_dup_keys)
+
     cleaned = _re.sub(r"<think>(.*?)</think>", "", content, flags=_re.DOTALL | _re.IGNORECASE).strip()
     candidates = [cleaned, content]
     if envelope_key:
@@ -245,7 +261,7 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
             if brace == -1:
                 continue
             try:
-                parsed, end = _json.JSONDecoder().raw_decode(content[brace:])
+                parsed, end = strict_decoder.raw_decode(content[brace:])
             except ValueError:
                 continue
             if isinstance(parsed, dict) and envelope_key in parsed and m.start() > brace:
@@ -265,7 +281,7 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
             idx = c.rfind(marker)
             if idx != -1:
                 try:
-                    parsed, _ = _json.JSONDecoder().raw_decode(c[idx:])
+                    parsed, _ = strict_decoder.raw_decode(c[idx:])
                     if isinstance(parsed, dict) and envelope_key in parsed:
                         return parsed
                 except ValueError:
@@ -273,7 +289,7 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
     for candidate in candidates:
         try:
             start, end = candidate.index("{"), candidate.rindex("}") + 1
-            parsed = _json.loads(candidate[start:end])
+            parsed = _json.loads(candidate[start:end], object_pairs_hook=_reject_dup_keys)
             if isinstance(parsed, dict) and (envelope_key is None or envelope_key in parsed):
                 return parsed
         except ValueError:
@@ -432,8 +448,9 @@ def analyze(
         try:
             f = Finding.model_validate(item)
         except Exception:  # malformed findings are dropped, logged
-
-            dropped.append(f"malformed: {scrub.redact_credentials(str(item)[:80])}")
+            # MECE round-6 (terra F6-003): redact BEFORE the length slice —
+            # slicing first leaked truncated credential prefixes into logs
+            dropped.append(f"malformed: {scrub.redact_credentials(str(item))[:80]}")
             continue
         if f.rule_id != "general" and f.rule_id not in config.review:
             dropped.append(f"unknown rule {f.rule_id}")
@@ -470,8 +487,13 @@ def analyze(
         if _path_ignored(f.path, config):
             dropped.append(f"path filtered by config {f.path}:{f.line}")
             continue
-        f.message = scrub.scrub(f.message)
-        f.proposal = scrub.scrub(f.proposal)
+        # MECE round-6 (terra F6-002): redact at CONSTRUCTION — render-time
+        # redaction alone left model-quoted credentials verbatim in the
+        # gatekeeper prompt (f.message[:120]) and any other pre-render
+        # consumer. Redaction is idempotent for render; every downstream
+        # surface inherits the protection.
+        f.message = scrub.redact_credentials(scrub.scrub(f.message))
+        f.proposal = scrub.redact_credentials(scrub.scrub(f.proposal)) if f.proposal else ""
         f.category = scrub.scrub(f.category)
         findings.append(f)
     # L1-B5 testing-quality severity ceiling (same adjudication sample; Sol

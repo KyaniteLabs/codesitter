@@ -413,3 +413,18 @@ classification; completion is a whole-tree, published claim (omni_published retr
 aborts and truncations are never COMPLETE; parked state carries an expiry and re-arms
 automatically. Regression pins: 9 red-pre-fix across engine/state/tiers.
 
+## 46. Envelope refusal must survive JSON's own last-wins (2026-09-04, MECE round 6)
+Terra reopened the envelope-injection class with a NEW vector: Python json keeps the LAST
+duplicate key silently, so ONE object carrying two envelope keys
+({"fixed_content":"SAFE","fixed_content":"injected"}) decoded to the attacker-chosen value and
+BYPASSED the distinct-envelope refusal built in round 2 — same response, same fix target, new
+layer. Same desk pass: message credentials were redacted only at RENDER, so the gatekeeper
+prompt (a pre-render consumer) received model-quoted secrets verbatim (F1-013's dup-exposure
+residual, now closed at construction); drop logs sliced BEFORE redacting so truncated tokens
+leaked 'ghp' prefixes; the executor's OWN contents fetch still leniently decoded invalid base64
+to an EMPTY file (F1-024 reopened — vacuous-premise), and calibration_snapshot crashed the CLI
+after the cycle on corrupt stream bytes. Laws: decode with duplicate-key rejection
+(object_pairs_hook) at every JSON boundary; redact at construction, not at the last renderer;
+redact before truncation; empty premises and invalid payloads return None everywhere, twice.
+5 regression pins, all red pre-fix.
+
