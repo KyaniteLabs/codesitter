@@ -654,6 +654,12 @@ class ForgejoAdapter(ForgeAdapter):
                         walk(e.get("sha"), prefix + (e.get("path") or "") + "/")
 
             root = self._call("GET", f"/repos/{repo}/git/trees/{branch_q}")
+            if not isinstance(root, dict) or not isinstance(root.get("tree"), list):
+                # F6-310: malformed/truncated ROOT response -> truncated,
+                # never a silent partial tree
+                return out, True
+            if root.get("truncated"):
+                truncated = True
             for e in root.get("tree") or []:
                 if not isinstance(e, dict):  # MECE round-5 (luna F5-002)
                     continue
