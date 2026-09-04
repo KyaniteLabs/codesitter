@@ -448,7 +448,10 @@ def _post_merge_sweep(
             pm_shadow = {str(k): v for k, v in sb.items() if isinstance(v, str)}
     for pr in merged_prs:
         considered.add(pr.number)
-        if config.shadow and pm_shadow.get(str(pr.number)) == pr.head_sha:
+        _belt = pm_shadow.get(str(pr.number))
+        if _belt == pr.head_sha or (_belt or "").startswith(pr.head_sha + ":dep"):
+            # F13-C007: dependency skips are recorded as '<sha>:dep' — the
+            # bare compare re-considered the same shadow dependency every cycle
             continue  # already shadow-reviewed at this SHA — belt, not terminal
         if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
             report.alerts.append("post-merge sweep deferred — cycle deadline reached")
@@ -799,12 +802,29 @@ def _omnisweep_step(
     # file ADDED before the cursor was permanently skipped. Fingerprint the
     # scan list; when the tree changes mid-sweep, restart from scratch (the
     # alert is the audit trail; completed findings belong to an older HEAD)
+    _anchor0 = _probe_head(primary, config.repo)
+    if _anchor0 is None and not config.shadow and not truncated \
+            and (st.get("omni_cursor") or st.get("omni_fp")):
+        # F13-C008 (reopened F9-C003): with NO trusted HEAD anchor, a
+        # multi-cycle sweep cannot detect same-size content edits — fail
+        # closed and defer until an anchor exists (never certify unanchored)
+        report.alerts.append(
+            "omnisweep: no trusted HEAD anchor — sweep deferred (unanchored "
+            "multi-cycle certification refused)")
+        return
     if not config.shadow and not truncated:
         import hashlib as _hl
         # F9-C003: content edits with unchanged paths must restart the sweep
         # too — fingerprint paths AND sizes, plus the anchored HEAD when the
         # forge can report one (a stale 'at HEAD' audit is a false claim)
-        fp_meta = "\x00".join(f"{pp}:{sz}" for (pp, sz) in sorted(files))
+        # F13-C003: fingerprint the EFFECTIVE scan — raw-tree rows let an
+        # exclusion change (removing an exclude before the cursor) leave files
+        # unscanned while the sweep still certified complete
+        _eff = [(pp, sz) for (pp, sz) in files
+                if 0 < sz <= _OMNI_MAX_FILE_BYTES
+                and not any(fnmatch.fnmatch(pp, pat) for pat in excludes)]
+        fp_meta = "\x00".join(f"{pp}:{sz}" for (pp, sz) in sorted(_eff))
+        fp_meta += "\x00excl:" + "\x00".join(sorted(excludes))
         _anchor = _probe_head(primary, config.repo)
         if _anchor:
             fp_meta += "\x00head:" + _anchor
@@ -1626,6 +1646,7 @@ def run_cycle(
                 state.save_state(state_path, st)  # checkpoint after each PR
 
             merged_keep: set[int] = set()
+            merged_lane_failed = False  # F13-C002: prune barrier
             # F11-C011 (reopened F6-C016/C017): every post-review lane checks
             # the remaining budget BEFORE starting — the deadline used to stop
             # review work but the issues/metrics lanes still ran model/forge
@@ -1637,24 +1658,46 @@ def run_cycle(
             if config.post_merge.enabled:
                 # BEFORE prune_closed: the sweep's head-SHA guard must see this
                 # cycle's merged records before prune could drop them.
-                merged_keep = _post_merge_sweep(
-                    config, primary, state_path, get_diff, shadow_sink, st,
-                    report, run_fixes, deadline,
-                )
+                if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
+                    report.alerts.append("cycle deadline reached — post-merge deferred")
+                else:
+                    try:
+                        merged_keep = _post_merge_sweep(
+                            config, primary, state_path, get_diff, shadow_sink, st,
+                            report, run_fixes, deadline,
+                        )
+                    except ForgeError as exc:
+                        # F13-C002: a failed merged listing must not authorize
+                        # destructive pruning (empty keep set = closed!)
+                        report.alerts.append(f"post-merge degraded ({exc}) — prune barred")
+                        merged_lane_failed = True
 
             if config.ci_watch.enabled:
-                _ci_watch_step(config, primary, st, report, run_fixes, deadline)
+                if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
+                    report.alerts.append("cycle deadline reached — ci_watch deferred")
+                else:
+                    _ci_watch_step(config, primary, st, report, run_fixes, deadline)
 
             if config.retro_audit.enabled:
-                merged_keep |= _retro_sweep(
-                    config, primary, state_path, get_diff, shadow_sink, st,
-                    report, deadline,
-                )
+                if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
+                    report.alerts.append("cycle deadline reached — retro deferred")
+                else:
+                    try:
+                        merged_keep |= _retro_sweep(
+                            config, primary, state_path, get_diff, shadow_sink, st,
+                            report, deadline,
+                        )
+                    except ForgeError as exc:
+                        report.alerts.append(f"retro degraded ({exc}) — prune barred")
+                        merged_lane_failed = True
 
             if config.omnisweep.enabled:
-                _omnisweep_step(
-                    config, primary, state_path, shadow_sink, st, report, deadline,
-                )
+                if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
+                    report.alerts.append("cycle deadline reached — omnisweep deferred")
+                else:
+                    _omnisweep_step(
+                        config, primary, state_path, shadow_sink, st, report, deadline,
+                    )
 
             # MECE round-4 (luna F4-002): never prune on a listing FAILURE or
             # deadline truncation — empty open_numbers would delete every
@@ -1663,7 +1706,7 @@ def run_cycle(
             # MECE round-6 (luna-max F6-C003): never prune under shadow either
             # — a dry-run must not delete live records
             if (not listing_failed and not truncated_by_deadline
-                    and not config.shadow):
+                    and not config.shadow and not merged_lane_failed):
                 st["open_ids"] = sorted(open_numbers)  # F8-C002: for tiers
                 state.prune_closed(st, open_numbers | merged_keep)
 
@@ -1671,13 +1714,16 @@ def run_cycle(
                 from . import issues as issues_lane
 
                 # F12-C004 (reopened F11-C011): re-check the budget BEFORE the
-                # lane — earlier lanes may have consumed it (model/forge calls)
+                # lane — earlier lanes may have consumed it (model/forge calls).
+                # F13-C001: the summary must exist even when the lane is
+                # deferred (UnboundLocalError used to abort the whole cycle)
+                issue_summary: dict = {}
                 if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
                     report.alerts.append("cycle deadline reached — issues lane deferred")
                 else:
                     issue_summary = issues_lane.run_issues_cycle(
                         config, st, primary, deadline=deadline)
-                    report.issues_triaged = issue_summary.get("triaged", 0)
+                report.issues_triaged = issue_summary.get("triaged", 0)
                 # F10-B003: a foreign-marker quarantine is a STRUCTURED cycle
                 # alert — the lane claims per-cycle visibility; the claim must
                 # land where operators actually look

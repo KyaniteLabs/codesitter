@@ -453,7 +453,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
         fetch_url = f"https://github.com/{pr.repo}.git"
         if _run(["git", "init", "-q"], cwd=workdir).returncode != 0:
             return _finish("error", "git init failed")
-        pull_env = _push_token_env(workdir, token)
+        pull_env = _git_hardened_env(_push_token_env(workdir, token))
         askpass_envs.append(pull_env)
         fetch = _run(
             ["git", "fetch", "-q", "--depth", "1", fetch_url, pr.head_sha],
@@ -547,7 +547,9 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             digest_size=6).hexdigest()
         branch = f"fl4write/fix-{pr.number}-{_tag}"
         _run(["git", "branch", "-M", branch], cwd=workdir)
-        push_env = _push_token_env(workdir, token)
+        # F13-B001: privileged push env is hardened (global/system git config
+        # can never steer an authenticated push)
+        push_env = _git_hardened_env(_push_token_env(workdir, token))
         askpass_envs.append(push_env)
         push = _run(
             ["git", "push", "-q", fetch_url, f"HEAD:refs/heads/{branch}"],
@@ -560,11 +562,17 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             # commit) and the plain push rejected forever as non-fast-forward.
             # The branch is bot-owned under the own-PR rail: one force-with-
             # lease retry reconciles it; anything else is a real error.
+            # F13-B002: the retry needs a FRESH askpass helper — the first
+            # helper is already dropped (GIT_ASKPASS would point at a deleted
+            # file and the retry would fail authentication)
+            push2_env = _git_hardened_env(_push_token_env(workdir, token))
+            askpass_envs.append(push2_env)
             push2 = _run(
                 ["git", "push", "-q", "--force-with-lease", fetch_url,
                  f"HEAD:refs/heads/{branch}"],
-                cwd=workdir, timeout=120, env=push_env,
+                cwd=workdir, timeout=120, env=push2_env,
             )
+            _drop_askpass(push2_env)
             if push2.returncode != 0:
                 return _finish("error", f"push failed: {push2.stderr[-100:]}")
 
@@ -783,8 +791,14 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
                 except ValueError:
                     sep = len(argv)
                 argv = argv[:sep] + extra + argv[sep:]
-        env = _push_token_env(workdir, token)
-        _drop_askpass(env)  # tests never see the helper (A1)
+        # F13-B001 (round 13, CRITICAL, reopened F12-B001): verifier tests are
+        # EXECUTED untrusted code — they used to run with the REAL HOME (the
+        # token helper was dropped but ~/.sinter stayed readable) and could
+        # plant ~/.gitconfig that later privileged git honored. Fresh
+        # disposable HOME per run, sandbox env; cleaned in the function
+        # finally alongside the workdir.
+        _vhome = tempfile.mkdtemp(prefix="fl4write-verify-home-")
+        env = _sandbox_env_for(_vhome)
         import time as _time
         _t0 = _time.time()
         from . import telemetry as _tel
@@ -894,6 +908,11 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
         for e in verify_askpass:  # MECE round-1 (luna F1-04): drop on every path
             _drop_askpass(e)
         shutil.rmtree(workdir, ignore_errors=True)
+        # F13-B001: the per-run disposable test HOME dies with the attempt
+        try:
+            shutil.rmtree(_vhome, ignore_errors=True)
+        except NameError:
+            pass
 
 
 def open_issue(repo: str, title: str, body: str) -> int:

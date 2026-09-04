@@ -232,6 +232,7 @@ class RepoConfig(_StrictModel):
         _key_envs.discard("")
         _forges = raw.get("forges")
         if isinstance(_forges, dict):
+            _seen_envs: dict[str, str] = {}
             for _name, _b in _forges.items():
                 if isinstance(_b, dict):
                     _te = _b.get("token_env")
@@ -240,6 +241,16 @@ class RepoConfig(_StrictModel):
                             f"forge {_name!r} token_env {_te!r} collides with a model "
                             "key_env — credentials would cross authentication "
                             "namespaces")
+                    # F13-D001 (CRITICAL, reopened F12-D005): two forges on
+                    # DIFFERENT hosts sharing one token_env made the CLI mirror
+                    # the GitHub App token into the Forgejo binding's env name
+                    # — the GH credential would ride as Forgejo's Authorization
+                    if _te in _seen_envs:
+                        raise ValueError(
+                            f"forge {_name!r} token_env {_te!r} duplicates forge "
+                            f"{_seen_envs[_te]!r} — one env name must not carry "
+                            "credentials across differently routed hosts")
+                    _seen_envs[_te] = _name
         return raw
 
     @field_validator("review")

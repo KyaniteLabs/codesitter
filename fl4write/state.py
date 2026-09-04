@@ -236,9 +236,31 @@ def _normalize_aux(data: dict[str, Any]) -> dict[str, Any]:
                                            and not isinstance(r.get("id"), bool)
                                            and isinstance(r.get("line"), int))]
             if bad:
-                log.warning("state omni_findings: dropping %d malformed rows (bounded reconcile)",
-                            len(bad))
+                # F13-C005: malformed findings mean the sweep's own records
+                # are untrustworthy — completion/publication ride with them
+                log.warning("state omni_findings: dropping %d malformed rows — "
+                            "sweep completion reset (bounded reconcile)", len(bad))
                 out["omni_findings"] = [r for r in omni if r not in bad]
+                for key in ("omni_complete", "omni_published", "omni_fp",
+                            "omni_cursor", "omni_next_id", "omni_scanned_total"):
+                    out.pop(key, None)
+    # F13-C004: the publication-retry counter is consumed by raw int()
+    v = out.get("omni_pub_fail")
+    if v is not None:
+        if isinstance(v, bool) or not isinstance(v, int):
+            log.warning("state omni_pub_fail: non-int %r dropped", v)
+            out.pop("omni_pub_fail", None)
+    # F13-B009: the foreign-marker quarantine list is appended by the lane
+    v = out.get("issues_foreign_quarantined")
+    if v is not None:
+        if not isinstance(v, list):
+            log.warning("state issues_foreign_quarantined: non-list dropped")
+            out.pop("issues_foreign_quarantined", None)
+        else:
+            kept = [int(x) for x in v if isinstance(x, int)
+                    and not isinstance(x, bool) and x > 0]
+            if len(kept) != len(v) or len(kept) > 200:
+                out["issues_foreign_quarantined"] = kept[-200:]
     # MECE round-7 (terra F7-002): omni cursors/counters drive raw
     # int()/comparison operations — wrong types used to TypeError/ValueError
     # the cycle outside its handled exceptions. F11-C008 (reopened F7-C002):

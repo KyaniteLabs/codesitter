@@ -4042,9 +4042,12 @@ class TestMECERound11Engine2:
                      '"omni_complete": true, "omni_published": true, '
                      '"omni_findings": [{"id": 1}], "omni_next_id": "x"}')
         st = load_state(p)
-        for k in ("omni_cursor", "omni_complete", "omni_published",
-                  "omni_findings", "omni_next_id"):
+        # F13-C005 refinement: malformed finding rows empty the ledger AND
+        # clear the terminal flags — an empty findings list may remain but the
+        # sweep must re-run (complete/published/cursor/fp are gone)
+        for k in ("omni_cursor", "omni_complete", "omni_published", "omni_next_id"):
             assert k not in st, k
+        assert not st.get("omni_findings")
 
     def test_load_state_normalizes_record_numerics(self, tmp_path):
         from fl4write.state import load_state
