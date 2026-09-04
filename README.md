@@ -19,10 +19,11 @@ mirror, SHA-deduped) → scrub all untrusted text → LLM-brained findings
 (champion route + fallback) → ground every finding (rule in vocab, severity in
 vocab, path in diff — ungrounded findings are dropped+logged, never posted) →
 render the persistent comment (one per PR, edited in place, 🆕 deltas) →
-hand actionable findings to the fix lane. **v0.1 ships the fix lane as a
-tested library** (rails: fork comment-only, bot PRs read-only, merge
-re-verifies authorship+CI at the call site, depth cap escalates) — engine
-wiring lands with the first live deployment (#69), not before.
+hand actionable findings to the fix lane. **The fix lane is live**: findings
+become own-PR fixes under hard rails (fork = comment-only; bot-authored
+dependency PRs = read-only; merge re-verifies authorship+CI at the call site;
+sandboxed test evidence gates every push). The v0.1 plan shipped the lane as a
+tested library first; engine wiring landed with the first live deployment.
 
 ## Safety architecture (the parts that are laws, not features)
 
@@ -44,10 +45,12 @@ wiring lands with the first live deployment (#69), not before.
 
 ## Adding a repo
 
-Drop a `.fl4write.yaml` in the repo (see `kinocut.fl4write.yaml` for the
-reference instance): forge bindings (exactly one `primary`, others `mirror`),
-model routes, repo law as `review:` rules, severity vocab, tone, fix-lane
-autonomy, known-env failures. Config validates fail-loud at startup.
+Drop a `.fl4write.yaml` in the repo (see the tracked reference instance
+`kinocut.fj.fl4write.yaml` for the canonical all-Forgejo form, or any
+`*.fl4write.yaml` central config in this repo's root): forge bindings
+(exactly one `primary`, others `mirror`), model routes, repo law as `review:`
+rules, severity vocab, tone, fix-lane autonomy, known-env failures. Config
+validates fail-loud at startup.
 
 ## Deployment
 
@@ -70,8 +73,8 @@ no fleet repo has enabled it yet — luna F3-004 doc truth).
 Current fleet state (2026-09-04, MECE audit round 1): **130 central configs**
 across GitHub + Forgejo cycling ~100 repos/hour on the nucbox runner
 (`run-cycle.sh`, hourly crontab, single-host law — LEARNINGS #17). **500+
-tests green** (509 passing + 3 skipped as of the MECE
-round-9 desk pass), ruff clean, CI on every push. Quality loop on
+tests green** (542 passing + 3 skipped as of the MECE
+round-10 desk pass), ruff clean, CI on every push. Quality loop on
 issue #5; desk charter + incident history on issue #3 and map #63.
 
 Requested behavior (CEO 2026-09-04, not yet implemented): the **exhaustive bug-resolution
