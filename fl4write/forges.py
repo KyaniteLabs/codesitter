@@ -213,7 +213,11 @@ class ForgeAdapter:
             if "HTTP 404" in str(exc):
                 return False
             return None
-        return isinstance(data, dict) and bool(data.get("content"))
+        # MECE round-1 (sol F1-004): a valid ZERO-BYTE file has empty content
+        # but is still a file — judge by the base64 encoding marker, not by
+        # content truthiness; directories answer with a LIST.
+        return (isinstance(data, dict) and data.get("encoding") == "base64"
+                and "content" in data)
 
     def check_annotations(self, repo: str, check_run_id: int) -> list[dict] | None:
         """Annotations for one check-run: [{path, start_line, message, level}]."""
@@ -266,6 +270,7 @@ class ForgeAdapter:
         non-base64/empty responses (the >1MB vacuous-premise law — the model
         must never 'review' or fix an empty file it didn't get)."""
         import base64
+        import binascii
         from urllib.parse import quote
 
         try:
@@ -275,8 +280,10 @@ class ForgeAdapter:
         if data.get("encoding") != "base64" or not data.get("content"):
             return None
         try:
-            return base64.b64decode(data["content"]).decode("utf-8")
-        except (ValueError, UnicodeDecodeError):
+            # MECE round-1 (sol F1-003): validate=True rejects lenient garbage
+            # that would decode to b"" or partial bytes (binascii.Error too)
+            return base64.b64decode(data["content"], validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError, binascii.Error):
             return None
 
     def get_persistent_comment(self, repo: str, number: int) -> tuple[int, str] | None:  # id, body  # pragma: no cover
@@ -400,6 +407,10 @@ class ForgejoAdapter(ForgeAdapter):
 
     name = "forgejo"
     supports_fork_ci_approval = False
+    # MECE round-1 (sol F1-001): Gitea/Forgejo pagination param is `limit`,
+    # not `per_page` — the inherited value was silently ignored by the server,
+    # capping every Forgejo list at the server default page size.
+    page_size_param = "limit"
 
     def list_open_prs(self, repo: str) -> list[PullRequest]:
         data = self._paginated(f"/repos/{repo}/pulls?state=open", page_size=50)

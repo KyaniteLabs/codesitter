@@ -34,8 +34,10 @@ class ForgeBinding(_StrictModel):
 
     role: str = Field(pattern="^(primary|mirror)$")
     api_base: str = Field(pattern=r"^https?://")  # http allowed: self-hosted forges
-    token_env: str  # REQUIRED: no default — a binding must name its env var
-    # (a default silently sent the GitHub token to the Forgejo host)
+    token_env: str = Field(min_length=1)
+    # REQUIRED + NON-EMPTY: no default — a default or empty value silently
+    # omits auth instead of failing (MECE round-1, sol F1-005); "" would make
+    # unauthenticated calls look configured
 
 
 class ModelRoute(_StrictModel):

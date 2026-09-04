@@ -875,3 +875,42 @@ class TestMECETerraPins:
             PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40),
             [f], make_config(), review_hash="abc")
         assert renderer.parse_finding_lines(body) == [("Major", "dir/a:b.py", 12, "general")]
+
+
+class TestMECESolPins:
+    """Sol DOM-D round-1 findings: Forgejo limit pagination (001), strict
+    base64 (003), zero-byte files are files (004), empty token_env rejected
+    (005), unknown CLI flags refused (006)."""
+
+    def test_forgejo_paginates_with_limit(self):
+        from fl4write.forges import ForgejoAdapter
+        assert ForgejoAdapter.page_size_param == "limit"
+
+    def test_zero_byte_file_is_a_file(self):
+        from fl4write import config as cfg
+        from fl4write.forges import ForgeAdapter
+
+        class Stub(ForgeAdapter):
+            name = "github"
+            def __init__(self, response):
+                self.response = response
+                super().__init__(cfg.ForgeBinding(role="primary",
+                    api_base="https://api.github.com", token_env="GHT"))
+            def _call(self, method, path):
+                return self.response
+
+        a = Stub({"encoding": "base64", "content": ""})
+        assert a.path_is_file("o/r", "empty.py") is True
+        a2 = Stub([{"name": "x"}])
+        assert a2.path_is_file("o/r", "dir") is False
+
+    def test_empty_token_env_rejected(self):
+        from fl4write import config as cfg
+        import pytest
+        with pytest.raises(Exception):
+            cfg.ForgeBinding(role="primary", api_base="https://x", token_env="")
+
+    def test_unknown_cli_flags_refused(self):
+        from fl4write.cli import _unknown_flags
+        assert _unknown_flags(["c", "cfg.yaml", "--lvie"]) == ["--lvie"]
+        assert _unknown_flags(["c", "cfg.yaml", "--live", "--fixes"]) == []

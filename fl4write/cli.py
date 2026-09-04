@@ -155,9 +155,25 @@ def _probe_adoption(config, forge_adapter=None) -> None:
         logging.getLogger("fl4write.cli").warning("adoption probe negative for %s", config.repo)
 
 
+_KNOWN_FLAGS = ("--live", "--fixes", "--issues", "--omni", "--shadow", "--once", "--sweep")
+
+
+def _unknown_flags(argv: list[str]) -> list[str]:
+    """Flags the CLI does not know. MECE round-1 (sol F1-006): unknown
+    arguments were silently ignored — a typo like --lvie for --live ran the
+    cycle in the WRONG mode (silent mis-operation, and worse for shadow-mode
+    typos). Every flag must be explicit."""
+    return [a for a in argv[1:] if a.startswith("--") and a not in _KNOWN_FLAGS]
+
+
 def main() -> int:
     _install_sigterm_handler()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    unknown = _unknown_flags(sys.argv)
+    if unknown:
+        print(f"unknown flag(s): {', '.join(unknown)} — refusing to run (typo guard)",
+              file=sys.stderr)
+        return 2
     if len(sys.argv) < 2:
         print("usage: python3 -m fl4write.cli <config.yaml> [--live]", file=sys.stderr)
         return 2

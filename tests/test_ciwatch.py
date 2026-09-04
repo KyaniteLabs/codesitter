@@ -285,7 +285,7 @@ class TestPathIsFileAdversarial:
         assert a.path_is_file("o/r", ".github") is False
 
     def test_file_response_is_a_file(self):
-        a = _StubAdapter([({"name": "x.py", "content": "abc"}, False)])
+        a = _StubAdapter([({"name": "x.py", "encoding": "base64", "content": "abc"}, False)])
         assert a.path_is_file("o/r", "x.py") is True
 
     def test_404_is_false(self):
