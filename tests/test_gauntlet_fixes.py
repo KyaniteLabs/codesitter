@@ -2721,3 +2721,97 @@ class TestMECERound7SolPins2:
                      "model: {endpoint: http://m/v1, model: t, key_env: K}\n"
                      "shadow: false\nreview:\n  secrets: x\n", encoding="utf-8")
         assert load_config(p).shadow is False
+
+
+class TestMECERound7BE:
+    """Round-7 luna-max2 DOM-B + luna-max DOM-E: merge-scan row containment
+    (F7-B001), issues watermark normalization (F7-B002), configured-command
+    shlex argv (F7-B003), NUL-delimited runner dispatch (F7-E001)."""
+
+    def test_merge_scan_malformed_rows_skip(self, monkeypatch):
+        from fl4write import executor as ex
+
+        calls = {"n": 0}
+
+        def fake_api(method, path, data=None):
+            calls["n"] += 1
+            if path.startswith("/repos/o/r/pulls?state=open"):
+                return [{}, {}]  # both malformed: must skip, never raise
+            return {}
+
+        monkeypatch.setattr(ex, "_gh_api", fake_api)
+        import fl4write.config as cfg_mod
+        c = cfg_mod.RepoConfig.model_validate({
+            "repo": "o/r",
+            "forges": {"github": {"role": "primary", "api_base": "https://api.github.com",
+                                  "token_env": "GHT"}},
+            "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+            "fix": {"enabled": True, "merge_own_prs": True},
+        })
+        out = ex.check_and_merge_own_prs(c, "fl4write[bot]")
+        assert out == []  # scan completed; malformed rows were skipped
+
+    def test_issues_watermark_normalized_at_lane_boundary(self, monkeypatch):
+        import fl4write.issues as issues_mod
+
+        class _F(ForgeAdapter):
+            name = "github"
+
+            def __init__(self):
+                super().__init__(cfg.ForgeBinding(
+                    role="primary", api_base="https://api.github.com", token_env="GHT"))
+                self.posted = []
+
+            def _paginated(self, path, page_size=50, max_pages=10):
+                if "/comments" in path:
+                    return []
+                return [{"number": 3, "title": "t", "body": "b"}]
+
+            def create_comment(self, repo, number, body):
+                self.posted.append(number)
+                return 1
+
+            def update_comment(self, repo, number, cid, body):
+                pass
+
+        monkeypatch.setattr(issues_mod, "triage_issue",
+                            lambda issue, config: {"urgency": "low", "labels": [],
+                                                   "duplicate_hint": "", "is_duplicate": False,
+                                                   "is_regression": False, "draft_reply": "ok"})
+        forge = _F()
+        st = {"last_triaged_number": "bad", "issues_retry": "junk"}
+        summary = issues_mod.run_issues_cycle(
+            cfg.RepoConfig.model_validate({
+                "repo": "o/r",
+                "forges": {"github": {"role": "primary", "api_base": "https://api.github.com",
+                                      "token_env": "GHT"}},
+                "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+                "review": {"secrets": "x"}, "issues_enabled": True}),
+            st, forge)
+        assert summary["triaged"] == 1 and forge.posted == [3]
+
+    def test_run_tests_shlex_argv_preserves_quoted_paths(self, monkeypatch, tmp_path):
+        from fl4write import executor as ex
+
+        captured: list = []
+
+        def fake_evidence(argv, cwd, timeout, env, junit):
+            captured.append(list(argv))
+            return True, None
+
+        monkeypatch.setattr(ex, "_pytest_evidence", fake_evidence)
+        monkeypatch.setattr(ex, "_sandbox_env", lambda: {})
+        c = cfg.RepoConfig.model_validate({
+            "repo": "o/r",
+            "forges": {"github": {"role": "primary", "api_base": "https://api.github.com",
+                                  "token_env": "GHT"}},
+            "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+            "test_cmd": 'python3 -m pytest "tests/test changed.py" -q',
+        })
+        assert ex._run_tests(tmp_path, c) is True
+        argv = captured[0]
+        assert "tests/test changed.py" in argv  # ONE argv element w/ space
+
+    def test_runner_dispatch_is_nul_delimited(self):
+        rc = (REPO_ROOT / "run-cycle.sh").read_text()
+        assert "mapfile -d ''" in rc and "end='\\0'" in rc

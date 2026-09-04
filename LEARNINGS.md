@@ -501,3 +501,15 @@ nor root blob rows. Laws: credentials route on EXACT normalized hostname equalit
 cross forge transports; tree walks are iterative with ancestry-only cycle frames, per-sha caches,
 fetch/push budgets, and one coerce-or-drop helper for every row.
 
+## 52. Row containment before field access; watermarks normalize at the boundary (2026-09-04, MECE round 7)
+DOM-B/E close: the own-PR merge scan read pr_data['number'] OUTSIDE the per-PR containment (one
+malformed row killed the whole scan for later valid PRs); the issues lane read the persisted
+watermark raw — a non-integer last_triaged_number TypeError'd the comparisons and the success
+WRITE (max(int, 'bad')), and the F5-001 retry set silently broke across JSON persistence (ints
+become strings; membership tests were in-memory-only); the fix-gate's configured-command argv
+was cmd.split() (quoted paths with spaces corrupted); the runner dispatched due files
+newline-delimited, so a newline-bearing config path split into two worker records. Laws:
+containment wraps field ACCESS, not just operations; persisted counters normalize at the lane
+boundary on READ and write back ints; argv construction uses shlex; dispatch is NUL-delimited.
+4 regression pins, all red pre-fix.
+

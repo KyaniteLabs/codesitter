@@ -56,4 +56,5 @@ no triage. Curated outcomes live in LEARNINGS.md.
 - 2026-09-04 round-6 luna-max-2 DOM-D + DOM-C residue — transport/decode escapes, NaN Retry-After, envelope/row/size shape gaps, uncertain-write identifiers, unbounded tree walk, path-probe 2xx-malformed contracts, oversized-diff vacuous fallback, CLI shadow-doc lie, metrics marker inflation, unbounded closed rail records → LEARNINGS #49; 20 fixes, 10 pins
 - 2026-09-04 round-7 terra DOM-C — CycleLock TOCTOU (unlink-not-compare-swap, 3rd reopen) → flock rewrite; omni aux + bool-flag normalization at load; ci non-hex head int() crash → LEARNINGS #50; 4 law tests updated, 2 pins
 - 2026-09-04 round-7 sol DOM-D — substring hostname = credential exfiltration to lookalikes, GH token mirrored into Forgejo bindings, recursive tree walk + global-visited cycle false-positives (omni completion blocked), unvalidated repo/root envelopes → LEARNINGS #51; 4 pins
+- 2026-09-04 round-7 luna-max2 DOM-B + luna-max DOM-E — merge-scan row crash outside containment, issues watermark raw-type read/write crash + retry-set JSON str break, fix-gate cmd.split corruption, newline-delimited due dispatch → LEARNINGS #52; 4 pins
 

@@ -92,8 +92,10 @@ if [ -n "$PLAN_ALERTS" ]; then
     echo "$PLAN_ALERTS" | while read -r line; do echo "$(date -Iseconds) $line" >> "$LOG"; done
 fi
 
-# mapfile = no word-splitting on filenames with spaces (Sol#3)
-mapfile -t DUE_FILES < <(echo "$PLAN" | python3 -c "import json,sys; [print(f) for f in json.load(sys.stdin).get('due',[])]" 2>/dev/null)
+# mapfile = no word-splitting on filenames with spaces (Sol#3).
+# F7-E001: NUL-delimited dispatch — a due path containing a NEWLINE used to
+# split into multiple worker records (the intended config was skipped)
+mapfile -d '' -t DUE_FILES < <(echo "$PLAN" | python3 -c "import json,sys; [print(f, end='\0') for f in json.load(sys.stdin).get('due',[])]" 2>/dev/null)
 
 # stale result files cleared BEFORE dispatch (the Critic's amendment)
 for f in "${DUE_FILES[@]}"; do

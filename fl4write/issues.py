@@ -183,11 +183,17 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
     lost update that wiped last_triaged_number every cycle, re-triaging all
     open issues and email-storming maintainers).
     """
-    last_num = st.get("last_triaged_number", 0)
+    try:  # F7-B002: lane-boundary normalization — JSON persistence makes
+        # ints strings and corrupt values crash the comparisons below
+        last_num = int(st.get("last_triaged_number") or 0)
+    except (TypeError, ValueError):
+        last_num = 0
     summary = {"triaged": 0, "skipped": 0, "errors": 0}
 
     try:
-        retry = set(st.get("issues_retry", []))
+        _retry_raw = st.get("issues_retry", [])
+        retry = {int(x) for x in _retry_raw if str(x).isdigit()} \
+            if isinstance(_retry_raw, list) else set()
         new_issues = collect_new_issues(forge, config.repo, last_num, retry=retry)
     except ForgeError as exc:
         log.warning("issues collect failed for %s: %s", config.repo, exc)
@@ -224,7 +230,8 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
                     num,
                 )
                 summary["skipped"] += 1
-                st["last_triaged_number"] = max(st.get("last_triaged_number", 0), num)
+                last_num = max(last_num, num)
+                st["last_triaged_number"] = last_num  # F7-B002: int write
                 continue
             else:
                 forge.create_comment(config.repo, num, body)
@@ -239,7 +246,8 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
             retry.add(num)
             continue
 
-        st["last_triaged_number"] = max(st.get("last_triaged_number", 0), num)
+        last_num = max(last_num, num)
+        st["last_triaged_number"] = last_num  # F7-B002: int-normalized write
 
     st["issues_retry"] = sorted(retry)
     return summary

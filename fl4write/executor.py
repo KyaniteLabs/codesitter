@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import shutil
+import shlex
 import stat
 import subprocess
 import tempfile
@@ -288,7 +289,11 @@ def _run_tests(cwd: Path, config: RepoConfig) -> bool:
                     "runner evidence (UltraQA P4)", config.test_cmd)
         return False
     cmd = config.test_cmd or default
-    argv = cmd.split()
+    try:
+        argv = shlex.split(cmd)  # F7-B003: quoted paths survive argv
+    except ValueError as exc:
+        log.warning("fix-gate fail-closed: unparseable test_cmd %r (%s)", cmd, exc)
+        return False
     if "pytest" in cmd:
         for excl in config.known_env_failures:
             argv += ["--deselect", excl]
@@ -629,8 +634,13 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
         log.warning("own-PR scan failed for %s: %s", config.repo, exc)
         return merged
     for pr_data in prs:
-        number = pr_data["number"]
-        try:
+        number = None  # F7-B001: excepts below must never NameError
+        try:  # F7-B001: row-level containment starts BEFORE field access —
+            # a malformed row must skip, never kill the scan for later PRs
+            if not isinstance(pr_data, dict):
+                log.warning("own-PR scan: malformed row skipped: %s", str(pr_data)[:120])
+                continue
+            number = int(pr_data["number"])
             head_ref = (pr_data.get("head") or {}).get("ref", "")
             if not head_ref.startswith("fl4write/"):
                 continue
