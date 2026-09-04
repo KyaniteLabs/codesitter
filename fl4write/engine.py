@@ -151,6 +151,12 @@ def _review_pr(
             report.alerts.append(
                 f"#{pr.number}: diff's own tests FAIL at head — deterministic Critical filed"
             )
+            # MECE round-6 (luna-max F6-C016): verify consumed the budget —
+            # re-check BEFORE starting model work even when it FAILED (the
+            # deterministic finding posts on a later cycle with the model)
+            if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
+                report.alerts.append(f"#{pr.number}: verify consumed the review budget — deferred")
+                return "deferred"
         elif deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S + 5:
             # MECE round-3 (glm F3-3): verify_tests can consume ~500s of a
             # ~90s review budget — defer the analyze rather than overrun the
@@ -696,6 +702,20 @@ def _omnisweep_step(
         report.omni_findings = len(st.get("omni_findings", []))
         return
 
+    # MECE round-6 (luna-max F6-C009): the path cursor resumes mid-tree — a
+    # file ADDED before the cursor was permanently skipped. Fingerprint the
+    # scan list; when the tree changes mid-sweep, restart from scratch (the
+    # alert is the audit trail; completed findings belong to an older HEAD)
+    if not config.shadow and not truncated:
+        import hashlib as _hl
+        fp = _hl.sha256("\x00".join(scan).encode()).hexdigest()[:16]
+        if st.get("omni_fp") and fp != st["omni_fp"] and st.get("omni_cursor", ""):
+            st["omni_cursor"] = ""
+            st["omni_findings"] = []
+            st["omni_next_id"] = 1
+            st.pop("omni_head", None)
+            report.alerts.append("omnisweep: tree CHANGED mid-sweep — restarting from scratch")
+        st["omni_fp"] = fp
     cursor = st.get("omni_cursor", "")
     pending = [p for p in scan if p > cursor][: config.omnisweep.max_files_per_cycle]
     if not pending:
@@ -709,10 +729,16 @@ def _omnisweep_step(
         findings = st.get("omni_findings", [])
         report.omni_scanned = len(scan)
         report.omni_findings = len(findings)
-        _omni_upsert_issue(config, primary, st, findings, len(scan), len(scan), complete=True, report=report)
-        if not st.get("omni_published"):
-            report.alerts.append("omnisweep: final audit-issue publication failed — retrying next cycle")
-            return  # retry via the complete fast path before anything else
+        if findings:
+            _omni_upsert_issue(config, primary, st, findings, len(scan), len(scan),
+                               complete=True, report=report)
+            if not st.get("omni_published"):
+                report.alerts.append("omnisweep: final audit-issue publication failed — retrying next cycle")
+                return  # retry via the complete fast path before anything else
+        else:
+            # MECE round-6 (luna-max F6-C018): a CLEAN sweep publishes
+            # nothing — that is success, never a publication failure
+            st["omni_published"] = True
         report.alerts.append(f"omnisweep complete: {len(findings)} findings across {total} files")
         if config.omnisweep.fix and findings:
             _omni_fix_phase(config, primary, st, report)
@@ -739,7 +765,14 @@ def _omnisweep_step(
             st["omni_cursor"] = path
             continue
         if content is None:
-            st["omni_cursor"] = path  # unfetchable files are skipped, not retried forever
+            # MECE round-6 (luna-max F6-C008): unfetchable files are recorded
+            # as QUARANTINED (not silently treated as audited) — completion
+            # alerts carry the count so 'COMPLETE' never hides missing files
+            st["omni_cursor"] = path  # skip, not retried forever
+            st.setdefault("omni_unfetchable", [])
+            if path not in st["omni_unfetchable"]:
+                st["omni_unfetchable"].append(path)
+            report.alerts.append(f"omnisweep: {path} unfetchable — quarantined")
             continue
         synth = PullRequest(
             forge=primary.name, number=0, repo=config.repo,
@@ -791,20 +824,27 @@ def _omnisweep_step(
         st["omni_complete"] = True
         st["omni_total"] = total
         unscannable = len(st.get("omni_unscannable", []))
+        quarantined = len(st.get("omni_unfetchable", []))
         report.alerts.append(
             f"omnisweep complete: {report.omni_findings} findings across {total} files"
             + (f" ({unscannable} unscannable — model failed twice, skipped + recorded)" if unscannable else "")
+            + (f" ({quarantined} unfetchable — recorded, not audited)" if quarantined else "")
         )
-        _omni_upsert_issue(
-            config, primary, st, st.get("omni_findings", []),
-            total, total, complete=True, report=report,
-        )
-        if not st.get("omni_published"):
-            # MECE round-5 (sol F5-002): the completion is recorded but the
-            # final publication failed — the next cycle's complete fast path
-            # retries the upsert before doing anything else
-            report.alerts.append("omnisweep: final audit-issue publication failed — retrying next cycle")
-            return
+        if st.get("omni_findings"):
+            _omni_upsert_issue(
+                config, primary, st, st.get("omni_findings", []),
+                total, total, complete=True, report=report,
+            )
+            if not st.get("omni_published"):
+                # MECE round-5 (sol F5-002): the completion is recorded but the
+                # final publication failed — the next cycle's complete fast
+                # path retries the upsert before doing anything else
+                report.alerts.append("omnisweep: final audit-issue publication failed — retrying next cycle")
+                return
+        else:
+            # MECE round-6 (luna-max F6-C018): clean sweeps publish nothing —
+            # that IS success, never a publication failure
+            st["omni_published"] = True
         if config.omnisweep.fix and st.get("omni_findings"):
             _omni_fix_phase(config, primary, st, report)
     else:
@@ -1101,6 +1141,7 @@ def _ci_watch_step(
     st: dict[str, Any],
     report: CycleReport,
     run_fixes: bool,
+    deadline: float | None = None,
 ) -> None:
     """CEO directive 2026-09-01: a red default-branch HEAD on an OWN repo
     summons review + fix. SHA-keyed (state['ci_acted:{sha}']) — no timestamp
@@ -1221,6 +1262,12 @@ def _ci_watch_step(
                 kept.append(f)
         findings = kept
 
+    if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
+        # MECE round-6 (luna-max F6-C017): never start fix/escalation work
+        # after the cycle budget expired — defer to a later cycle, and do NOT
+        # persist the acted belt (the head stays summonable)
+        report.alerts.append("ci_watch: cycle deadline reached — red head deferred to next cycle")
+        return
     if findings and run_fixes and config.fix.enabled and not config.shadow:
         # Synthetic PR anchored at the red head: the fix lane fetches the file
         # at this SHA, patches, tests sandboxed, opens a follow-up PR. A
@@ -1367,7 +1414,7 @@ def run_cycle(
                 )
 
             if config.ci_watch.enabled:
-                _ci_watch_step(config, primary, st, report, run_fixes)
+                _ci_watch_step(config, primary, st, report, run_fixes, deadline)
 
             if config.retro_audit.enabled:
                 merged_keep |= _retro_sweep(

@@ -2285,3 +2285,85 @@ class TestMECERound6LunaMaxPins:
         assert any("malformed merged rows" in a for a in r.alerts)
         assert st["merged_since"] == _r4_date(3), \
             "watermark advanced past the malformed row gap"
+
+
+class TestMECERound6LunaMaxPins2:
+    """Round-6 luna-max follow-on: tree-change restart (F6-C009), clean-sweep
+    publication (F6-C018), boolean-version reconcile (F6-C019), ci deadline
+    containment (F6-C017)."""
+
+    def test_clean_omnisweep_publishes_nothing_and_stays_quiet(self, tmp_path, monkeypatch):
+        from fl4write.models import ReviewDoc
+
+        def fake_analyze(pr, files, text, config, mode="file"):
+            return ReviewDoc(pr=pr, findings=[])
+
+        monkeypatch.setattr("fl4write.analyzer.analyze", fake_analyze)
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _SolForge(tree=([("a.py", 10)], False))
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(omnisweep={"enabled": True, "fix": False},
+                        ci_watch={"enabled": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"a.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert st.get("omni_complete") is True and st.get("omni_published") is True
+        assert not any("publication failed" in a for a in r.alerts), \
+            "clean sweep emitted a false publication-failure alert"
+        assert forge.open_issue_calls == 0
+        # next cycles stay quiet on the complete fast path
+        r2 = run_cycle(c, sp, get_diff=lambda pr: ({"a.py"}, "diff"))
+        assert not any("publication failed" in a for a in r2.alerts)
+
+    def test_tree_change_mid_sweep_restarts(self, tmp_path, monkeypatch):
+        from fl4write.models import ReviewDoc
+
+        def fake_analyze(pr, files, text, config, mode="file"):
+            return ReviewDoc(pr=pr, findings=[])
+
+        monkeypatch.setattr("fl4write.analyzer.analyze", fake_analyze)
+        sp = tmp_path / "s.json"
+        # mid-flight state: cursor past 'a.py' with the OLD fingerprint
+        _r4_seed(sp, omni_cursor="a.py", omni_fp="old-fingerprint",
+                 omni_findings=[], omni_next_id=1)
+        forge = _SolForge(tree=([("a.py", 10), ("b.py", 10)], False))
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(omnisweep={"enabled": True, "fix": False,
+                                   "max_files_per_cycle": 50},
+                        ci_watch={"enabled": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"a.py"}, "diff"))
+        st = state_mod.load_state(sp)
+        assert any("CHANGED mid-sweep" in a for a in r.alerts)
+        # 'a.py' (newly added before the old cursor) is scanned again: cursor
+        # lands on the LAST file of the new tree
+        assert st["omni_cursor"] in ("a.py", "b.py")
+        assert st.get("omni_fp") != "old-fingerprint"
+
+    def test_boolean_version_reconciles_not_accepts(self, tmp_path):
+        from fl4write.state import load_state
+
+        p = tmp_path / "s.json"
+        p.write_text('{"version": true, "prs": {"1": {"last_reviewed_sha": "x"}}}',
+                     encoding="utf-8")
+        st = load_state(p)
+        assert st["prs"] == {}, "boolean version passed the int version check"
+
+    def test_ci_watch_respects_cycle_deadline(self, tmp_path, monkeypatch):
+        import time as _t
+
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _R4Forge()
+        forge.annotations = [{"path": "tests/test_x.py", "start_line": 1,
+                              "message": "boom", "level": "failure"}]
+        forge.files = {"tests/test_x.py"}
+        forge.open_prs = []
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+        c = _sol_config(ci_watch={"enabled": True, "escalate_issues": True},
+                        omnisweep={"enabled": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"x.py"}, "diff"),
+                      run_fixes=True, deadline=_t.monotonic() - 1)
+        assert any("deadline reached" in a for a in r.alerts)
+        st = state_mod.load_state(sp)
+        assert not any(k.startswith("ci_acted:") for k in st), \
+            "deadline-exceeded ci step persisted the acted belt"

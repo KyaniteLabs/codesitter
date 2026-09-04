@@ -68,8 +68,12 @@ def _read_state(repo: str) -> dict | None:
         return None
     if not isinstance(st, dict) or not isinstance(st.get("prs", {}), dict):
         return None  # shape-corrupt = UNKNOWN, never a crash (Sol#9)
-    if st.get("version") != STATE_VERSION:
-        return None  # unknown/future format = UNKNOWN, never cold (F5-005)
+    if not isinstance(st.get("version"), int) \
+            or isinstance(st.get("version"), bool) \
+            or st.get("version") != STATE_VERSION:
+        # MECE round-6 (luna-max F6-C019): True == 1 — boolean versions must
+        # not pass the int check; unknown/future = UNKNOWN, never cold
+        return None
     return st
 
 

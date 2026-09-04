@@ -163,7 +163,11 @@ def load_state(path: Path) -> dict[str, Any]:
             # foreign file at the path): same bounded reconcile, never an
             # AttributeError crash mid-cycle (UltraQA round 1, ADV-07)
             log.warning("state %s is %s, not an object; bounded reconcile", path, type(data).__name__)
-        elif data.get("version") == STATE_VERSION:
+        elif (isinstance(data.get("version"), int)
+              and not isinstance(data.get("version"), bool)
+              and data.get("version") == STATE_VERSION):
+            # MECE round-6 (luna-max F6-C019): True == 1 — boolean versions
+            # must not pass the int check (bounded reconcile instead)
             prs = data.get("prs")
             if isinstance(prs, dict):
                 # MECE round-2 (terra F2-003): nested PR records must be sane —
