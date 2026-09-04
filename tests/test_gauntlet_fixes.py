@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -877,9 +878,10 @@ class TestMECETerraPins:
             PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40),
             [f], make_config(), review_hash="abc")
         parsed = renderer.parse_finding_lines(body)
-        # F9-A09: backticks are REPLACED (never delete file characters); the
-        # code span stays intact and identity is preserved losslessly
-        assert parsed == [("Major", "src/'evil'.py", 1, "general")]
+        # F9-A09/F11-A5: path characters are NEVER aliased — a literal
+        # backtick rides in a wider code-span fence and round-trips byte-
+        # exact (distinct from an apostrophe path)
+        assert parsed == [("Major", "src/`evil`.py", 1, "general")]
 
     def test_colon_path_roundtrip(self):
         from fl4write import renderer
@@ -2143,7 +2145,12 @@ class TestMECERound6SolPins:
         import re as _re
 
         readme = (REPO_ROOT / "README.md").read_text()
-        actual = len(list((REPO_ROOT).glob("*.fl4write.yaml")))
+        # F11-E002: python glob '*' matches the hidden .fl4write.yaml (the
+        # repo's own in-repo law, not a central config) — the fleet metric
+        # must use the SAME non-hidden enumeration the runner's shell glob
+        # processes (129), or the count silently drifts +1
+        actual = len([p for p in (REPO_ROOT).glob("*.fl4write.yaml")
+                      if not p.name.startswith(".")])
         m = _re.search(r"(\d+) central configs", readme)
         assert m and int(m.group(1)) == actual, \
             f"README claims {m.group(1) if m else '?'} central configs; repo has {actual}"
@@ -3601,3 +3608,409 @@ class TestMECERound10FixIntegrity:
         assert len(events) == 1, events
         assert events[0]["status"] == "error"
         assert "boom" in events[0]["reason"]
+
+
+class TestMECERound11Forge:
+    """Round-11 terra DOM-D: tree-row strictness (F11-001), wrapped base64
+    content (F11-002), merged-row eligibility both adapters (F11-003),
+    reaction-row degradation (F11-004)."""
+
+    @staticmethod
+    def _gh():
+        from fl4write.forges import GitHubAdapter
+        ad = GitHubAdapter(cfg.ForgeBinding(
+            role="primary", api_base="https://api.github.com", token_env="GHT"))
+        ad._headers = lambda: {}
+        return ad
+
+    def test_tree_rows_never_coerce_into_validity(self):
+        # F11-001: {path:0,size:true} used to become ('',1) — a malformed
+        # listing must come back TRUNCATED (completion-blocked), never valid
+        ad = self._gh()
+        calls = iter([{"default_branch": "main"},
+                      {"sha": "a" * 40},
+                      {"tree": [
+                          {"path": 0, "type": "blob", "size": True},
+                          {"path": "ok.py", "type": "blob", "size": 5},
+                          {"path": "nope", "type": "blob", "size": "x"},
+                      ], "truncated": False}])
+        ad._call = lambda m, path, data=None: next(calls)
+        files, truncated = ad.list_tree_files("o/r")
+        assert files == [("ok.py", 5)], files
+        assert truncated is True
+
+    def test_wrapped_base64_content_decodes(self):
+        # F11-002: newline-wrapped base64 is legitimate API content
+        ad = self._gh()
+        ad._call = lambda m, path, data=None: {
+            "encoding": "base64", "content": "aGk=\n"}
+        assert ad.get_file("o/r", "x.txt", "main") == "hi"
+
+    def test_merged_rows_require_parseable_true_merge(self):
+        from fl4write.forges import ForgejoAdapter
+
+        gh = self._gh()
+        gh._paginated = lambda path, page_size=50, max_pages=10: [
+            {"number": 1, "title": "t", "merged_at": "not-a-time",
+             "head": {"sha": "a" * 40, "repo": {"full_name": "o/r"}},
+             "user": {"login": "d"}},
+            {"number": 2, "title": "t", "merged_at": "2026-09-01T00:00:00Z",
+             "head": {"sha": "b" * 40, "repo": {"full_name": "o/r"}},
+             "user": {"login": "d"}},
+        ]
+        out = gh.list_merged_prs("o/r", "2026-01-01T00:00:00Z")
+        assert [p.number for p in out] == [2], "unparseable merged_at leaked"
+
+        fj = ForgejoAdapter(cfg.ForgeBinding(
+            role="primary", api_base="https://git.example/api/v1",
+            token_env="FJT"))
+        fj._paginated = lambda path, page_size=50, max_pages=10: [
+            {"number": 3, "title": "t", "merged": "false",
+             "merged_at": "2026-09-01T00:00:00Z",
+             "head": {"sha": "c" * 40, "repo": {"full_name": "o/r"}},
+             "user": {"login": "d"}},
+            {"number": 4, "title": "t", "merged": True,
+             "merged_at": "2026-09-01T00:00:00Z",
+             "head": {"sha": "d" * 40, "repo": {"full_name": "o/r"}},
+             "user": {"login": "d"}},
+            {"number": 5, "title": "t", "merged": True,
+             "merged_at": "garbage",
+             "head": {"sha": "e" * 40, "repo": {"full_name": "o/r"}},
+             "user": {"login": "d"}},
+        ]
+        out2 = fj.list_merged_prs("o/r", "2026-01-01T00:00:00Z")
+        assert [p.number for p in out2] == [4], "truthy/garbage merges leaked"
+
+    def test_reaction_rows_degrade_per_row(self):
+        # F11-004: one malformed reaction must not discard valid ones
+        ad = self._gh()
+        ad._paginated = lambda path, page_size=50, max_pages=10: [
+            None,
+            {"content": "+1", "user": {"login": "a"}},
+            {"content": 5, "user": {"login": "b"}},
+            {"content": "+1", "user": None},
+            "garbage",
+        ]
+        out = ad.reaction_summary("o/r", 7)
+        assert out == {"+1": {"a": 1}}, out
+
+
+class TestMECERound11Ops:
+    """Round-11 luna-max2 DOM-E ops/doc desk: runner guard + fatal pull
+    (F11-E001), fleet-count enumeration (F11-E002), CLI shadow doc-truth
+    (F11-E003), README audit-marker truth (F11-E004)."""
+
+    def test_runner_invokes_guard_and_pull_failure_is_fatal(self):
+        rc = (REPO_ROOT / "run-cycle.sh").read_text()
+        gi = (REPO_ROOT / ".gitignore").read_text()
+        # guard runs after cd, BEFORE self-update, every cycle
+        assert rc.index("if ! GUARD_OUT=$(bash check-dirty.sh") > rc.index("cd ~/workspaces/fl4write ||")
+        assert rc.index("if ! GUARD_OUT=$(bash check-dirty.sh") < rc.index("if ! git pull -q")
+        # a dirty checkout or failed pull aborts the cycle (never stale code)
+        assert "dirty checkout — cycle ABORTED" in rc
+        assert "self-update (git pull) failed — cycle ABORTED" in rc
+        # runtime artifacts are ignored so the guard can certify clean
+        assert "runner.log" in gi and "logs/" in gi
+
+    def test_cli_shadow_docstring_matches_schema(self):
+        src = (REPO_ROOT / "fl4write/cli.py").read_text()
+        cfg_src = (REPO_ROOT / "fl4write/config.py").read_text()
+        assert "shadow is a per-repo config field" in src.lower()
+        assert "default is shadow" not in src  # doc no longer lies
+        assert "shadow: bool = False" in cfg_src  # schema default = live
+
+    def test_readme_current_state_has_no_volatile_round_marker(self):
+        readme = (REPO_ROOT / "README.md").read_text()
+        assert "MECE audit round 1)" not in readme
+        assert "audit ledger" in readme  # rounds live in the ledger, not prose
+
+
+class TestMECERound11Exec:
+    """Round-11 luna DOM-B: fetch-crash containment (F11-001), junit evidence
+    ownership (F11-002), malformed issue bodies (F11-003), pagination fallback
+    (F11-004), pytest infra-vs-failure (F11-005), calibration tail scan
+    (F11-006), boolean ok quarantine (F11-007), pagination liveness caps
+    (F11-008)."""
+
+    def test_attempt_fix_fetch_crash_is_contained(self, monkeypatch):
+        # F11-001: a malformed contents payload (json list, numeric content)
+        # crashed OUT of _get_file_content and bypassed the terminal recorder
+        from fl4write import executor as ex
+
+        tel = []
+        calls = {"n": 0}
+
+        def boom_model(route, prompt, mode="pr", system=None, **kw):
+            raise RuntimeError("unreachable")
+
+        def fetch(r, p, ref):
+            calls["n"] += 1
+            raise AttributeError("boom fetch")
+        monkeypatch.setattr(ex, "_get_file_content", fetch)
+        monkeypatch.setattr("fl4write.telemetry.emit",
+                            lambda kind, **kw: tel.append((kind, kw)))
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        f = Finding(rule_id="secrets", severity="Critical", path="x.py",
+                    line=1, message="m")
+        c = _sol_config(fix={"enabled": True, "merge_own_prs": False})
+        r = ex.attempt_fix(pr, f, c)
+        assert r["status"] == "error" and "cannot fetch" in r["reason"]
+        events = [e for (k, e) in tel if k == "fix_attempt"]
+        assert len(events) == 1 and events[0]["status"] == "error"
+
+    def test_configured_junit_options_are_stripped(self, monkeypatch):
+        # F11-002: executed code must never control the evidence path — the
+        # argv that reaches the subprocess carries ONLY the host junit path
+        import subprocess
+        from fl4write import executor as ex
+
+        seen = {}
+
+        def fake_run(cmd, cwd=None, timeout=120, env=None):
+            seen["argv"] = list(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        monkeypatch.setattr(ex, "_run", fake_run)
+        monkeypatch.setattr(ex, "_sandbox_env", lambda: {})
+        c = cfg.RepoConfig.model_validate({
+            "repo": "o/r",
+            "forges": {"github": {"role": "primary", "api_base": "https://api.github.com",
+                                  "token_env": "GHT"}},
+            "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+            "test_cmd": "python3 -m pytest --junitxml=results.xml -q",
+        })
+        ex._run_tests(Path(tempfile.mkdtemp(prefix="fl4write-pin-")), c)
+        argv = seen["argv"]
+        # the configured relative path is gone; the ONLY junit is the host's
+        assert "--junitxml=results.xml" not in argv and "results.xml" not in argv
+        junit = argv[argv.index("--junitxml") + 1]
+        assert junit.startswith("/") and "fl4write-junit" in junit
+
+    def test_malformed_issue_body_never_crashes_lane(self, monkeypatch):
+        import fl4write.issues as iss
+
+        class _F(_R4Forge):
+            def _paginated(self, path, page_size=50, max_pages=10):
+                if "/comments" in path:
+                    return []
+                return [{"number": 7, "title": 5, "body": 5},
+                        {"number": 8, "title": "t", "body": "b"}]
+
+            def create_comment(self, repo, number, body):
+                self.posted.append(number)
+                return 1
+
+        forge = _F()
+        forge.posted = []
+        monkeypatch.setattr(iss, "triage_issue",
+                            lambda issue, config: {"urgency": "low",
+                                                   "labels": [], "is_duplicate": False,
+                                                   "draft_reply": "ok"})
+        c = cfg.RepoConfig.model_validate({
+            "repo": "o/r",
+            "forges": {"github": {"role": "primary", "api_base": "https://api.github.com",
+                                  "token_env": "GHT"}},
+            "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+            "review": {"secrets": "x"}, "issues_enabled": True})
+        summary = iss.run_issues_cycle(c, {"last_triaged_number": 0}, forge)
+        assert summary["errors"] == 0 and summary["triaged"] == 2
+        assert forge.posted == [7, 8]
+
+    def test_issues_fallback_paginates_not_truncates(self, monkeypatch):
+        import fl4write.issues as iss
+
+        calls = {"n": 0}
+
+        class _F(_R4Forge):
+            def _paginated(self, path, page_size=50, max_pages=10):
+                raise ForgeError("paginated broken (test)")
+
+            def _call(self, method, path, data=None):
+                calls["n"] += 1
+                page = calls["n"]
+                if page > 2:
+                    return []
+                # first two pages FULL: unseen issues must stay visible
+                return [{"number": n, "title": "t", "state": "open"}
+                        for n in range(201 - page * 100, 301 - page * 100)]
+
+        fresh = iss.collect_new_issues(_F(), "o/r", last_number=0)
+        assert len(fresh) == 200, "fallback truncated intake"
+
+    def test_verify_pytest_errors_only_is_unverified(self, monkeypatch, tmp_path):
+        import subprocess
+        from fl4write.executor import verify_diff_tests
+
+        def fake_run(cmd, cwd=None, timeout=120, env=None):
+            if cmd[0] == "python3":
+                junit = cmd[cmd.index("--junitxml") + 1]
+                Path(junit).parent.mkdir(parents=True, exist_ok=True)
+                Path(junit).write_text(
+                    '<?xml version="1.0"?><testsuites><testsuite '
+                    'tests="0" failures="0" errors="1"/></testsuites>')
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+            out = "a" * 40 if "rev-parse" in cmd else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+        monkeypatch.setattr("fl4write.executor._run", fake_run)
+        pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        assert verify_diff_tests(pr, make_config(), ["tests/test_x.py"]) is None
+
+    def test_calibration_scans_bounded_tail_by_events(self, tmp_path, monkeypatch):
+        import fl4write.telemetry as tel
+
+        # F11-006: 2 model calls separated by 40 noise events each must both
+        # count (the old [-N*12:] line slice erased the earlier call)
+        evs = []
+        for i in range(2):
+            evs.append({"kind": "model_call", "model": "m1", "ok": True})
+            evs += [{"kind": "noise", "x": j} for j in range(40)]
+        p = tmp_path / "t.jsonl"
+        p.write_text("".join(json.dumps(e) + "\n" for e in evs))
+        monkeypatch.setattr(tel, "_path", lambda: p)
+        out = tel.calibration_snapshot(recent=2)
+        assert out.get("m1", "").startswith("2/2"), out
+
+    def test_calibration_quarantines_non_bool_ok(self, tmp_path, monkeypatch):
+        import fl4write.telemetry as tel
+
+        p = tmp_path / "t.jsonl"
+        p.write_text("".join(
+            json.dumps(e) + "\n" for e in [
+                {"kind": "model_call", "model": "m1", "ok": "false"},
+                {"kind": "model_call", "model": "m1", "ok": True},
+                {"kind": "model_call", "model": "m1", "ok": False},
+            ]))
+        monkeypatch.setattr(tel, "_path", lambda: p)
+        out = tel.calibration_snapshot(recent=3)
+        assert out.get("m1", "").startswith("1/2"), out  # malformed quarantined
+
+    def test_pagination_loops_have_liveness_caps(self):
+        src = (REPO_ROOT / "fl4write/executor.py").read_text()
+        assert src.count(">20 full pages") >= 2  # own-PR scan + check-runs
+
+
+class TestMECERound11Analyzer:
+    """Round-11 luna-max DOM-A: octal git paths (A1), think-only with prose
+    (A2), malformed outer envelope (A3), negation clause-eating (A4),
+    backtick path identity (A5), scrub reference images (A6), clean-sweep
+    readiness (A7), log control-char injection (A8)."""
+
+    def test_octal_quoted_header_decodes(self):
+        from fl4write.analyzer import _git_diff_path
+        # F4-002/F11-A1: the FULLY quoted form never reached the decoder
+        assert _git_diff_path('diff --git "a/caf\\303\\251.py" "b/caf\\303\\251.py"') == "café.py"
+        assert _git_diff_path("diff --git a/x.py b/x.py") == "x.py"
+
+    def test_think_only_with_prose_never_certifies_clean(self):
+        from fl4write.analyzer import extract_json
+        for hostile in ('<think>{"findings": []}</think> done',
+                        '<think>{"findings": []}</think>',
+                        "<THINK>draft</THINK> trailing"):
+            try:
+                extract_json(hostile, envelope_key="findings")
+                raise AssertionError(f"reasoning certified clean: {hostile!r}")
+            except ValueError:
+                pass
+
+    def test_malformed_outer_envelope_refuses(self):
+        from fl4write.analyzer import extract_json
+        try:
+            extract_json('{"findings": [ } blah {"findings": []}',
+                         envelope_key="findings")
+            raise AssertionError("malformed outer fell through to a draft")
+        except ValueError:
+            pass
+        # legit nested draft still dominated by the real outer object
+        out = extract_json('{"draft":{"findings":[]},"findings":[{"real":1}]}',
+                           envelope_key="findings")
+        assert out["findings"] == [{"real": 1}]
+
+    def test_negated_span_preserves_positive_conjunction(self):
+        from fl4write.analyzer import _self_contradicting
+        # a real defect clause after a negated one must survive the strip
+        assert _self_contradicting(
+            "The code does not fail, but can crash under malformed input. "
+            "Tests pass.") is False
+        # plain refutations still drop
+        assert _self_contradicting("The code cannot fail or crash. Tests pass.") is True
+
+    def test_scrub_kills_reference_and_relative_images(self):
+        from fl4write.scrub import scrub, assert_clean
+        out = scrub("![x][id]\n\n[id]: https://evil.invalid/pixel\ntext ![y](//evil/p.png)")
+        assert "evil" not in out and "//evil" not in out
+        assert_clean(out)
+        # an indented reference definition (CommonMark allows up to 3 spaces)
+        assert "evil" not in scrub("   [id]: https://evil.invalid/x\ntext")
+
+    def test_clean_complete_sweep_scores_full_coverage(self):
+        from fl4write.engine import _omni_readiness
+        score, label = _omni_readiness([])
+        assert score == 100, (score, label)
+        score2, _ = _omni_readiness([{"rule": "secrets-config", "sev": "Major"}])
+        assert score2 < 100
+
+    def test_dropped_logs_are_single_line(self):
+        src = (REPO_ROOT / "fl4write/analyzer.py").read_text()
+        assert "scrub.inline(reason)" in src
+
+
+class TestMECERound11Engine:
+    """Round-11 sol DOM-C tranche 1: pruning gate (C001), fetch-exception
+    quarantine (C006), deadline lane gate (C011), retro alert truth (C012),
+    escalation title containment (C014), validated HEAD probe (C015)."""
+
+    def test_malformed_rows_block_prune_and_open_ids(self, tmp_path, monkeypatch):
+        sp = tmp_path / "s.json"
+        _r4_seed(sp, prs={"1": {"head": "a" * 40, "status": "reviewed"}})
+
+        class _F(_R4Forge):
+            def list_open_prs(self, repo):
+                return [None, PullRequest(forge="github", number=2, repo="o/r",
+                                          head_sha="b" * 40)]
+
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: _F())
+        c = _sol_config()
+        r = run_cycle(c, sp, get_diff=lambda pr: (set(), ""))
+        st = state_mod.load_state(sp)
+        assert any("malformed PR rows" in a for a in r.alerts)
+        assert "1" in st.get("prs", {}), "prune deleted live state on bad rows"
+        assert st.get("open_ids") != [2]
+
+    def test_retro_alert_only_when_complete(self, tmp_path, monkeypatch):
+        class _Bad(_R4Forge):
+            def list_merged_prs(self, repo, since_iso):
+                return [None]
+
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: _Bad())
+        c = _sol_config(retro_audit={"enabled": True}, ci_watch={"enabled": False},
+                        omnisweep={"enabled": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"x.py"}, "diff"))
+        assert not any("retro audit complete" in a for a in r.alerts)
+        assert any("malformed merged rows" in a for a in r.alerts)
+
+    def test_escalation_title_scrubbed_and_bounded(self):
+        src = (REPO_ROOT / "fl4write/engine.py").read_text()
+        assert "scrub.inline(r.get(\"name\") or \"?\", 60)" in src
+        assert "_title[:140]" in src
+
+    def test_head_probe_helper_validates_shape(self):
+        src = (REPO_ROOT / "fl4write/engine.py").read_text()
+        assert "def _probe_head(" in src
+        from fl4write.engine import _probe_head
+
+        class _Ok:
+            def head_check_runs(self, repo):
+                return "a" * 40, []
+
+        class _BadShape:
+            def head_check_runs(self, repo):
+                return "head-only-tuple",
+
+        class _Raises:
+            def head_check_runs(self, repo):
+                raise RuntimeError("boom")
+
+        assert _probe_head(_Ok(), "r") == "a" * 40
+        assert _probe_head(_BadShape(), "r") is None
+        assert _probe_head(_Raises(), "r") is None

@@ -556,6 +556,16 @@ class TestVerifyDiffTests:
             if cmd[0] == "git":
                 return R(0, "")
             if cmd[0] == "python3":
+                # the suite COMPLETED and wrote real junit evidence with a
+                # failure (F11-B005: only completed failures mint Criticals)
+                try:
+                    junit = cmd[cmd.index("--junitxml") + 1]
+                    Path(junit).parent.mkdir(parents=True, exist_ok=True)
+                    Path(junit).write_text(
+                        '<?xml version="1.0"?><testsuites><testsuite '
+                        'tests="1" failures="1" errors="0"/></testsuites>')
+                except ValueError:
+                    pass
                 return R(1, "FAILED test_proof_target - assert 1.0 == 3.0")
             return R(0, "")
 

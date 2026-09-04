@@ -37,12 +37,15 @@ _URGENCY_POST_MERGE = {"Critical": "🚨 **Landed on main** — fix-forward stro
 
 # The finding-line contract: rendered heading and parsed-back identity are the
 # SAME format, defined once. Groups: sev, path, line, rule.
-FINDING_LINE_FMT = "### {emoji} {sev} — `{path}:{line}` — `{rule}`"
+FINDING_LINE_FMT = "### {emoji} {sev} — {span} — `{rule}`"
 FINDING_LINE_RE = re.compile(
     # MECE round-7 (luna F7-001): path and rule must stay SINGLE-LINE — a
     # rule spanning newlines let a crafted previous comment inject markdown
     # headings through the resolved-findings interpolation
-    r"^(?:🆕 )?### \S+ (?P<sev>Critical|Major|Minor|Nit) — `(?P<path>[^`\n]+?):(?P<line>\d+)` — `(?P<rule>[^`\n]+)`",
+    # F11-A5: the path/line span may be fenced with a backtick RUN (paths
+    # containing a literal backtick use a wider fence) — the group must not
+    # stop at a single backtick inside a wider fence
+    r"^(?:🆕 )?### \S+ (?P<sev>Critical|Major|Minor|Nit) — (?P<f>`{1,3})(?P<path>.*?):(?P<line>\d+)(?P=f) — `(?P<rule>[^`\n]+)`",
     re.MULTILINE,
 )
 
@@ -87,14 +90,37 @@ def parse_finding_lines(body: str) -> list[tuple[str, str, int, str]]:
 
 
 def path_display(path: str) -> str:
-    """Display form of a repo-controlled path in rendered comments: code-span
-    characters replaced, control/bidi scrubbed, credential-shaped runs
-    redacted. F9-A09: '_' and friends are NOT deleted — destructive deletion
-    collapsed distinct paths ('a_b.py' vs 'ab.py') onto one lifecycle
-    identity and suppressed new/resolved markers."""
+    """Display form of a repo-controlled path in rendered comments: control/
+    bidi scrubbed, credential-shaped runs redacted. F9-A09: characters are
+    NEVER deleted or aliased — '_' and friends are kept, and F11-A5 keeps a
+    literal backtick too (replacing it with ' collapsed 'a`b.py' and
+    "a'b.py" onto one lifecycle identity). Backtick-bearing paths are fenced
+    with a wider backtick run at the span sites (_code_span)."""
     out = scrub.scrub(str(path))  # control/bidi chars first (sol F4-005)
-    out = out.replace("`", "'")  # only the code-span terminator is replaced
     return scrub.redact_credentials(out.replace("\n", " ").replace("\r", " "))
+
+
+def _code_span(text: str) -> str:
+    """CommonMark-safe code span: delimiter run = 1 + the longest backtick
+    run inside the content — a single-backtick span cannot carry a literal
+    backtick, and run-widening keeps the identity byte-exact (F11-A5)."""
+    runs = 0
+    cur = 0
+    for ch in text:
+        if ch == "`":
+            cur += 1
+            runs = max(runs, cur)
+        else:
+            cur = 0
+    delim = "`" * (runs + 1)
+    return f"{delim}{text}{delim}"
+
+
+def path_plain(path: str) -> str:
+    """Backslash-escaped display form for PLAIN markdown prose (bullets,
+    bodies): a raw backtick there would open a code span and swallow the
+    line; identity is irrelevant outside the finding-line contract."""
+    return path_display(path).replace("`", "\\`")
 
 
 def render_finding(f: Finding, tone: str, post_merge: bool = False) -> str:
@@ -103,11 +129,13 @@ def render_finding(f: Finding, tone: str, post_merge: bool = False) -> str:
     urgency = (_URGENCY_POST_MERGE if post_merge else _URGENCY).get(f.severity, "")
     # MECE rounds 1-2: paths are repo-controlled untrusted text — display form
     # strips structure chars and redacts credential-shaped runs
-    safe_path = path_display(f.path)
     safe_rule = str(f.rule_id).replace("`", "")
+    # F11-A5: the path:line span uses a backtick-RUN fence when the path
+    # itself carries a backtick, so identity survives byte-exact
+    span = _code_span(f"{path_display(f.path)}:{f.line}")
     parts: list[str] = [
-        FINDING_LINE_FMT.format(emoji=emoji, sev=f.severity, path=safe_path,
-                                line=f.line, rule=safe_rule),
+        FINDING_LINE_FMT.format(emoji=emoji, sev=f.severity, span=span,
+                                rule=safe_rule),
         "",
     ]
     parts.append(_md_escape_block(scrub.scrub(scrub.redact_credentials(f.message))))  # F9-A10: full scrub belt
@@ -180,8 +208,9 @@ def render_review(
                 )
             )
         if resolved:
-            lines = "\n".join(f"- ✅ `~{path_display(f.path)}:{f.line}` ({f.rule_id})"
-                           for f in resolved)
+            lines = "\n".join(
+                f"- ✅ {_code_span('~' + path_display(f.path) + ':' + str(f.line))} "
+                f"({f.rule_id})" for f in resolved)
             sections.append(f"### ✅ Resolved since last review\n\n{lines}")
         body = "\n\n---\n\n".join(sections)
     elif post_merge:

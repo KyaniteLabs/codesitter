@@ -117,7 +117,11 @@ def calibration_snapshot(recent: int = 500) -> dict[str, Any]:
         # MECE round-8 (sol F8-012): read a BOUNDED tail (the stream is
         # append-only and never truncated) instead of loading it whole.
         chunk = _read_tail(_path(), max_bytes=8 * 1024 * 1024)
-        lines = chunk.splitlines()[-recent * 12:]
+        # F11-B006 (round 11, luna DOM-B, reopened F8-011): the BYTE-bounded
+        # tail is the bound — slicing [-recent*12:] by LINES discarded
+        # qualifying model_call events whenever noise events outnumbered the
+        # slack, silently erasing failures from calibration
+        lines = chunk.splitlines()
     except OSError:
         return {}
     models: dict[str, dict[str, int]] = {}
@@ -148,9 +152,15 @@ def calibration_snapshot(recent: int = 500) -> dict[str, Any]:
         if not isinstance(ev, dict):
             continue  # a stray JSON scalar must not break the snapshot (Sol#5)
         if ev.get("kind") == "model_call":
+            # F11-B007: ok must be a REAL boolean — the string "false" is
+            # truthy and used to count as a success; malformed events are
+            # quarantined (neither ok nor fail) instead of corrupting ratios
+            _ok = ev.get("ok")
+            if not isinstance(_ok, bool):
+                continue
             m = models.setdefault(str(ev.get("model", "?")), {"calls": 0, "fails": 0, "tokens": 0})
             m["calls"] += 1
-            m["fails"] += int(not ev.get("ok", True))
+            m["fails"] += int(not _ok)
             # MECE round-2 (M3 DOM-B): provider usage fields can arrive as
             # strings ("unknown") — never let the snapshot crash on them
             m["tokens"] += (_safe_int(ev.get("completion_tokens"))

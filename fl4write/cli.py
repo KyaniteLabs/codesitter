@@ -5,7 +5,10 @@ Usage: python3 -m fl4write.cli <config.yaml> [--live]
 Diff fetching (the required get_diff): gh pr diff for GitHub-primary repos,
 git diff for Forgejo-primary when gh can't reach it. Keys are read at runtime
 from the environment, falling back to the org config store for model routes
-(never inlined). --live flips shadow off; default is shadow (log only).
+(never inlined). Shadow is a per-repo CONFIG field (shadow: true = log
+findings, post nothing); a config that omits it runs LIVE, and --live forces
+live mode regardless (F11-E003 doc-truth: the old doc claimed a log-only
+default that the schema never had — bare execution was always live).
 """
 
 from __future__ import annotations

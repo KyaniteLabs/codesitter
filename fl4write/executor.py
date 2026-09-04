@@ -169,8 +169,11 @@ def _get_file_content(repo: str, path: str, ref: str) -> str | None:
             return None
         return raw.decode("utf-8")
     except (urllib.error.HTTPError, urllib.error.URLError, UnicodeDecodeError,
-            binascii.Error) as exc:  # binascii: forged/invalid base64 payloads
-        # (MECE round-1, luna F1-10)
+            binascii.Error, ValueError, TypeError, AttributeError) as exc:
+        # binascii: forged/invalid base64 payloads (MECE round-1, luna F1-10).
+        # F11-B001: ValueError (malformed JSON), TypeError/AttributeError
+        # (payload in an unexpected shape) used to escape this boundary and
+        # bypass the fix lane's terminal outcome recorder
         log.warning("file fetch failed for %s@%s: %s", path, ref[:8], exc)
         return None
 
@@ -235,16 +238,32 @@ def _pytest_evidence(argv: list[str], cwd: Path, timeout: int,
     that needs OS privilege separation (sandbox tranche), not argv secrets.
     Green = tests>0, failures=0, errors=0. Returns (green, result)."""
     xml_argv = list(argv)
-    if not any(a.startswith("--junitxml") for a in xml_argv):
-        # MECE round-6 (sol F6-E03): file paths may sit behind a '--'
-        # separator — options appended at the end would be parsed as
-        # positional paths and fail the run. Insert the junit flag before the
-        # separator (or at the end when there is none).
-        try:
-            sep = xml_argv.index("--")
-        except ValueError:
-            sep = len(xml_argv)
-        xml_argv = xml_argv[:sep] + ["--junitxml", str(junit_path)] + xml_argv[sep:]
+    # F11-B002 (round 11, luna DOM-B, reopened F1-002): CONFIGURED junit
+    # options are STRIPPED — executed code must never control the evidence
+    # path (a config --junitxml=results.xml used to survive, letting the
+    # tested code write the very file the host then trusted)
+    cleaned: list[str] = []
+    i = 0
+    while i < len(xml_argv):
+        tok = xml_argv[i]
+        if tok in ("--junitxml", "--junit-prefix"):
+            i += 2  # drop the option and its separate value
+            continue
+        if tok.startswith("--junitxml=") or tok.startswith("--junit-prefix="):
+            i += 1
+            continue
+        cleaned.append(tok)
+        i += 1
+    xml_argv = cleaned
+    # MECE round-6 (sol F6-E03): file paths may sit behind a '--' separator —
+    # options appended at the end would be parsed as positional paths and
+    # fail the run. Insert the junit flag before the separator (or at the end
+    # when there is none).
+    try:
+        sep = xml_argv.index("--")
+    except ValueError:
+        sep = len(xml_argv)
+    xml_argv = xml_argv[:sep] + ["--junitxml", str(junit_path)] + xml_argv[sep:]
     result = _run(xml_argv, cwd=cwd, timeout=timeout, env=env)
     if result.returncode != 0:
         return False, result
@@ -343,7 +362,11 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
     if dependency_depth(pr, pr.title, config) == "skip":
         return _finish("skipped", "dependency PR")
 
-    content = _get_file_content(pr.repo, finding.path, pr.head_sha)
+    try:
+        content = _get_file_content(pr.repo, finding.path, pr.head_sha)
+    except Exception as exc:  # noqa: BLE001 - F11-B001: containment belt
+        log.warning("file fetch crashed for %s@%s: %s", finding.path, pr.head_sha[:8], exc)
+        return _finish("error", f"cannot fetch {finding.path}@{pr.head_sha[:8]}: {type(exc).__name__}")
     if content is None:
         return _finish("error", f"cannot fetch {finding.path}@{pr.head_sha[:8]}")
 
@@ -488,7 +511,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             return _finish("error", f"push failed: {push.stderr[-100:]}")
 
         base = _default_branch(pr.repo)
-        from .renderer import _md_escape_block, path_display  # heading-safe
+        from .renderer import _md_escape_block, path_plain  # heading-safe
         # model prose; display-form paths (MECE round-5, terra F5-002)
 
         new_pr = _gh_api("POST", f"/repos/{pr.repo}/pulls", {
@@ -497,7 +520,7 @@ def attempt_fix(pr: PullRequest, finding: Finding, config: RepoConfig) -> dict[s
             "base": base,
             "body": (
                 "Automated fix by FL4WRITE.\n\n"
-                f"Finding: [{finding.severity}] {path_display(finding.path)}:{finding.line} — {scrub.inline(finding.message)}\n"
+                f"Finding: [{finding.severity}] {path_plain(finding.path)}:{finding.line} — {scrub.inline(finding.message)}\n"
                 f"Proposal: {_md_escape_block(finding.proposal)}\n\nTests pass. Review and merge."
             ),
         })
@@ -712,6 +735,35 @@ def verify_diff_tests(pr: PullRequest, config: RepoConfig, test_files: list[str]
             junit = junit_dir / "results.xml"
             try:
                 green, result = _pytest_evidence(argv, workdir, config.test_timeout, env, junit)
+                if not green:
+                    # F11-B005 (round 11, luna DOM-B, reopened F8-008): a
+                    # non-green junit run is a REAL test failure only when the
+                    # suite COMPLETED and wrote failures. Missing evidence with
+                    # a NONZERO exit (import/collection/env failures) and
+                    # errors-only junit are infrastructure trouble = UNVERIFIED,
+                    # never a deterministic Critical. A zero-exit with NO junit
+                    # stays the hostile killed-suite class (a finding).
+                    import xml.etree.ElementTree as _ET
+                    if not junit.exists() and result.returncode != 0:
+                        log.warning("verify_diff_tests: pytest exited %s with no "
+                                    "junit evidence — infra UNVERIFIED, no finding",
+                                    result.returncode)
+                        return None
+                    if junit.exists():
+                        try:
+                            _root = _ET.parse(junit).getroot()
+                            _suites = [_root] if _root.tag == "testsuite" \
+                                else _root.findall("testsuite")
+                            _fails = sum(int(s.get("failures", "0") or 0) for s in _suites)
+                            _errs = sum(int(s.get("errors", "0") or 0) for s in _suites)
+                            if _fails == 0 and _errs > 0:
+                                log.warning("verify_diff_tests: junit shows errors-only "
+                                            "(%s) — infra UNVERIFIED, no finding", _errs)
+                                return None
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("verify_diff_tests: junit unreadable (%s) — "
+                                        "infra UNVERIFIED, no finding", exc)
+                            return None
             finally:
                 shutil.rmtree(junit_dir, ignore_errors=True)
         else:
@@ -791,6 +843,12 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
         page = 1
         while True:  # MECE round-3 (sol F3-007): paginate — fix PRs past the
             # first page were never evaluated or merged
+            if page > 20:
+                # F11-B008: a liveness bound — a forge that keeps returning
+                # full pages must not block the cycle forever
+                log.warning("own-PR scan on %s: >20 full pages — capped "
+                            "(rows past the cap invisible to this scan)", config.repo)
+                break
             batch = _gh_api("GET",
                             f"/repos/{config.repo}/pulls?state=open&per_page=100&page={page}")
             if not isinstance(batch, list):
@@ -826,6 +884,12 @@ def check_and_merge_own_prs(config: RepoConfig, bot_identity: str) -> list[dict]
             page = 1
             check_runs: list[dict] = []
             while True:
+                if page > 20:
+                    # F11-B008: liveness bound — CI-heavy repos must not block
+                    # the whole cycle on an endless check-run stream
+                    log.warning("check-runs scan on %s#%s: >20 full pages — capped",
+                                config.repo, number)
+                    break
                 checks = _gh_api(
                     "GET",
                     f"/repos/{config.repo}/commits/{pr_data['head']['sha']}/check-runs"

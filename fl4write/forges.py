@@ -205,10 +205,18 @@ class ForgeAdapter:
             return None
         out: dict[str, dict[str, int]] = {}
         for r in rows if isinstance(rows, list) else []:
+            if not isinstance(r, dict):
+                # F11-004 (round 11, terra DOM-D, reopened F2-205): one
+                # malformed row used to raise AttributeError and discard every
+                # subsequent VALID acceptance reaction — undercounting metrics
+                continue
             content = r.get("content")
-            login = ((r.get("user") or {}).get("login") or "?")
-            if content:
-                out.setdefault(content, {})[login] = 1
+            user = r.get("user")
+            login = user.get("login") if isinstance(user, dict) else None
+            if not isinstance(content, str) or not content \
+                    or not isinstance(login, str) or not login:
+                continue
+            out.setdefault(content, {})[login] = 1
         return out
 
     # CI-watch surface. None everywhere = "cannot query" (the step degrades,
@@ -336,14 +344,22 @@ class ForgeAdapter:
             # must degrade — never AttributeError past the adapter into the
             # cycle. F6-309: sizes coerce-or-drop per row.
             files = []
+            listing_truncated = bool(tree.get("truncated"))
             for e in tree.get("tree") or []:
                 if not isinstance(e, dict) or e.get("type") != "blob":
                     continue
-                try:
-                    files.append(((e.get("path") or ""), int(e.get("size") or 0)))
-                except (TypeError, ValueError):
-                    continue  # non-numeric size: drop the row
-            return files, bool(tree.get("truncated"))
+                # F11-001 (round 11, terra DOM-D, reopened F10-C003): rows must
+                # NOT be coerced into validity — {path:0,size:true} used to
+                # become ('',1) and let a malformed listing certify COMPLETE.
+                path = e.get("path")
+                size = e.get("size")
+                if not isinstance(path, str) or not path \
+                        or isinstance(size, bool) or not isinstance(size, int) \
+                        or size < 0:
+                    listing_truncated = True  # malformed row = untrustworthy
+                    continue
+                files.append((path, size))
+            return files, listing_truncated
         except ForgeError:
             return None
 
@@ -368,8 +384,12 @@ class ForgeAdapter:
             return None
         try:
             # MECE round-1 (sol F1-003): validate=True rejects lenient garbage
-            # that would decode to b"" or partial bytes (binascii.Error too)
-            return base64.b64decode(data["content"], validate=True).decode("utf-8")
+            # that would decode to b"" or partial bytes (binascii.Error too).
+            # F11-002 (round 11, terra DOM-D, reopened F8-001): line-wrapped
+            # base64 is legitimate API content — compact whitespace BEFORE the
+            # strict decode (executor does the same on patch content)
+            compact = "".join(data["content"].split())
+            return base64.b64decode(compact, validate=True).decode("utf-8")
         except (ValueError, UnicodeDecodeError, binascii.Error):
             return None
 
@@ -457,6 +477,12 @@ class GitHubAdapter(ForgeAdapter):
             if not isinstance(merged_raw, str) or not merged_raw:
                 continue  # F10-D001: a non-string merged_at is unusable
             merged = _parse_iso(merged_raw)
+            if merged is None:
+                # F11-003 (round 11, terra DOM-D): an unparseable merged_at is
+                # not a merge event — translating it would let a malformed row
+                # into the post-merge review lane
+                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                continue
             # STRICT less-than: PRs merged in the SAME second as the watermark
             # stay visible. Bulk waves merge same-second; if the per-cycle cap
             # splits such a pair, the deferred sibling must remain listable —
@@ -619,9 +645,14 @@ class ForgejoAdapter(ForgeAdapter):
                 log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
                 continue
             merged_raw = p.get("merged_at")
-            if not isinstance(merged_raw, str) or not merged_raw                     or not p.get("merged"):
-                continue
+            if (not isinstance(merged_raw, str) or not merged_raw
+                    or p.get("merged") is not True):
+                continue  # F11-003: truthy 'merged' strings are not merges
             merged = _parse_iso(merged_raw)
+            if merged is None:
+                # F11-003: an unparseable timestamp is not a merge event
+                log.warning("%s merged-pr row malformed (skipped): %s", self.name, str(p)[:120])
+                continue
             # STRICT less-than: PRs merged in the SAME second as the watermark
             # stay visible. Bulk waves merge same-second; if the per-cycle cap
             # splits such a pair, the deferred sibling must remain listable —
@@ -703,12 +734,18 @@ class ForgejoAdapter(ForgeAdapter):
             def add_blob(e: dict, prefix: str) -> None:
                 nonlocal truncated
                 # F7-D003: one coerce-or-drop helper for EVERY blob row (root
-                # and subtree) — nonnumeric sizes never ValueError a cycle
-                try:
-                    out.append((prefix + str(e.get("path") or ""),
-                                int(e.get("size") or 0)))
-                except (TypeError, ValueError):
+                # and subtree) — nonnumeric sizes never ValueError a cycle.
+                # F11-001: rows are validated BEFORE coercion — a malformed
+                # row marks the listing truncated (completion-blocked), it
+                # never masquerades as a valid (path, size) pair.
+                path = e.get("path")
+                size = e.get("size")
+                if not isinstance(path, str) or not path \
+                        or isinstance(size, bool) or not isinstance(size, int) \
+                        or size < 0:
+                    truncated = True
                     return
+                out.append((prefix + path, size))
                 if len(out) > 500_000:
                     truncated = True
 

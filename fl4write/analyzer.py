@@ -51,6 +51,19 @@ def _git_diff_path(line: str) -> str | None:
     if not m:
         return None
     raw = m.group(1).rstrip('"')
+    # F11-A1 (round 11, luna-max DOM-A, reopened F4-002): a FULLY quoted
+    # header ("diff --git \"a/x\" \"b/x\"") captures AFTER b/ and never
+    # begins with a quote — the octal decode branch below was unreachable for
+    # the exact case it was written for. Decode whenever the raw name carries
+    # git C-escapes.
+    if "\\" in raw:
+        try:
+            import ast as _ast
+            decoded = _ast.literal_eval('"' + raw + '"')
+            if isinstance(decoded, str):
+                return decoded.encode("latin-1", "replace").decode("utf-8", "replace")
+        except (ValueError, SyntaxError, UnicodeError):
+            pass
     if raw.startswith('"'):
         inner = raw[1:-1] if raw.endswith('"') else raw[1:]
         # MECE round-4 (sol F4-002): git octal-escapes non-ASCII bytes
@@ -239,12 +252,25 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
 
     strict_decoder = _json.JSONDecoder(object_pairs_hook=_reject_dup_keys)
 
-    cleaned = _re.sub(r"<think>(.*?)</think>", "", content, flags=_re.DOTALL | _re.IGNORECASE).strip()
-    if not cleaned and _re.search(r"<think>", content, _re.IGNORECASE):
+    # F11-A2 (round 11, luna-max DOM-A, reopened F9-A02): reasoning content
+    # is never FINAL content. For CLOSED <think>...</think> blocks the
+    # boundaries are known: an envelope that lives only inside the reasoning
+    # draft (with trailing prose or tag attributes after it) must not certify
+    # a clean review. UNCLOSED think blocks keep the legacy lenient parse
+    # (UltraQA round-2 law: the envelope at the tail of an unterminated
+    # preamble is still parsed) — refusing them would break live M3 output.
+    closed_think = "</think>" in content.lower()
+    cleaned = _re.sub(r"<think.*?</think>", "", content,
+                      flags=_re.DOTALL | _re.IGNORECASE).strip()
+    if not cleaned and ("<think" in content.lower() or closed_think):
         # F9-A02: a response that is ONLY a reasoning block must never be
         # certified as an empty/clean final review
         raise ValueError("response contains only a <think> reasoning block — refusing")
-    candidates = [cleaned] + ([] if not cleaned else [content])
+    if envelope_key and closed_think and ('{"' + envelope_key + '"') not in cleaned:
+        # the only envelope occurrence lives inside a CLOSED reasoning block
+        raise ValueError(
+            "response carries a reasoning block and no final envelope — refusing")
+    candidates = [cleaned]
     if envelope_key:
         # envelope-aware: raw_decode from the LAST '{"key"' occurrence parses
         # exactly one JSON value and IGNORES trailing prose/braces — the
@@ -275,9 +301,11 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
         found: list[tuple[int, int, dict]] = []
         for m in key_pat.finditer(scan_text):
             owning: list[tuple[int, int, dict]] = []
+            last_brace: int | None = None
             for brace in brace_positions:
                 if brace > m.start():
                     break
+                last_brace = brace
                 try:
                     parsed, end = strict_decoder.raw_decode(scan_text[brace:])
                 except ValueError:
@@ -285,6 +313,14 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
                 if (isinstance(parsed, dict) and envelope_key in parsed
                         and brace < m.start() < brace + end):
                     owning.append((brace, brace + end, parsed))
+            if last_brace is not None and not owning \
+                    and scan_text[last_brace:m.start()].count("}") == 0:
+                # F11-A3 (reopened F9-A03): the envelope key sits inside a
+                # '{' that NEVER closed into a valid owner — a malformed
+                # outer envelope must refuse, not fall through to a nested
+                # draft ("{... [ } blah {"findings": []}" certified clean)
+                raise ValueError(
+                    "envelope key inside a malformed owning object — refusing")
             if owning:
                 found.append(min(owning, key=lambda t: t[0]))  # outermost
         if found:
@@ -303,7 +339,7 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
                     f"'\"{envelope_key}\"': ' in one response — refusing "
                     "(possible injected duplicate)")
             return outermost[0][2]
-        for c in (cleaned, content):
+        for c in (cleaned,):
             idx = c.rfind(marker)
             if idx != -1:
                 try:
@@ -386,10 +422,14 @@ _NEGATED_DEFECT_SPAN_RE = re.compile(
     r"\b(?:does|do|did|will|would|can|could|should|must|need(?:s)?|is|are) not\b"
     r"[^.!?\n]{0,80}?\b(?:fail\w*|crash\w*|exploit\w*|leak\w*|bypass\w*|"
     r"throw\w*|vulnerab\w*|break\w*|corrupt\w*|error\w*|remote|unauthor\w*)\b"
-    r"[^.!?\n]*[.!;]?"
+    r"(?:(?!\b(?:but|yet|however|though)\b)[^.!?\n])*[.!;]?"
     r"|\bno (?:credible|real|actual|known|possible) (?:scenario|way|path|means|route)"
     r"[^.!?\n]{0,120}?\b(?:exploit\w*|execution|leak\w*|bypass\w*|access|crash\w*|"
-    r"fail\w*|remote|risk)\b[^.!?\n]*[.!;]?")
+    r"fail\w*|remote|risk)\b"
+    r"(?:(?!\b(?:but|yet|however|though)\b)[^.!?\n])*[.!;]?")
+# F11-A4: the tempered tails stop a negated clause from swallowing a later
+# POSITIVE conjunction — "does not fail, but can crash under malformed
+# input." must keep "can crash" as concrete-breakage evidence
 
 
 _CONTRACTIONS = {
@@ -688,7 +728,10 @@ def analyze(
                 log.info("demoted Critical->Major (no test/scenario): %s:%s (%s)",
                          f.path, f.line, f.rule_id)
     for reason in dropped:
-        log.info("dropped finding: %s", reason)
+        # F11-A8 (round 11, luna-max DOM-A, reopened F4-001): dropped reasons
+        # embed repo-controlled paths/messages — a newline or control char
+        # used to forge log lines. inline() collapses to one scrubbed line.
+        log.info("dropped finding: %s", scrub.inline(reason))
 
     digest: dict[str, int] = {}
     for f in findings:

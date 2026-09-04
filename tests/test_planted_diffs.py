@@ -106,17 +106,23 @@ class TestDeterministicLayer:
         def fake_run(cmd, cwd=None, timeout=120, env=None, **kw):
             if cmd[:2] == ["python3", "-m"]:
                 # the diff's test runs against the diff's code, FOR REAL,
-                # in tmp_path where the case files live
+                # in tmp_path where the case files live. env keeps the REAL
+                # PATH — a narrowed PATH resolved python3 to a bare system
+                # interpreter without pytest, and the old code minted false
+                # deterministic Criticals from that infra failure (the exact
+                # class F11-B005 closes)
+                run_env = {k: v for k, v in os.environ.items()
+                           if k not in ("PYTHONPATH", "VIRTUAL_ENV")}
+                run_env["PYTHONDONTWRITEBYTECODE"] = "1"
                 return real_run(cmd, cwd=str(tmp_path), timeout=timeout,
-                                env={"PATH": "/usr/bin:/bin:/opt/homebrew/bin",
-                                     "PYTHONDONTWRITEBYTECODE": "1"},
-                                capture_output=True, text=True)
+                                env=run_env, capture_output=True, text=True)
             if cmd[0] == "git":
                 return NS(returncode=0, stdout="ok", stderr="")  # fetch/checkout stubbed
             return real_run(cmd, cwd=cwd, timeout=timeout, capture_output=True, text=True)
 
         monkeypatch.setattr(ex, "_run", fake_run)
-        monkeypatch.setattr(ex, "_push_token_env", lambda wd, tok: {"PATH": "/usr/bin:/bin"})
+        monkeypatch.setattr(ex, "_push_token_env",
+                            lambda wd, tok: dict(os.environ))
         monkeypatch.setattr(ex, "_drop_askpass", lambda env: None)
         pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
         finding = ex.verify_diff_tests(pr, _config(), [case["test"]])

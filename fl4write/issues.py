@@ -51,8 +51,23 @@ def collect_new_issues(forge: ForgeAdapter, repo: str, last_number: int,
     try:
         all_issues = list(forge._paginated(f"/repos/{repo}/issues?state=open", page_size=50))
     except ForgeError:
-        all_issues = forge._call("GET", f"/repos/{repo}/issues?state=open&per_page=100")
-        all_issues = all_issues if isinstance(all_issues, list) else []
+        # F11-B004 (round 11, luna DOM-B, reopened F1-008): the old fallback
+        # fetched ONE page — the watermark then advanced past every unseen
+        # older issue, permanently truncating intake. Fall back to a bounded
+        # manual pagination loop; ANY failure returns [] so the watermark
+        # holds and the issues stay collectable next cycle.
+        all_issues = []
+        try:
+            for page in range(1, 11):
+                batch = forge._call(
+                    "GET", f"/repos/{repo}/issues?state=open&per_page=100&page={page}")
+                if not isinstance(batch, list):
+                    break
+                all_issues += batch
+                if len(batch) < 100:
+                    break
+        except ForgeError:
+            return []
     # UltraQA round 3: row-shape guard — garbage rows from a half-parsed forge
     # response must not crash the issues lane. F10-B004 (luna-max2 DOM-B):
     # booleans are NOT numbers — isinstance(True, int) lets a forged boolean
@@ -69,8 +84,13 @@ def collect_new_issues(forge: ForgeAdapter, repo: str, last_number: int,
 
 def triage_issue(issue: dict[str, Any], config: RepoConfig) -> dict[str, Any] | None:
     """Run LLM triage on one issue. Returns the triage result or None on failure."""
-    title = scrub.scrub(issue.get("title", ""))
-    body = scrub.scrub((issue.get("body") or "")[:4000])
+    # F11-B003 (round 11, luna DOM-B): title/body are forge content — a
+    # non-string value (numeric body etc.) crashed the slice/scrub before the
+    # lane's error boundary, aborting the whole cycle's issues intake
+    _title = issue.get("title") if isinstance(issue.get("title"), str) else ""
+    _body = issue.get("body") if isinstance(issue.get("body"), str) else ""
+    title = scrub.scrub(_title)
+    body = scrub.scrub(_body[:4000])
 
     prompt = (
         f"REPO LAW:\n{json.dumps(config.review, indent=1)}\nISSUE TITLE: {title}\nISSUE BODY:\n{body}\nJSON triage:"
@@ -210,7 +230,14 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
         num = issue.get("number", 0)
         if num in retry:
             retry.discard(num)
-        triage = triage_issue(issue, config)
+        try:
+            triage = triage_issue(issue, config)
+        except Exception as exc:  # noqa: BLE001 - F11-B003 belt: one hostile
+            # issue must degrade THIS issue, never abort the whole lane
+            log.warning("issues triage crashed for #%s (contained): %s", num, exc)
+            summary["errors"] += 1
+            retry.add(num)
+            continue
         if triage is None:
             summary["errors"] += 1
             retry.add(num)

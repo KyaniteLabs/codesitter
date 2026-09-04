@@ -73,12 +73,12 @@ def merge_own_pr(
 
 def escalate(pr: PullRequest, findings: list[Finding], reason: str) -> str:
     """The human-escalation comment body for a blocked fix lane."""
-    from .renderer import path_display  # MECE round-5 (terra F5-002): a repo
+    from .renderer import path_plain  # MECE round-5 (terra F5-002): a repo
     # filename can forge comment structure or leak credential-shaped content —
     # render paths via the display transform (scrub + structure chars + redact)
 
     listing = "\n".join(
-        f"- [{f.severity}] {path_display(f.path)}:{f.line} — {scrub.inline(f.message, 100)}"
+        f"- [{f.severity}] {path_plain(f.path)}:{f.line} — {scrub.inline(f.message, 100)}"
         for f in findings
     )
     return (

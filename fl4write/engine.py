@@ -521,6 +521,13 @@ def _omni_readiness(findings: list[dict]) -> tuple[int, str]:
     # helper read rule_id and no caller existed — terra F2-007)
     cats = {rule_to_cat.get(f.get("rule_id") or f.get("rule", ""), "")
             for f in findings if rule_to_cat.get(f.get("rule_id") or f.get("rule", ""))}
+    if not findings:
+        # F11-A7 (round 11, luna-max DOM-A, reopened F9-A08): this helper
+        # runs on COMPLETE publishes only — a clean full-tree sweep audited
+        # EVERY category. Deriving coverage from findings made a zero-finding
+        # audit score 80 (MEDIUM) as if nothing had been checked.
+        from .capabilities import SCORING_CATEGORIES
+        cats = set(SCORING_CATEGORIES)
     score = readiness_score(dict(sev), categories_checked=cats)
     return score, score_label(score)
 
@@ -658,12 +665,8 @@ def _omnisweep_step(
         # F10-C002: a COMPLETED sweep is only complete for the HEAD it
         # audited — if the forge reports a new head, restart from scratch
         if st.get("omni_head"):
-            try:
-                _cur = primary.head_check_runs(config.repo)
-            except Exception:  # noqa: BLE001 - probe never blocks
-                _cur = None
-            if _cur and isinstance(_cur, (tuple, list)) and len(_cur) == 2 \
-                    and isinstance(_cur[0], str) and _cur[0] != st["omni_head"]:
+            _cur = _probe_head(primary, config.repo)
+            if _cur is not None and _cur != st["omni_head"]:
                 st["omni_complete"] = False
                 st["omni_published"] = False
                 st["omni_cursor"] = ""
@@ -762,13 +765,9 @@ def _omnisweep_step(
         # too — fingerprint paths AND sizes, plus the anchored HEAD when the
         # forge can report one (a stale 'at HEAD' audit is a false claim)
         fp_meta = "\x00".join(f"{pp}:{sz}" for (pp, sz) in sorted(files))
-        try:
-            _anchor = primary.head_check_runs(config.repo)
-        except Exception:  # noqa: BLE001 - anchor probing never blocks
-            _anchor = None
-        if _anchor and isinstance(_anchor, (tuple, list)) and len(_anchor) == 2 \
-                and isinstance(_anchor[0], str) and _anchor[0]:
-            fp_meta += "\x00head:" + _anchor[0]
+        _anchor = _probe_head(primary, config.repo)
+        if _anchor:
+            fp_meta += "\x00head:" + _anchor
         fp = _hl.sha256(fp_meta.encode()).hexdigest()[:16]
         if st.get("omni_fp") and fp != st["omni_fp"] and st.get("omni_cursor", ""):
             st["omni_cursor"] = ""
@@ -808,9 +807,9 @@ def _omnisweep_step(
     # anchor for the fix phase: HEAD moves mid-sweep → findings from an older
     # HEAD are re-anchored by the freshness of the file fetch at fix time.
     if not st.get("omni_head"):
-        anchor = primary.head_check_runs(config.repo)
-        if anchor:
-            st["omni_head"] = anchor[0]
+        _sha = _probe_head(primary, config.repo)
+        if _sha:
+            st["omni_head"] = _sha
 
     scanned_this_cycle = 0
     for path in pending:
@@ -821,9 +820,15 @@ def _omnisweep_step(
             content = primary.get_file(config.repo, path, st.get("omni_head", "") or "HEAD")
         except (ForgeError, ValueError, TypeError, KeyError, AttributeError) as exc:
             # UltraQA round 3: per-file fetch failure skips the file, never
-            # aborts the sweep
+            # aborts the sweep. F11-C006 (reopened F6-C008): the EXCEPTION
+            # path used to advance the cursor WITHOUT the quarantine ledger —
+            # the next cycle then certified the sweep complete with the file
+            # never audited. Record it exactly like the None-content path.
             report.alerts.append(f"omnisweep: file fetch failed for {path}: {exc}")
-            st["omni_cursor"] = path
+            st["omni_cursor"] = path  # skip, not retried forever
+            st.setdefault("omni_unfetchable", [])
+            if path not in st["omni_unfetchable"]:
+                st["omni_unfetchable"].append(path)
             continue
         if content is None:
             # MECE round-6 (luna-max F6-C008): unfetchable files are recorded
@@ -920,6 +925,23 @@ def _omnisweep_step(
             config, primary, st, st.get("omni_findings", []),
             len([p for p in scan if p <= st.get("omni_cursor", "")]), total, complete=False, report=report,
         )
+
+
+
+
+def _probe_head(primary: ForgeAdapter, repo: str) -> str | None:
+    """F11-C015: ONE validated HEAD probe for omnisweep — returns a full SHA
+    string or None. Every raw adapter probe used to re-validate shape and
+    index anchor[0] itself; a truthy wrong-shape envelope escaped and aborted
+    the whole cycle with an uncaught KeyError/TypeError."""
+    try:
+        _h = primary.head_check_runs(repo)
+    except Exception:  # noqa: BLE001 - probing never blocks a sweep
+        return None
+    if isinstance(_h, (tuple, list)) and len(_h) == 2 \
+            and isinstance(_h[0], str) and len(_h[0]) >= 7:
+        return _h[0]
+    return None
 
 
 def _omni_upsert_issue(
@@ -1125,10 +1147,10 @@ def _retro_sweep(
         # F10-C001: neither do malformed listings
         if not _dropped_rows:
             st["retro_complete"] = True
-        report.alerts.append(
-            f"retro audit complete: {len(seen)} merged PRs within "
-            f"{config.retro_audit.lookback_days}d swept"
-        )
+            report.alerts.append(
+                f"retro audit complete: {len(seen)} merged PRs within "
+                f"{config.retro_audit.lookback_days}d swept"
+            )
     return considered
 
 
@@ -1384,15 +1406,21 @@ def _ci_watch_step(
 
     if not opened and config.ci_watch.escalate_issues and not config.shadow:
         try:
+            # F11-C014: check names are forge-external content — the body is
+            # scrubbed/truncated but the title used to carry up to 20 RAW
+            # names; newline-bearing or overlong names broke the forge title
+            # limit and the escalation failed forever at that HEAD
+            _names = [scrub.inline(r.get("name") or "?", 60) for r in failing]
+            _title = f"CI red on main @ {head[:8]} — {', '.join(_names)}"
             executor.open_issue(
                 config.repo,
-                title=f"CI red on main @ {head[:8]} — {', '.join(r.get('name') or '?' for r in failing)}",
+                title=_title[:140],
                 body=(
                     "## FL4WRITE CI watch — human action required\n\n"
                     f"Default-branch HEAD `{head}` is red; no automated fix landed.\n\n"
                     f"Failing checks:\n" + "\n".join(summaries) +
                     "\n\n_Findings from annotations:_\n"
-                    + ("\n".join(f"- `{renderer.path_display(f.path)}:{f.line}` — {scrub.inline(f.message, 120)}" for f in findings) or "(no file-level annotation findings — run-level/meta annotations only, or none)")
+                    + ("\n".join(f"- {renderer._code_span(renderer.path_display(f.path) + ':' + str(f.line))} — {scrub.inline(f.message, 120)}" for f in findings) or "(no file-level annotation findings — run-level/meta annotations only, or none)")
                 ),
             )
             report.ci_escalations += 1
@@ -1464,12 +1492,17 @@ def run_cycle(
 
             # Adapter contract guard: garbage rows (None, dicts, strings from a
             # half-parsed API) are dropped with an alert — one bad row must not
-            # crash the cycle (UltraQA round 2, ENG-garbage-rows).
+            # crash the cycle (UltraQA round 2, ENG-garbage-rows). F11-C001:
+            # a listing with dropped rows is INCOMPLETE — it must never
+            # authorize destructive pruning or an open_ids replacement (the
+            # drop used to leave listing_failed False and delete reviewed-PR
+            # memory)
             if not all(isinstance(p, PullRequest) for p in prs):
                 dropped_rows = sum(1 for p in prs if not isinstance(p, PullRequest))
                 report.alerts.append(f"primary returned {dropped_rows} malformed PR rows (dropped)")
                 log.warning("dropped %d malformed PR rows for %s", dropped_rows, config.repo)
                 prs = [p for p in prs if isinstance(p, PullRequest)]
+                listing_failed = True
 
             open_numbers = set()
             truncated_by_deadline = False
@@ -1501,6 +1534,14 @@ def run_cycle(
                 state.save_state(state_path, st)  # checkpoint after each PR
 
             merged_keep: set[int] = set()
+            # F11-C011 (reopened F6-C016/C017): every post-review lane checks
+            # the remaining budget BEFORE starting — the deadline used to stop
+            # review work but the issues/metrics lanes still ran model/forge
+            # calls past expiry, defeating the inner budget (outer kill risk)
+            if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
+                report.alerts.append("cycle deadline reached — post-review lanes deferred to next cycle")
+                state.save_state(state_path, st)
+                return report
             if config.post_merge.enabled:
                 # BEFORE prune_closed: the sweep's head-SHA guard must see this
                 # cycle's merged records before prune could drop them.
@@ -1539,6 +1580,8 @@ def run_cycle(
 
                 issue_summary = issues_lane.run_issues_cycle(config, st, primary)
                 report.issues_triaged = issue_summary.get("triaged", 0)
+                if deadline is not None and (deadline - time.monotonic()) < REVIEW_BUDGET_S:
+                    report.alerts.append("cycle deadline reached — issues lane stopped early")
                 # F10-B003: a foreign-marker quarantine is a STRUCTURED cycle
                 # alert — the lane claims per-cycle visibility; the claim must
                 # land where operators actually look
