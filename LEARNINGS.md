@@ -570,3 +570,15 @@ completion gate: omni rows_bad blocked the empty-pending path but not the same-c
 finalize — a pin on the second site caught it. And one pin hygiene note: a regression pin
 must FAIL pre-fix; two of the round's first pins passed on the unfixed tree (weak
 discriminators) and were sharpened before close.
+
+## 57. Round 11: the reopened-fix ratio peaked, and lenient-parse laws survive by scope (2026-09-04)
+Round 11 (40 findings, ~2/3 reopened earlier fixes) is the exhaustion loop working as designed: the
+audits now mostly re-find HALF-fixed classes. Three desk rulings worth keeping: (1) When two audit
+laws conflict, scope by evidence — F11-A2 wanted unclosed <think> envelopes refused, but the UltraQA
+round-2 law (live M3 output) parses them; the fix refuses only CLOSED think blocks whose envelope
+lives inside the reasoning. Both pins stay green. (2) A "terminal" state is a product decision, not
+an implementation detail: the deterministic-verify finding used to mark the SHA reviewed so the
+deferred model analysis never ran (F6-C007 -> F11-C003 revision). (3) Completion gates must be
+ATOMIC with their identity fields: load-state reconciliation that repairs one omni field at a time
+left complete=True next to a lost cursor (F7-C002 -> F11-C008); one atomic sweep reset everywhere
+(and one helper, used by every restart class) is cheaper than reasoning per field.
