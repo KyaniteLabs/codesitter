@@ -48,13 +48,19 @@ fi
 # alerts, and counts; scheduler FAILURE is a loud exit, never 0-ok/0-err
 # (Sol#1: a dead scheduler used to look like a healthy empty cycle).
 mkdir -p logs
-python3 -m fl4write.tiers --plan *.fl4write.yaml > /tmp/fl4write-plan.json 2>>"$LOG"
+mkdir -p ~/.fl4write
+python3 -m fl4write.tiers --plan *.fl4write.yaml > ~/.fl4write/plan.json 2>>"$LOG"
 PLAN_RC=$?
-PLAN=$(cat /tmp/fl4write-plan.json 2>/dev/null)
+PLAN=$(cat ~/.fl4write/plan.json 2>/dev/null)
 # MECE round-2 (sol F2-001): keep the scheduler's OWN exit status; also
 # refuse output that is not JSON at all
+# MECE rounds 2-3 (sol F2-001 report; luna F3-001 CRITICAL reopen): the arm
+# BELOW once CLEARED valid JSON plans (arm body PLAN="") — every hourly cycle
+# died with "tier scheduler failed" since 720f6b9. Valid JSON must be KEPT;
+# only non-JSON output is cleared.
 case "$PLAN" in
-    ""|'{'*) PLAN="" ;;
+    ""|'{'*) ;;
+    *) PLAN="" ;;
 esac
 if [ $PLAN_RC -ne 0 ] || [ -z "$PLAN" ]; then
     echo "$(date -Iseconds) ERR: tier scheduler failed — fleet NOT cycled this hour" >> "$LOG"
@@ -79,6 +85,7 @@ done
 NPROC=$(nproc 2>/dev/null || echo 4)
 POOL_REQ=${FL4WRITE_POOL:-4}
 [[ "$POOL_REQ" =~ ^[0-9]+$ ]] || POOL_REQ=4
+POOL_REQ=$((10#$POOL_REQ))  # MECE round-3 (luna F3-003): 08 is invalid octal in $(( ))
 POOL=$(( POOL_REQ < NPROC ? (POOL_REQ < 4 ? POOL_REQ : 4) : (NPROC < 4 ? NPROC : 4) ))
 # MECE round-1 (glm F1-2): FL4WRITE_POOL=0 validated as numeric but made
 # xargs -P 0 run UNLIMITED workers — floor the pool at 1

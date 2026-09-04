@@ -87,7 +87,12 @@ class ForgeAdapter:
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 body = resp.read().decode()
-                return json.loads(body) if body else {}
+                try:
+                    return json.loads(body) if body else {}
+                except ValueError as exc:  # MECE round-3 (terra F3-002): a 2xx
+                    # non-JSON body (proxy/HTML) must degrade as ForgeError,
+                    # not leak JSONDecodeError past the boundaries
+                    raise ForgeError(f"{self.name} {method} {path}: non-JSON response") from exc
         except urllib.error.HTTPError as exc:
             if method == "GET" and _retry and exc.code in (403, 429, 500, 502, 503, 504):
                 wait = 0.0
@@ -390,8 +395,20 @@ class GitHubAdapter(ForgeAdapter):
             sha = head.get("sha") or ""
             if not sha:
                 return None
-            runs = self._call("GET", f"/repos/{repo}/commits/{sha}/check-runs")
-            return sha, list(runs.get("check_runs") or [])
+            page = 1
+            check_runs: list[dict] = []
+            while True:  # MECE round-3 (terra F3-001): failures beyond the
+                # default page were invisible — ci_watch could call a red HEAD
+                # clean
+                runs = self._call(
+                    "GET",
+                    f"/repos/{repo}/commits/{sha}/check-runs?per_page=100&page={page}")
+                batch = list((runs or {}).get("check_runs") or [])
+                check_runs += batch
+                if len(batch) < 100:
+                    break
+                page += 1
+            return sha, check_runs
         except ForgeError:
             return None
 
