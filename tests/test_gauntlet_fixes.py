@@ -5,7 +5,6 @@ ADV-04 heading spoof in the posted comment. Each failure class pinned."""
 from __future__ import annotations
 
 import json
-import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1242,26 +1241,22 @@ class TestMECERound4LunaPins:
     prune-on-deadline (F4-002), null retro_seen state (F4-003), retro defer
     parking (F4-004), ci-watch null annotation rows (F4-005)."""
 
-    def test_stale_lock_never_unlinks_a_live_holder(self, tmp_path, monkeypatch):
-        # F4-001: between reading a stale lock and unlinking it a live holder
-        # may have taken the lock — the unlink must re-validate first.
+    def test_stale_lock_never_unlinks_a_live_holder(self, tmp_path):
+        # F4-001 class, superseded by flock (MECE round-7, terra F7-001):
+        # there IS no stale-breaking unlink anymore — the kernel releases the
+        # lock on holder death. Content can never unlink a live holder; a
+        # nested acquire while ANY holder (even one that wrote nothing) runs
+        # raises CycleLockHeld.
         p = tmp_path / "cycle.lock"
-        dead = "0 0"
-        live = f"{os.getpid()} {int(time.time())}"
-        p.write_text(dead)
-        reads = iter([dead, live, live])  # stale read, then a fresh live holder
-        original_read = Path.read_text
-
-        def flip_read(self, *a, **k):
-            if str(self).endswith("cycle.lock"):
-                return next(reads)
-            return original_read(self, *a, **k)
-
-        monkeypatch.setattr(Path, "read_text", flip_read)  # Path is slot-ed: class-level
-        lock = state_mod.CycleLock(p)
-        with pytest.raises(state_mod.CycleLockHeld):
-            lock.__enter__()
-        assert p.exists(), "a live lock was unlinked under a racing holder"
+        p.write_text("0 0")  # legacy garbage content — irrelevant under flock
+        first = state_mod.CycleLock(p)
+        first.__enter__()
+        try:
+            with pytest.raises(state_mod.CycleLockHeld):
+                state_mod.CycleLock(p).__enter__()
+        finally:
+            first.__exit__(None, None, None)
+        assert p.exists()  # no unlink protocol at all: nothing to race
 
     def test_listing_failure_never_prunes_pr_records(self, tmp_path, monkeypatch):
         # F4-002: an empty open-PR listing from a forge OUTAGE must not look
@@ -2484,3 +2479,52 @@ class TestMECERound6C014C015Pins:
               "model_failures": {}, "retro_parked": {}, "ci_acted:x": True}
         prune_closed(st, set())
         assert len(st["prs"]) <= 2000
+
+
+class TestMECERound7TerraPins:
+    """Round-7 terra DOM-C: omni aux normalization (F7-002), ci non-hex head
+    containment (F7-003). F7-001 (flock lock) is pinned by the rewritten
+    lock-law tests + TestMECERound4LunaPins rewrite."""
+
+    def test_omni_aux_fields_normalize_at_load(self, tmp_path):
+        from fl4write.state import load_state
+
+        p = tmp_path / "s.json"
+        p.write_text('{"version": 1, "prs": {}, "omni_cursor": 1, '
+                     '"omni_scanned_total": "bad", "omni_complete": "false", '
+                     '"omni_published": true, "omni_next_id": "x"}',
+                     encoding="utf-8")
+        st = load_state(p)
+        assert "omni_cursor" not in st and "omni_scanned_total" not in st
+        assert "omni_complete" not in st  # truthy "false" must not terminalize
+        assert "omni_next_id" not in st
+        assert st.get("omni_published") is True  # real bools ride through
+
+    def test_ci_watch_non_hex_head_degrades_before_action(self, tmp_path, monkeypatch):
+        sp = tmp_path / "s.json"
+        _r4_seed(sp)
+        forge = _R4Forge()
+        forge.annotations = [{"path": "tests/test_x.py", "start_line": 1,
+                              "message": "boom", "level": "failure"}]
+        forge.files = {"tests/test_x.py"}
+        forge.open_prs = []
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge)
+
+        class _BadHead(_R4Forge):
+            def head_check_runs(self, repo):
+                return "NOT-A-HEX-SHA-STRING", [
+                    {"id": 1, "name": "test", "status": "completed",
+                     "conclusion": "failure", "output": {"summary": "x"}}]
+
+        forge2 = _BadHead()
+        forge2.files = {"tests/test_x.py"}
+        forge2.annotations = [{"path": "tests/test_x.py", "start_line": 1,
+                               "message": "boom", "level": "failure"}]
+        monkeypatch.setattr("fl4write.engine.adapter_for", lambda b: forge2)
+        c = _sol_config(ci_watch={"enabled": True, "escalate_issues": True},
+                        omnisweep={"enabled": False})
+        r = run_cycle(c, sp, get_diff=lambda pr: ({"x.py"}, "diff"), run_fixes=True)
+        st = state_mod.load_state(sp)
+        assert any("not a full hex SHA" in a for a in r.alerts)
+        assert r.ci_red_heads == 0 and not any(
+            k.startswith("ci_acted:") for k in st)

@@ -120,11 +120,17 @@ class TestState:
                 state.CycleLock(lock).__enter__()
 
     def test_stale_lock_broken(self, tmp_path):
+        # MECE round-7 (terra F7-001): flock semantics — stale CONTENT is
+        # irrelevant (the kernel releases the lock when the holder dies).
+        # A dead-holder file is acquirable, the diagnostic token is written,
+        # and the lock releases on exit (a second acquire succeeds).
         lock = tmp_path / "c.lock"
-        lock.write_text("999999999")  # dead pid
+        lock.write_text("999999999")  # dead pid (legacy format, harmless now)
         with state.CycleLock(lock):
-            pass
-        assert not lock.exists()
+            assert lock.exists()
+        with state.CycleLock(lock):  # released: re-acquirable
+            token = lock.read_text()
+            assert "999999999" not in token and token.strip()
 
 
 # ---------------------------------------------------------------- scrub (ULTRAQA injection)
@@ -626,12 +632,14 @@ class TestAuditRegressions:
         with state.CycleLock(lock_path):
             pass
 
-    def test_lock_held_by_live_pid(self, tmp_path):
+    def test_lock_held_by_live_holder(self, tmp_path):
+        # MECE round-7 (terra F7-001): a lock is HELD when a live flock
+        # holder exists (content alone never blocks) — nested acquire raises
         lock_path = tmp_path / "repo.lock"
-        lock_path.write_text(f"{__import__('os').getpid()} 0")
-        with pytest.raises(state.CycleLockHeld):
-            with state.CycleLock(lock_path):
-                pass
+        with state.CycleLock(lock_path):
+            with pytest.raises(state.CycleLockHeld):
+                with state.CycleLock(lock_path):
+                    pass
 
     def test_shadow_triage_does_not_advance_watermark(self, tmp_path, monkeypatch):
         """LEARNINGS #2 class: shadow must never poison the live cutover."""

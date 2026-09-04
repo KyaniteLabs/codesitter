@@ -1164,6 +1164,13 @@ def _ci_watch_step(
     if not isinstance(head, str) or not head:
         report.alerts.append("ci_watch: head value unusable (degraded this cycle)")
         return
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", head):
+        # MECE round-7 (terra F7-003): a non-hex 'head' crashed the synthetic
+        # PR number int(head[:6], 16) on fixes-enabled cycles — unusable head,
+        # degrade before any action
+        report.alerts.append(
+            f"ci_watch: head {head[:12]!r} is not a full hex SHA (degraded this cycle)")
+        return
     if not isinstance(runs, list):
         report.alerts.append("ci_watch: check-runs wrong shape (degraded this cycle)")
         return

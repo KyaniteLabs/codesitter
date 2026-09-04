@@ -477,3 +477,15 @@ answer True/False only on queryable payloads, None otherwise; never review names
 content; count markers at line starts; bound retained rail state. 15+5 fixes, 10 regression
 pins, all red pre-fix.
 
+## 50. Kernel locks beat breakable locks (2026-09-04, MECE round 7)
+Terra reopened the CycleLock for the THIRD time: the O_EXCL + pid/age stale-breaking protocol had
+a compare-then-unlink race that no amount of revalidation closes — two stale-breakers can
+interleave so one unlinks the other's freshly-created LIVE lock and both cycles run. Fix: the
+lock is now a kernel flock — no stale-breaking exists at all (the kernel releases on holder
+death; no pid-reuse, no age math, no unlink), and the token is diagnostics only. Same desk
+pass: omni aux fields (cursor/scanned/next_id/completion flags) were not normalized at load —
+omni_cursor=1 TypeError'd the resume comparison and truthy "false" falsely terminalized lanes;
+the ci_watch head string was trusted as a SHA and int(head[:6], 16) crashed fixes-enabled
+cycles. Laws: locks that need 'breaking' are broken by design — prefer kernel-held locks;
+normalize EVERY consumed aux field incl. bool-flags; never trust a forge head string as hex.
+

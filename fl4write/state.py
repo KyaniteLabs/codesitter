@@ -41,95 +41,58 @@ class StateIOError(RuntimeError):
 
 
 class CycleLock:
-    """Locality lock via O_EXCL. Stale locks (pid dead OR older than
-    LOCK_MAX_AGE) are broken; an empty or garbage lock file is always stale."""
+    """Locality lock via kernel flock (MECE round-7, terra F7-001).
+
+    The old O_EXCL + pid/age stale-breaking protocol had a fundamental
+    compare-then-unlink race: two stale-breakers could interleave so one
+    unlinked the OTHER's freshly-created LIVE lock and both cycles ran.
+    flock has no stale-breaking at all: the kernel releases the lock when the
+    holding process dies (no pid-reuse, no age math, no unlink). The lock
+    FILE persists (harmless) and carries a diagnostic token.
+
+    Semantics kept: a second concurrent holder raises CycleLockHeld (callers
+    skip, never queue)."""
 
     def __init__(self, path: Path):
         self.path = path
+        self._fd: int | None = None
         self._held = False
+        self._token = ""
 
     def _acquire(self) -> bool:
-        fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        # MECE round-6 (luna-max F6-C001): a random token makes ownership
-        # verifiable — __exit__ unlinks only a lock file we still own (a
-        # zombie holder must never unlink the successor's live lock)
+        import fcntl
+
+        fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return False
         self._token = f"{os.getpid()} {int(time.time())} {os.urandom(6).hex()}"
-        os.write(fd, self._token.encode())
-        os.close(fd)
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, self._token.encode())
+        except OSError:  # diagnostics only — never fail the lock
+            pass
+        self._fd = fd
         return True
 
     def __enter__(self) -> "CycleLock":
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._token = ""
-        try:
-            self._held = self._acquire()
+        if self._acquire():
             return self
-        except FileExistsError:
-            pass
-        for _ in range(2):
-            try:
-                raw = self.path.read_text().strip()
-            except FileNotFoundError:
-                # holder exited between our failed open and this read — retry
-                try:
-                    self._held = self._acquire()
-                    return self
-                except FileExistsError:
-                    continue
-            parts = raw.split()
-            # token format: "<pid> <epoch> [<owner-hex>]" — the optional third
-            # field (MECE round-6, luna-max F6-C001) must not confuse the
-            # parse; the first two fields are the contract
-            try:
-                pid_i, epoch = int(parts[0] or "0"), int(float(parts[1] or 0))
-            except (ValueError, IndexError):
-                pid_i, epoch = 0, 0
-            # pid 0 / garbage, or lock older than the max age: stale, break it.
-            stale_by_age = epoch > 0 and (time.time() - epoch) > LOCK_MAX_AGE
-            if pid_i > 0 and not stale_by_age:
-                try:
-                    os.kill(pid_i, 0)
-                    alive = True
-                except ProcessLookupError:
-                    alive = False  # dead holder: stale
-                except PermissionError:
-                    alive = True  # foreign pid: treat as held (never break a live lock)
-                if alive:
-                    raise CycleLockHeld(f"cycle lock held by pid {pid_i}") from None
-            # MECE round-4 (luna F4-001): re-validate BEFORE the unlink — a
-            # fresh holder may have taken the lock since our read; unlink must
-            # never remove a LIVE lock
-            try:
-                fresh = self.path.read_text().strip()
-            except FileNotFoundError:
-                fresh = raw
-            if fresh != raw:
-                continue  # content changed under us — re-read the new holder
-            self.path.unlink(missing_ok=True)
-            try:
-                self._held = self._acquire()
-                return self
-            except FileExistsError:
-                continue  # lost the retake race — re-read the new holder
-        raise CycleLockHeld("lost lock retake race")
-
+        raise CycleLockHeld(f"cycle lock held: {self.path}")
 
     def __exit__(self, *exc: object) -> None:
-        if self._held:
-            # MECE round-6 (luna-max F6-C001): unlink ONLY if the lock file
-            # still carries OUR token — the file may hold a successor's lock
-            # (ours was broken as stale after a long stall)
+        if self._fd is not None:
             try:
-                cur = self.path.read_text().strip()
-            except FileNotFoundError:
-                cur = ""
-            if cur == self._token:
-                self.path.unlink(missing_ok=True)
-            elif cur:
-                import logging as _log
-                _log.getLogger("fl4write.state").warning(
-                    "cycle lock %s content changed since acquire — leaving the "
-                    "holder's lock in place", self.path)
+                import fcntl
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(self._fd)
+            self._fd = None
+            self._held = False
 
 
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
@@ -244,6 +207,27 @@ def _normalize_aux(data: dict[str, Any]) -> dict[str, Any]:
                 log.warning("state omni_findings: dropping %d malformed rows (bounded reconcile)",
                             len(bad))
                 out["omni_findings"] = [r for r in omni if r not in bad]
+    # MECE round-7 (terra F7-002): omni cursors/counters drive raw
+    # int()/comparison operations — wrong types used to TypeError/ValueError
+    # the cycle outside its handled exceptions
+    for key in ("omni_cursor", "omni_head"):
+        v = out.get(key)
+        if v is not None and not isinstance(v, str):
+            log.warning("state %s: non-string %r dropped (bounded reconcile)", key, v)
+            out.pop(key, None)
+    for key in ("omni_scanned_total", "omni_next_id", "omni_total"):
+        v = out.get(key)
+        if v is None:
+            continue
+        if isinstance(v, bool) or not isinstance(v, int):
+            log.warning("state %s: non-int %r dropped (bounded reconcile)", key, v)
+            out.pop(key, None)
+    for key in ("omni_complete", "omni_published", "retro_complete", "omni_aborted"):
+        v = out.get(key)
+        if v is not None and not isinstance(v, bool):
+            # a truthy STRING ("false") falsely terminalized lanes
+            log.warning("state %s: non-bool %r dropped (bounded reconcile)", key, v)
+            out.pop(key, None)
     for key in ("retro_seen", "retro_parked", "pm_shadow_seen", "retro_shadow_seen",
                 "model_failures", "omni_file_fails"):
         v = out.get(key)
