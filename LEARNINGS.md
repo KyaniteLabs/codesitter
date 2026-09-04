@@ -544,3 +544,16 @@ construction; unsupported test mappings return UNVERIFIED; setup failures are no
 foreign markers quarantine without advancing; spans stay balanced; calibration counts events,
 not lines; bounded tail reads.
 
+## 55. Reasoning drafts are not reviews; nesting beats nearest-brace (2026-09-04, MECE round 9)
+Sol's DOM-A pass: a model response containing ONLY a <think> block was certified as an empty
+(clean) final review; a nested draft envelope beat the REAL top-level envelope because the
+scan decoded from the NEAREST brace before each key (a nested object can own the nearest brace
+without owning the key); file-mode (omnisweep) anchors accepted impossible line numbers (no
+hunks => 'inside'); the credential-literal ceiling guarded only legacy rule 'secrets' while the
+canonical capability is 'secrets-config'; negated clauses ('does not fail or crash',
+'no credible scenario ... remote exploitation') counted as positive breakage evidence; and the
+final parse diagnostic echoed raw model bytes (credentials into logs). Laws: reasoning blocks
+never certify content; envelope decode picks the OUTERMOST object whose span contains the key;
+whole-file anchors bound to real source length; severity gates cover the canonical rule family;
+negation is clause-level and shared by contradiction/scenario gates; diagnostics redact.
+

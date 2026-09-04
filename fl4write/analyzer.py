@@ -236,7 +236,11 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
     strict_decoder = _json.JSONDecoder(object_pairs_hook=_reject_dup_keys)
 
     cleaned = _re.sub(r"<think>(.*?)</think>", "", content, flags=_re.DOTALL | _re.IGNORECASE).strip()
-    candidates = [cleaned, content]
+    if not cleaned and _re.search(r"<think>", content, _re.IGNORECASE):
+        # F9-A02: a response that is ONLY a reasoning block must never be
+        # certified as an empty/clean final review
+        raise ValueError("response contains only a <think> reasoning block — refusing")
+    candidates = [cleaned] + ([] if not cleaned else [content])
     if envelope_key:
         # envelope-aware: raw_decode from the LAST '{"key"' occurrence parses
         # exactly one JSON value and IGNORES trailing prose/braces — the
@@ -248,7 +252,6 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
         # envelope occurrence; identical duplicates parse, DISTINCT values
         # refuse (possible injected duplicate). Callers degrade (parse_fail /
         # fix aborted) instead of consuming attacker-chosen content.
-        decoded: dict = {}
         unique: set[str] = set()
         # MECE round-2 (luna F2-001): discovery must tolerate whitespace
         # between the key and its quotes/colon — a literal '{"key"' scan
@@ -260,28 +263,42 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
         # drafted JSON inside <think> plus the real envelope used to trigger
         # the ambiguous-duplicate refusal and lose the whole review
         scan_text = cleaned if cleaned else content
-        seen_spans: list[tuple[int, int]] = []
+        # F9-A03: a key may follow NESTED objects — the nearest '{' before it
+        # can decode only a prefix object that does not own the key. Decode
+        # from EVERY brace and select the OUTERMOST object whose span actually
+        # contains the key position.
+        brace_positions = [bm.start() for bm in _re.finditer(r"\{", scan_text)]
+        found: list[tuple[int, int, dict]] = []
         for m in key_pat.finditer(scan_text):
-            brace = scan_text.rfind("{", 0, m.start())
-            if brace == -1:
-                continue
-            try:
-                parsed, end = strict_decoder.raw_decode(scan_text[brace:])
-            except ValueError:
-                continue
-            if isinstance(parsed, dict) and envelope_key in parsed and m.start() > brace:
-                if any(s <= brace < e for s, e in seen_spans):
-                    continue  # same decoded object, key matched twice
-                seen_spans.append((brace, brace + end))
-                unique.add(_json.dumps(parsed, sort_keys=True))
-                decoded = parsed
-        if len(unique) > 1:
-            raise ValueError(
-                f"ambiguous envelope: {len(unique)} distinct occurrences of "
-                f"'\"{envelope_key}\"': ' in one response — refusing "
-                "(possible injected duplicate)")
-        if len(unique) == 1:
-            return decoded
+            owning: list[tuple[int, int, dict]] = []
+            for brace in brace_positions:
+                if brace > m.start():
+                    break
+                try:
+                    parsed, end = strict_decoder.raw_decode(scan_text[brace:])
+                except ValueError:
+                    continue
+                if (isinstance(parsed, dict) and envelope_key in parsed
+                        and brace < m.start() < brace + end):
+                    owning.append((brace, brace + end, parsed))
+            if owning:
+                found.append(min(owning, key=lambda t: t[0]))  # outermost
+        if found:
+            # F9-A03: a nested draft envelope is DOMINATED by the top-level
+            # object that contains it — keep only outer-most decodes; two
+            # DISTINCT top-level envelopes remain ambiguous (refuse)
+            outermost = []
+            for start, end, parsed in sorted(found, key=lambda t: t[0]):
+                if any(o_start < start < o_end for o_start, o_end, _ in outermost):
+                    continue  # nested inside an outer candidate
+                outermost.append((start, end, parsed))
+            unique = {_json.dumps(p, sort_keys=True) for _, _, p in outermost}
+            if len(unique) > 1:
+                raise ValueError(
+                    f"ambiguous envelope: {len(unique)} distinct occurrences of "
+                    f"'\"{envelope_key}\"': ' in one response — refusing "
+                    "(possible injected duplicate)")
+            return outermost[0][2]
         for c in (cleaned, content):
             idx = c.rfind(marker)
             if idx != -1:
@@ -299,7 +316,7 @@ def extract_json(content: str, envelope_key: str | None = None) -> dict:
                 return parsed
         except ValueError:
             continue
-    raise ValueError(f"no parseable JSON object (head: {cleaned[:60]!r})")
+    raise ValueError(f"no parseable JSON object (head: {scrub.redact_credentials(cleaned[:60])!r})")
 
 
 
@@ -358,6 +375,17 @@ _REFUTATION_SPAN_RE = re.compile(
     r"\b(?:no (?:failing test(?: found)?|issues?|problems?|failure|defect|change needed|bugs?|problem)"
     r"|not a (?:failure|bug|defect)|nothing (?:is |looks |seems )?(?:wrong|bad|broken|suspicious))"
     r"\b[^.!?\n]*[.!;]?")
+# F9-A07: NEGATED defect clauses are refutations too — "does not fail or
+# crash", "no credible scenario ... remote exploitation" must not count as
+# positive breakage evidence in contradiction or scenario gates
+_NEGATED_DEFECT_SPAN_RE = re.compile(
+    r"\b(?:does|do|did|will|would|can|could|should|must|need(?:s)?|is|are) not\b"
+    r"[^.!?\n]{0,80}?\b(?:fail\w*|crash\w*|exploit\w*|leak\w*|bypass\w*|"
+    r"throw\w*|vulnerab\w*|break\w*|corrupt\w*|error\w*|remote|unauthor\w*)\b"
+    r"[^.!?\n]*[.!;]?"
+    r"|\bno (?:credible|real|actual|known|possible) (?:scenario|way|path|means|route)"
+    r"[^.!?\n]{0,120}?\b(?:exploit\w*|execution|leak\w*|bypass\w*|access|crash\w*|"
+    r"fail\w*|remote|risk)\b[^.!?\n]*[.!;]?")
 
 
 def _self_contradicting(message: str) -> bool:
@@ -367,7 +395,8 @@ def _self_contradicting(message: str) -> bool:
     terminal_refutes = any(re.search(p, low) for p in _CONTRADICT_TERMINAL)
     # … while the defect scan runs on the refutation-stripped text so a
     # refutation's own words ("no failure found") are not breakage evidence.
-    remainder = _REFUTATION_SPAN_RE.sub(" ", low).strip()
+    remainder = _NEGATED_DEFECT_SPAN_RE.sub(
+        " ", _REFUTATION_SPAN_RE.sub(" ", low)).strip()
     if terminal_refutes and not _DEFECT_ASSERT_RE.search(remainder):
         return True
     # legacy head guard, bounded by the SAME adjudicated condition as the
@@ -471,6 +500,14 @@ def analyze(
             # the model could not anchor to a real line is not reviewable
             dropped.append(f"unanchored line={f.line} {f.path} ({f.rule_id})")
             continue
+        if mode == "file":
+            # F9-A04: whole-file mode has no hunks — anchor against the REAL
+            # source length (an impossible line was being accepted as 'inside')
+            _n_lines = diff_text.count("\n") + 1 if diff_text else 0
+            if _n_lines and f.line > _n_lines:
+                dropped.append(
+                    f"line {f.line} beyond file length {_n_lines} {f.path} ({f.rule_id})")
+                continue
         if _line_outside_diff(f.path, f.line, diff_text):
             # MECE round-1 (terra F1-03): the anchor must plausibly exist in
             # the changed file (a probe posted line 999999 on a 50-line diff)
@@ -559,9 +596,12 @@ def analyze(
     # MECE round-1 (terra F1-06): anchoring is PER-PATH — a credential in an
     # unrelated file of the same diff must not keep a different finding
     # Critical (previously one whole-diff scan anchored every secrets finding).
+    # F9-A06: the canonical capability rule installed into every config is
+    # 'secrets-config' (legacy alias 'secrets' still honored)
+    _SECRET_FAMILY = ("secrets", "secrets-config")
     diff_chunks = _diff_path_texts(diff_text or "")
     for f in findings:
-        if f.severity == "Critical" and f.rule_id == "secrets":
+        if f.severity == "Critical" and f.rule_id in _SECRET_FAMILY:
             chunk = diff_chunks.get(f.path, "")
             has_literal = _has_credential(chunk) or _has_credential(f.message)
             if not has_literal:
@@ -579,6 +619,9 @@ def analyze(
     for f in findings:
         if f.severity == "Critical":
             low = f.message.lower()
+            # F9-A07: negated risk clauses ("no credible scenario ... remote
+            # exploitation") are refutations, not scenario evidence
+            low = _NEGATED_DEFECT_SPAN_RE.sub(" ", low)
             # MECE round-1 (terra F1-05): "test" as a bare substring
             # (attestation, template) is NOT failing-test evidence. Only the
             # testing rule families citing actual failure wording qualify.

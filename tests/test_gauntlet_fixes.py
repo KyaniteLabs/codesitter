@@ -3059,3 +3059,71 @@ class TestMECERound9Pins:
         assert "509 passing" in readme
         cli = (REPO_ROOT / "fl4write/cli.py").read_text()
         assert "gh {' '.join(args[:2])} unavailable" in cli
+
+
+class TestMECERound9SolA:
+    """Round-9 sol DOM-A: think-only refusal + owner-decode (F9-A02/A03),
+    file-mode anchor caps (F9-A04), secrets family (F9-A06), clause-level
+    negation (F9-A07), redacted diagnostics (F9-A01)."""
+
+    def test_think_only_never_certifies_clean(self):
+        from fl4write.analyzer import extract_json
+
+        try:
+            extract_json('<think>{"findings": []}</think>', envelope_key="findings")
+            raise AssertionError("a reasoning-only draft was certified clean")
+        except ValueError:
+            pass
+
+    def test_nested_draft_envelope_never_wins(self):
+        from fl4write.analyzer import extract_json
+
+        out = extract_json('{"draft":{"findings":[]},"findings":[{"real":true}]}',
+                           envelope_key="findings")
+        assert out["findings"] == [{"real": True}]
+
+    def test_file_mode_rejects_impossible_anchors(self, monkeypatch):
+        import json as _json
+
+        from fl4write.analyzer import analyze as _an
+        from fl4write.models import PullRequest as _PR
+
+        raw = {
+            "repo": "o/r",
+            "forges": {"github": {"role": "primary",
+                                  "api_base": "https://api.github.com",
+                                  "token_env": "GHT"}},
+            "model": {"endpoint": "http://m/v1", "model": "t", "key_env": "K"},
+            "review": {"secrets-config": "never commit secrets"},
+            "severity_vocab": ["Critical", "Major", "Minor", "Nit"],
+        }
+        import fl4write.config as _cfg
+        c = _cfg.RepoConfig.model_validate(raw)
+        monkeypatch.setattr(
+            "fl4write.analyzer._call_model",
+            lambda route, prompt, mode="pr", system=None, **kw: _json.dumps(
+                {"findings": [{"rule_id": "secrets-config", "severity": "Critical",
+                               "path": "one.py", "line": 999999,
+                               "message": "leak"}]}))
+        pr = _PR(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        doc = _an(pr, {"one.py"}, "one.py\nx = 1\n", c, mode="file")
+        assert not doc.findings, "impossible file-mode anchor survived"
+
+    def test_negated_risk_clauses_are_not_evidence(self, monkeypatch):
+        import json as _json
+
+        from fl4write.analyzer import analyze as _an, _self_contradicting
+        from fl4write.models import PullRequest as _PR
+
+        assert _self_contradicting(
+            "The guard does not fail or crash. This is fine.") is True
+        monkeypatch.setattr(
+            "fl4write.analyzer._call_model",
+            lambda route, prompt, mode="pr", system=None, **kw: _json.dumps(
+                {"findings": [{"rule_id": "security-threat", "severity": "Critical",
+                               "path": "x.py", "line": 1,
+                               "message": "There is no credible scenario in which "
+                                          "this can lead to remote exploitation."}]}))
+        pr = _PR(forge="github", number=1, repo="o/r", head_sha="a" * 40)
+        doc = _an(pr, {"x.py"}, "x.py\n" * 10, make_config(), mode="file")
+        assert doc.findings and doc.findings[0].severity == "Major"
