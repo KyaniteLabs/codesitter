@@ -1,5 +1,13 @@
 # Recovered historical audit ledger
 
+## Feature draft review — September 5
+
+FEATURE13-DRAFT-REVIEW.md reproduces five new safety findings in the isolated
+unmerged candidate. Publication was subsequently quarantined, with two focused
+boundary tests passing. The findings remain open; containment is not repair.
+Candidate full suite before quarantine:698 pass3 skip. No candidate shipment,
+fresh whole-project green round, or certification follows. Clean counter0/3.
+
 ## Successor round 16 — September 5
 
 FRESH-ROUND-16.md independently approved the readiness and live-evaluation

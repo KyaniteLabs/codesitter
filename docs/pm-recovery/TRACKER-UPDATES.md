@@ -21,5 +21,6 @@ quality: its two low-severity findings remain subject to adjudication.
 
 Open gates: CEO20 sample verdict, first completed organic fix, zero-alert fleet
 health, exhaustive feature acceptance and three consecutive clean audit rounds.
-The feature candidate remains excluded from deployment while integration is
-under development. The current clean counter remains0/3. GraphQL is deferred.
+The feature candidate remains local-only, with publication quarantined after
+five reproduced independent-review findings. Atomic fixes and integration
+remain unfinished. The current clean counter remains0/3. GraphQL is deferred.

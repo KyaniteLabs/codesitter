@@ -33,9 +33,15 @@ or gatekeeper failures. The original findings still need quality adjudication.
 No organic fix PR has completed: nine attempts remain five nofix, one testfail,
 three error. A private 20-finding sample awaits the CEO's adjudication.
 
-The exhaustive-resolution candidate is a local evidence prototype. Independent
-round 16 rejected shipment: malformed baseline state can crash, and the
-authenticated fix/refresh and forge publication workflows remain absent.
+The exhaustive-resolution candidate is a local-only quarantined prototype on
+feature/exhaustive-loop-draft. The round-16 baseline crash was repaired, then
+[independent draft review](FEATURE13-DRAFT-REVIEW.md) found five further defects:
+counter/evidence consistency, publication retries, private-path redaction,
+issue ownership and evidence mutability. Publication is now disabled at both
+entry points, verified by two focused tests. The full pre-quarantine draft
+suite passed698 with3 live skips; this is not production or dogfood proof.
+Atomic fix-plus-regression-pin execution and the complete fix/refresh workflow
+remain unfinished. The draft is preserved locally and has not been shipped.
 The consecutive clean-round counter remains **0/3**. Round-14 source findings
 are preserved in the ledger, without inventing per-finding closure.
 
