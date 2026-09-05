@@ -608,3 +608,20 @@ discipline from #57 recurred. (3) Display transforms need injective encodings: e
 round that mapped raw paths through a lossy display (redaction, newline→space, '→`)
 created a reopen next round — control-escaping finally made lifecycle identity
 byte-faithful.
+
+## 60. Successor recovery: a deployed patch is not a closed finding (2026-09-04)
+
+Round 14 had 39 findings and deployed code, but its ledger stopped at round 13
+and the suite still had 605 passing cases. Exact reproductions plus independent
+review reopened five fixes: unquoted path parsing, listing completeness,
+numeric schema strictness, URL port validation and reversible credential-path
+encoding. A sixth scheduler timestamp defect used a weaker parser than state.
+The successor repairs have 45 new cases, 650 passed / 3 live skips, and scoped
+independent approval. They remain local; round 14 and the 0/3 clean counter
+are not closed. Evidence: docs/pm-recovery/RECOVERY-REPORT.md.
+
+Enforce the contract at the common boundary: strict field validation at model
+construction, rejected-row accounting before completion, and one canonical
+timestamp validator. Public lifecycle keys must not encode credentials
+reversibly. Preserve the source reproduction with each repair; commit messages
+and old green tests cannot substitute for that evidence.

@@ -2701,12 +2701,18 @@ class TestMECERound7SolPins2:
 
     def test_pr_row_guards_keep_valid_siblings(self):
         ad = self._gh()
-        ad._paginated = lambda path, page_size=50, max_pages=10: [
+        rows = [
             None,
             {"number": 1, "title": "t", "head": {"sha": "a" * 40, "repo": {"full_name": "o/r"}},
              "user": {"login": "dev", "type": "User"}, "merged_at": ""},
             {"number": "junk"},
         ]
+        ad._paginated = lambda path, page_size=50, max_pages=10: rows
+        # Round-14 completeness supersedes the old filtered-success rule:
+        # partial listings must defer, or the engine may prune unseen PRs.
+        with pytest.raises(ForgeError, match="listing incomplete"):
+            ad.list_open_prs("o/r")
+        ad._paginated = lambda path, page_size=50, max_pages=10: [rows[1]]
         out = ad.list_open_prs("o/r")
         assert [p.number for p in out] == [1]
 

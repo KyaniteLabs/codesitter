@@ -26,7 +26,7 @@ _TONE_PATTERN = "^(quiet|balanced|assertive|roast)$"
 
 
 class _StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", strict=True)
 
     @model_validator(mode="before")
     @classmethod
@@ -105,8 +105,11 @@ class ForgeBinding(_StrictModel):
     def _api_base_queryable(cls, v: str) -> str:
         # F12-D008: 'https://' (no netloc) passed the prefix pattern and
         # leaked raw transport ValueError through the adapters at runtime
-        if not __import__("urllib.parse").parse.urlsplit(v).netloc:
+        parsed = __import__("urllib.parse").parse.urlsplit(v)
+        if not parsed.hostname:
             raise ValueError(f"api_base must include a host, got {v!r}")
+        # Accessing port validates both its numeric form and valid range.
+        _ = parsed.port
         return v
     token_env: str = Field(min_length=1)
     # REQUIRED + NON-EMPTY: no default — a default or empty value silently
@@ -120,8 +123,10 @@ class ModelRoute(_StrictModel):
     @field_validator("endpoint")
     @classmethod
     def _endpoint_queryable(cls, v: str) -> str:
-        if not __import__("urllib.parse").parse.urlsplit(v).netloc:
+        parsed = __import__("urllib.parse").parse.urlsplit(v)
+        if not parsed.hostname:
             raise ValueError(f"endpoint must include a host, got {v!r}")
+        _ = parsed.port
         return v
     model: str
     key_env: str = ""  # empty = no auth header

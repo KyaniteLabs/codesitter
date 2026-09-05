@@ -53,6 +53,14 @@ def _git_diff_path(line: str) -> str | None:
     # quote honoring backslash escapes, then ast-decode the whole token.
     i = line.rfind(" b/")  # F14-A01: unquoted paths may contain spaces —
     # the LAST ' b/' token is the new-file side (git quotes only when needed)
+    if line.startswith("diff --git a/"):
+        # A literal ' b/' may occur inside BOTH filenames. For a normal
+        # same-path diff, the equal halves identify the actual separator.
+        old_start = len("diff --git a/")
+        for match in re.finditer(" b/", line):
+            if line[old_start:match.start()] == line[match.end():]:
+                i = match.start()
+                break
     quoted = False
     if i != -1:
         tok = line[i + 3:]
@@ -78,7 +86,9 @@ def _git_diff_path(line: str) -> str | None:
         else:
             return None  # unterminated quoted token
     else:
-        tok = tok.split()[0] if tok else ""
+        # Git leaves ordinary spaces unquoted. The header has already
+        # selected the new-file side; whitespace here belongs to the path.
+        tok = tok.rstrip("\r\n")
         if not tok:
             return None
     try:

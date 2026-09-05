@@ -491,10 +491,12 @@ class GitHubAdapter(ForgeAdapter):
         self._pr_rows_dropped = 0
         for p in data:
             if not isinstance(p, dict):  # F7-D004/F10-D001: one bad row never
+                self._pr_rows_dropped += 1
                 continue  # kills the page translation (log-loud below)
             pr = self._row_pr(repo, p)
             if pr is None:
                 log.warning(_log_row(self.name, "open-pr row malformed (skipped)", p))
+                self._pr_rows_dropped += 1
                 continue
             prs.append(pr)
         # F14-D007: malformed rows were discarded — the enumeration is
@@ -540,6 +542,7 @@ class GitHubAdapter(ForgeAdapter):
             pr = self._row_pr(repo, p)
             if pr is None:
                 log.warning(_log_row(self.name, "merged-pr row malformed (skipped)", p))
+                self._pr_rows_dropped += 1
                 continue
             prs.append(pr)
         prs.sort(key=lambda pr: pr.merged_at)  # oldest first: catch-up order
@@ -703,6 +706,7 @@ class ForgejoAdapter(ForgeAdapter):
             pr = self._row_pr(repo, p)
             if pr is None:
                 log.warning(_log_row(self.name, "open-pr row malformed (skipped)", p))
+                self._pr_rows_dropped += 1
                 continue
             prs.append(pr)
         # F14-D007: malformed rows were discarded — the enumeration is
@@ -743,6 +747,7 @@ class ForgejoAdapter(ForgeAdapter):
             pr = self._row_pr(repo, p)
             if pr is None:
                 log.warning(_log_row(self.name, "merged-pr row malformed (skipped)", p))
+                self._pr_rows_dropped += 1
                 continue
             prs.append(pr)
         prs.sort(key=lambda pr: pr.merged_at)

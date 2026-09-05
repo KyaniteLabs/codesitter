@@ -1,0 +1,47 @@
+{
+  "observed_at": "2026-09-05T03:38:08.010409+00:00",
+  "base_commit": "cc1e48663986ab50af07fd44fbded7f7aa0bc92a",
+  "baseline": {
+    "passed": 605,
+    "skipped": 3
+  },
+  "final": {
+    "passed": 650,
+    "skipped": 3,
+    "failures": 0
+  },
+  "command": "python3 -m pytest -q --junitxml=/tmp/fl4write-pm-recovery-tests.xml",
+  "junit_sha256": "c3e0d0e6462117b67d05c9893857ea865aedcc1b3b8c1c18d8a5511ca7f694d0",
+  "junit_summary": [
+    {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "3",
+      "tests": "653",
+      "time": "30.169",
+      "timestamp": "2026-09-04T20:36:41.949187-07:00",
+      "hostname": "Mac-90.lan"
+    }
+  ],
+  "source_sha256": {
+    "fl4write/analyzer.py": "98111ff017d12c9d58967a3f99714942e0b652c22a8a93bdd75e0fd451c40448",
+    "fl4write/config.py": "1891f43b6f9e840833e0c9aa08f1d2d7a3870b5891a7ea5903eb3e95d1626a4a",
+    "fl4write/forges.py": "d15b35618f7c881bf692dabed75d0fb65d72d51d118e2ced1a953f84a6c754e2",
+    "fl4write/renderer.py": "402734433012890ae31f0091f7f71c0d8dda88dd1f30c89943a28dcc1beefc13",
+    "fl4write/tiers.py": "90e96839a5b156f9edcc2045c14360ddc2825d45fc425d3abb6835ff0f4688db",
+    "tests/test_pm_recovery.py": "ac4cb95c6fe610d0a4b2003df7c0ffe4924e2f75ab487ef3af6de84699ac37b0",
+    "tests/test_gauntlet_fixes.py": "e61366d8cd7c2e27d6824defd7e69dce624f16dfa9132e95531396fe8513b9f9"
+  },
+  "config_validation": {
+    "accepted": 129,
+    "total": 129
+  },
+  "deployment": "approved repairs verified; Forgejo code migration confirmed, landing in progress",
+  "exhaustive_clean_rounds": 0,
+  "independent_review": {
+    "verdict": "APPROVE",
+    "scope": "six local repair classes; not exhaustive certification",
+    "report": "REVIEW-FOLLOWUP.md"
+  }
+}

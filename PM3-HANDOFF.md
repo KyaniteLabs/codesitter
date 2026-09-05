@@ -1,5 +1,10 @@
 # FL4WRITE PM-3 DELEGATION PROMPT
 
+> Historical handoff. Successor recovery started 2026-09-04. Read
+> [the recovery report](docs/pm-recovery/RECOVERY-REPORT.md) and
+> [recovered audit ledger](docs/pm-recovery/ROUND-LEDGER.md) first.
+> The checklist below is the original assignment, not a current status report.
+
 **Copy everything below the line into the new agent. It is self-contained.**
 
 ---

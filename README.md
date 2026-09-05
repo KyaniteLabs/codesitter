@@ -70,11 +70,13 @@ no fleet repo has enabled it yet — luna F3-004 doc truth).
 **Usage:** `python3 -m fl4write.cli <config> [--live] [--fixes] [--issues]`
 (mode flag typos are refused — unknown flags exit 2).
 
-Current fleet state (2026-09-04; MECE gauntlet rounds 1-13 in the audit ledger): **129 central configs**
+Current fleet state (2026-09-04; recovered [audit ledger](docs/pm-recovery/ROUND-LEDGER.md)): **129 central configs**
 across GitHub + Forgejo cycling ~100 repos/hour on the nucbox runner
 (`run-cycle.sh`, hourly crontab, single-host law — LEARNINGS #17). **500+
-tests green** (605 passing + 3 skipped as of the MECE
-round-13 desk pass), ruff clean, CI on every push. Quality loop on
+tests green** (650 passing + 3 skipped in the local successor recovery;
+the round-13 desk pass reported 605 passing). The live model tests are skipped
+without credentials. Round 14 remains open; no exhaustive certification is
+claimed. CI on every push. Quality loop on
 issue #5; desk charter + incident history on issue #3 and map #63.
 
 Requested behavior (CEO 2026-09-04, not yet implemented): the **exhaustive bug-resolution

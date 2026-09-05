@@ -87,8 +87,11 @@ def _read_state(repo: str) -> dict | None:
                                    for x in _oi)):
         return None
     _ms = st.get("merged_since")
-    if _ms is not None and (not isinstance(_ms, str) or "T" not in _ms):
-        return None
+    if _ms is not None:
+        from .state import _valid_iso
+
+        if not isinstance(_ms, str) or not _valid_iso(_ms):
+            return None
     return st
 
 

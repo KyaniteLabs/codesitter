@@ -134,14 +134,15 @@ def path_display(path: str) -> str:
 
 def path_key(path: str) -> str:
     """F14-A04/A05 (reopened F13-A12/F12-A6): the LIFECYCLE identity form
-    stored in finding lines. It is the escape-encoded path — and when
-    display redaction would alias two distinct paths ('a/AKIA...py' vs
-    'a/[redacted].py' both render '[redacted]'), the whole path is
-    hex-encoded instead, keeping the encoding injective. Body round-trips
-    return this exact string; comparisons never re-encode it."""
+    stored in finding lines. Credential-bearing paths use a one-way digest:
+    reversible escaping is not redaction. The reserved backslash prefix
+    cannot alias a literal filename, whose backslash is escaped by
+    _escape_path. Body round-trips return this exact string."""
     out = _escape_path(path)
     if scrub.redact_credentials(out) != out:
-        return "".join(f"\\u{ord(c):04x}" for c in path)
+        import hashlib
+
+        return "\\sha256:" + hashlib.sha256(path.encode("utf-8")).hexdigest()
     return out
 
 
