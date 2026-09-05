@@ -1,5 +1,32 @@
 # Recovery comorbidity check
 
+## Round 15 continuation
+
+Three verified findings repeat the boundary mechanism: optional state flags
+were normalized only when a different required field failed; integer source
+anchors admitted booleans; malformed triage identity was treated as absence.
+Prediction: valid required fields plus corrupt optional flags can suppress a
+fix, and an uncertain marker can trigger duplicate publication. The 15
+restart-to-action and publication probes confirm those failures and their
+repairs. Full verification reached 665 passes; independent review approved.
+
+Counterevidence matters: the proposed severity-lookup crash is prevented by
+an existing membership guard. Its isolated list.index demonstration omitted
+that guard, so R15-002 was rejected and pinned as counterevidence. The common
+mechanism is an inference about patch structure, not permission to accept
+every superficially similar finding. Stop condition remains three fresh
+zero-new-defect rounds plus complete green verification; current counter 0/3.
+
+Live-evaluation recovery exposed a related test isolation failure: unit
+config loading polluted the process with dummy credentials. Its mechanism
+differs from provider downtime; isolated live cases passed while the whole
+suite failed with authentication errors. Restoring environment state and
+using the configured live route made the whole suite pass 668/668. The
+test-count assertion also needed to accept zero skipped cases. These are
+test-harness defects; they do not prove production model reliability.
+
+## Initial recovery analysis
+
 The confirmed failures share a gap between the claimed boundary and the
 boundary actually enforced. Recovery repairs six concrete manifestations;
 the remaining predictions below are inferences, not additional confirmed bugs.

@@ -724,13 +724,14 @@ class TestAuditRegressions:
 @pytest.mark.parametrize("cfg_path", sorted(
     [str(p) for p in Path(__file__).parent.parent.glob("*.fl4write.yaml")]
 ), ids=lambda p: Path(p).name)
-def test_all_fleet_configs_load(cfg_path):
+def test_all_fleet_configs_load(cfg_path, monkeypatch):
     """Every fleet config loads against the strict schema (audit E8: 1-of-31
     coverage). Set the token env vars the schemas now require."""
     import os
-    os.environ.setdefault("CODESITTER_GITHUB_TOKEN", "test")
-    os.environ.setdefault("CODESITTER_DEEPSEEK_KEY", "test")
-    os.environ.setdefault("CODESITTER_FORGEJO_TOKEN", "test")
+    for name in ("CODESITTER_GITHUB_TOKEN", "CODESITTER_DEEPSEEK_KEY",
+                 "CODESITTER_FORGEJO_TOKEN"):
+        if name not in os.environ:
+            monkeypatch.setenv(name, "test")
     c = cfg.load_config(cfg_path)
     assert c.repo and "/" in c.repo
 

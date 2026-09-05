@@ -590,6 +590,10 @@ def _omni_report_body(config: RepoConfig, findings: list[dict], scanned: int, to
     if len(ordered) > cap:
         lines.append(f"… and {len(ordered) - cap} more findings recorded in sweep state.\n")
     if complete:
+        score, label = _omni_readiness(findings)
+        lines.append(f"**Readiness: {score}/100 — {label}**\n")
+        lines.append("_This finding-based score is subject to missing-evidence caps; "
+                     "it is not an exhaustive certification._\n")
         lines.append("_Sweep complete. Findings above are at current HEAD; the fix lane (if enabled for this repo) will open PRs for qualifying severities._")
     return "\n".join(lines)
 
@@ -709,7 +713,7 @@ def _omnisweep_step(
         if not st.get("omni_complete"):
             pass  # fell through to a fresh sweep below
         else:
-            if not st.get("omni_published"):
+            if not st.get("omni_published") or st.get("omni_report_version") != 2:
                 # MECE round-5 (sol F5-002): a completed sweep whose final
                 # publication FAILED must retry it — the old fast path
                 # returned before the upsert and 'retrying next cycle' lied
@@ -718,7 +722,7 @@ def _omnisweep_step(
                 if findings:
                     _omni_upsert_issue(config, primary, st, findings, total, total,
                                        complete=True, report=report)
-                    if not st.get("omni_published"):
+                    if not st.get("omni_published") or st.get("omni_report_version") != 2:
                         return  # publication still failing — retry next cycle
                 else:
                     st["omni_published"] = True  # clean sweep: nothing to publish
@@ -1075,6 +1079,7 @@ def _omni_upsert_issue(
         st.pop("omni_pub_fail", None)
         if complete:
             st["omni_published"] = True
+            st["omni_report_version"] = 2
         return
     created = primary.open_issue(
         config.repo, f"omnisweep: full-tree audit of {config.repo}", body,
@@ -1085,6 +1090,7 @@ def _omni_upsert_issue(
     st["omni_issue"] = created
     if complete:
         st["omni_published"] = True
+        st["omni_report_version"] = 2
 
 
 def _retro_sweep(

@@ -70,12 +70,15 @@ no fleet repo has enabled it yet — luna F3-004 doc truth).
 **Usage:** `python3 -m fl4write.cli <config> [--live] [--fixes] [--issues]`
 (mode flag typos are refused — unknown flags exit 2).
 
-Current fleet state (2026-09-04; recovered [audit ledger](docs/pm-recovery/ROUND-LEDGER.md)): **129 central configs**
-across GitHub + Forgejo cycling ~100 repos/hour on the nucbox runner
+Current fleet state (2026-09-05; recovered [audit ledger](docs/pm-recovery/ROUND-LEDGER.md)): **129 central configs**
+across GitHub + Forgejo in hourly cycles; the tier scheduler selects due repos
 (`run-cycle.sh`, hourly crontab, single-host law — LEARNINGS #17). **500+
-tests green** (665 passing + 3 skipped in the local successor recovery;
-the round-13 desk pass reported 605 passing). The live model tests are skipped
-without credentials. Round 14 remains open; no exhaustive certification is
+tests green** (669 passing + 3 skipped in the local successor recovery;
+the round-13 desk pass reported 605 passing). The opt-in live suite has
+672 passing + 0 skipped. Run it with `FL4WRITE_EVAL=1 python3 -m pytest -q`;
+it uses `fl4write.fl4write.yaml` (override with `FL4WRITE_EVAL_CONFIG`) and
+runtime model credentials. The default suite skips those three paid model
+cases. Round 14 remains open; no exhaustive certification is
 claimed. CI on every push. Quality loop on
 issue #5; desk charter + incident history on issue #3 and map #63.
 

@@ -1,0 +1,492 @@
+{
+  "observed_at": "2026-09-05T04:03:52.314783+00:00",
+  "code_authority": "Forgejo",
+  "history_policy": "Original issue/comment URLs remain authoritative historical evidence. Migration timed out after partial comments; original threads were preserved. This manifest indexes every original comment without rewriting authorship or copying private operational text.",
+  "issues": [
+    {
+      "issue": 1,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/1",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/1",
+      "original_comments": 2,
+      "original_comments_present_on_forgejo": 1,
+      "original_history_links": [
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/1#issuecomment-5488111000",
+          "created_at": "2026-09-01T02:46:08Z",
+          "body_sha256": "9ed0632b5d1552c82d677b4f9d512b9fcd8546bf53b73f054a046721130c4403",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/1#issuecomment-5520022506",
+          "created_at": "2026-09-03T03:46:01Z",
+          "body_sha256": "973a35e03102c92cdf3947a104ce6ab84d8ff2789c426999ef4f14a0d4dfab28",
+          "body_present_on_forgejo": false
+        }
+      ]
+    },
+    {
+      "issue": 2,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/2",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/2",
+      "original_comments": 1,
+      "original_comments_present_on_forgejo": 0,
+      "original_history_links": [
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/2#issuecomment-5520022789",
+          "created_at": "2026-09-03T03:46:03Z",
+          "body_sha256": "b72e6129234bf38fb0d395031ef8202d27e197c61ff9ff162da912f25c13b20e",
+          "body_present_on_forgejo": false
+        }
+      ]
+    },
+    {
+      "issue": 3,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/3",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/3",
+      "original_comments": 26,
+      "original_comments_present_on_forgejo": 13,
+      "original_history_links": [
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5496274638",
+          "created_at": "2026-09-01T15:24:42Z",
+          "body_sha256": "b70a150072ba5c20d61d089709ca4a1e6da9e7a0e85c35761e4f3460f0247e64",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5496545606",
+          "created_at": "2026-09-01T15:45:13Z",
+          "body_sha256": "7e753d2cc29aa0882be488da5305ec72b67a91abb9dca1fdd847ad1ce3d3bbe0",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5497101074",
+          "created_at": "2026-09-01T16:27:59Z",
+          "body_sha256": "afe4871591386ad0d6cae9b2c640d8dccd80cdfaeee355f3a2b4ee5012d00af2",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5497463497",
+          "created_at": "2026-09-01T16:58:18Z",
+          "body_sha256": "18d67f698e2d5d8293e7c7586710f839c9421e3aa2ca12f5d97891f8a2dd02d0",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5498261825",
+          "created_at": "2026-09-01T18:07:05Z",
+          "body_sha256": "9ddf4b9b7097324f8d3400114c7641384d532b221cb3d55f46d8934af3ec1a54",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5498822464",
+          "created_at": "2026-09-01T18:53:13Z",
+          "body_sha256": "a16319692ad8767ce03425e466b62880473377d4491fccd0312b605f74b4ff80",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5499260735",
+          "created_at": "2026-09-01T19:28:31Z",
+          "body_sha256": "724071875ed7c6a3bf5b64e55177c2b58bcebc0501d19c0e2faaf7541db35793",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5500650379",
+          "created_at": "2026-09-01T21:25:47Z",
+          "body_sha256": "a7a6c4e0505ad6dc595721f5b629b44af6a825b8fd06220bf57eefe3165fed2d",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5503363927",
+          "created_at": "2026-09-02T02:20:09Z",
+          "body_sha256": "e55174bb62bf4e39afa7ec1e5360a622161c1c77f4a9b13eefdf892c823e3acd",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5503448167",
+          "created_at": "2026-09-02T02:31:28Z",
+          "body_sha256": "42849498ea2296e20ad9b9d5bcc6a43f575f8d229378452dbdf40015fcbe4622",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5504228507",
+          "created_at": "2026-09-02T04:08:09Z",
+          "body_sha256": "77dd8ed20e700e271e2222c71b071af3684a2fb025fb9a3f0be5d9af1c009e77",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5504694638",
+          "created_at": "2026-09-02T05:08:59Z",
+          "body_sha256": "729555e10f04769ab56e41a186ae980c2ec9fdd1428b1210a0919d412007389a",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5507839308",
+          "created_at": "2026-09-02T10:02:21Z",
+          "body_sha256": "e0128257545718e2fb7f80fac8ca9af12a32d480eacddeab2ed95e16370bae2a",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5513884843",
+          "created_at": "2026-09-02T17:47:13Z",
+          "body_sha256": "49dcff679dfb787db5566b03336ac4309411e4f6880fc64ff1e5098a91313634",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5519303724",
+          "created_at": "2026-09-03T02:16:20Z",
+          "body_sha256": "31584ebc7db865003793f30fe0c5f77e941a45bc093576d378e827f7e86d5846",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5520022332",
+          "created_at": "2026-09-03T03:45:59Z",
+          "body_sha256": "d420b4610ff366b2dff80ddb9132c7f08cea8cde94a3ac89d189dbbb6f0be538",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5532802564",
+          "created_at": "2026-09-03T22:10:42Z",
+          "body_sha256": "d317d6734d4f562a15bd820e276e125270be12f20401fc9ddbc0c351f8e576d4",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5533553676",
+          "created_at": "2026-09-03T23:41:18Z",
+          "body_sha256": "7c7ed2e2f7b41f9e4a231ad172e75c681387c387ba26f1f7159fbfbf01881608",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5533650721",
+          "created_at": "2026-09-03T23:53:55Z",
+          "body_sha256": "f3a7a31d468de4dfd70aa54e6b5c132d82ca589cf0e029471a2dd92b90b41cc0",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5533749185",
+          "created_at": "2026-09-04T00:06:58Z",
+          "body_sha256": "9d4d4f93d19714a7510c1cc34cae1a85a27cd26884a88788cec621b9ef272099",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5534347084",
+          "created_at": "2026-09-04T01:25:49Z",
+          "body_sha256": "afce15d3f24f03e5cedf017637e9e6559c495febcc17f0e5f87d3b5ebbe9fa66",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5535563426",
+          "created_at": "2026-09-04T04:15:23Z",
+          "body_sha256": "6fd5b66ebc92d7e062e69324419e4fddb2a25b715c24e8f108bd63f6d792f48a",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5539562050",
+          "created_at": "2026-09-04T11:07:40Z",
+          "body_sha256": "dc51d82945b5c7797b5687dca326964c3e77f4674ece4f38e8b13e291f2f8def",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5540060803",
+          "created_at": "2026-09-04T11:54:09Z",
+          "body_sha256": "7d8ea47ac572468cca8ba264740c084fac14a632f4527dd8a41677ea479a965d",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5540438634",
+          "created_at": "2026-09-04T12:29:33Z",
+          "body_sha256": "925658ac18a17de416b6debfdb8f5c6ac3cd8b36804bbe1a580851db9fe9baf0",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/3#issuecomment-5541080218",
+          "created_at": "2026-09-04T13:24:53Z",
+          "body_sha256": "bc75ebaa69fbac6801da3555902c366824d0cd136719808153bbddb315be037e",
+          "body_present_on_forgejo": false
+        }
+      ]
+    },
+    {
+      "issue": 4,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/4",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/4",
+      "original_comments": 1,
+      "original_comments_present_on_forgejo": 1,
+      "original_history_links": [
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/4#issuecomment-5500644408",
+          "created_at": "2026-09-01T21:25:14Z",
+          "body_sha256": "69fc71e5f7b7b0fc363c079918f963327cc14b79eb71c867b92edbaef68f192e",
+          "body_present_on_forgejo": true
+        }
+      ]
+    },
+    {
+      "issue": 5,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/5",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/5",
+      "original_comments": 15,
+      "original_comments_present_on_forgejo": 5,
+      "original_history_links": [
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5503723528",
+          "created_at": "2026-09-02T03:07:56Z",
+          "body_sha256": "7da253c35529ddd52a7d67545ba41fe6bd41052f53ece109f01e7806caed3f15",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5504124668",
+          "created_at": "2026-09-02T03:57:20Z",
+          "body_sha256": "1eb8714472571a8af4d8a3b8ae4244c35ca04061c1307c87a79f930e202f6d30",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5504555955",
+          "created_at": "2026-09-02T04:51:44Z",
+          "body_sha256": "bc35981bc4ddc043f5330004a37d9cb82c0511b29aff24c43380ae6efc591194",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5504592361",
+          "created_at": "2026-09-02T04:56:32Z",
+          "body_sha256": "d6bac16019defd7d27596c45ba570f50a214c1bf95f053892ac33b10f2f3b2a4",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5513689061",
+          "created_at": "2026-09-02T17:32:26Z",
+          "body_sha256": "0b7d608ea27ecab38064552c640b0d584b600c43e21c4ed4986a7bdc872a7732",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5520022136",
+          "created_at": "2026-09-03T03:45:57Z",
+          "body_sha256": "8e29f99cdfef4abc7c44bdf6b3a811c9dd499ae9a7cb5089c6a7ade4a732a677",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5532804092",
+          "created_at": "2026-09-03T22:10:52Z",
+          "body_sha256": "66b4ba0ad709c2fb2c03bc1cb34c7a40873714f3a7572d4abc32623d2f86692d",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5533185242",
+          "created_at": "2026-09-03T22:56:01Z",
+          "body_sha256": "7d4ada0fa0c9530cdb66570f3acc347dfee60c9f42716f255417bb1b6c18c3cc",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5533653088",
+          "created_at": "2026-09-03T23:54:13Z",
+          "body_sha256": "932b06b2b2a4406123ee50fed9c2cac9592c3b223e7da98973b0e1a406ab1229",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5533779725",
+          "created_at": "2026-09-04T00:10:48Z",
+          "body_sha256": "7e4ff4bdb4f5b48a3361b64335c1bafa1a87fc0974195ab00139c1ad7d6a68dc",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5534346974",
+          "created_at": "2026-09-04T01:25:48Z",
+          "body_sha256": "b75d68124e6270da7cfefe7b6f77a541c4bd38c8d9cd67922c0dd5dbd7fed6f8",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5539560291",
+          "created_at": "2026-09-04T11:07:31Z",
+          "body_sha256": "06da97011b5bb22ea615991cbf0899e55f23356e60dfc7c5024a2b5809abf14e",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5540059392",
+          "created_at": "2026-09-04T11:54:00Z",
+          "body_sha256": "db351c954b32798345ab5daa7a54096a0346bf850019543b4b47a25c3c48a963",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5540437354",
+          "created_at": "2026-09-04T12:29:26Z",
+          "body_sha256": "e73f18ad7b749384ee3f318a79c0f7a35631130421ed9094ae1212de4bd984ea",
+          "body_present_on_forgejo": false
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/5#issuecomment-5541078173",
+          "created_at": "2026-09-04T13:24:42Z",
+          "body_sha256": "4296e9788b4b88e905e0d19c147a21d2fcaa82eb1e9a4ebeea1c067491832c40",
+          "body_present_on_forgejo": false
+        }
+      ]
+    },
+    {
+      "issue": 6,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/6",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/6",
+      "original_comments": 7,
+      "original_comments_present_on_forgejo": 6,
+      "original_history_links": [
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/6#issuecomment-5505905690",
+          "created_at": "2026-09-02T07:14:17Z",
+          "body_sha256": "181f44534961dff4969af017e0b5f87428b601fe4e32b60216e768a0fab76ff1",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/6#issuecomment-5505981490",
+          "created_at": "2026-09-02T07:21:30Z",
+          "body_sha256": "e392291e9f02ff1aaac491c6b321a88b1fd5a8220874e85ac5f522405b71c5dd",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/6#issuecomment-5506292071",
+          "created_at": "2026-09-02T07:49:31Z",
+          "body_sha256": "4f3df59c824dcd868370fc489ac59d3f879d4acc0963784baee39dfb2166e82f",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/6#issuecomment-5506557258",
+          "created_at": "2026-09-02T08:12:35Z",
+          "body_sha256": "dec57d30c4fee8597ec00e5d6cae42b07cbba0df1470e2d38be66d5f018bba88",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/6#issuecomment-5507201069",
+          "created_at": "2026-09-02T09:09:11Z",
+          "body_sha256": "bc19e3e06b49036762dab10525ce64aebf8e1e7666b08991c9d994c3b47d3dc8",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/6#issuecomment-5507575975",
+          "created_at": "2026-09-02T09:40:20Z",
+          "body_sha256": "60e355a287ac5e63c61fba2c63d3d73506aa487f9b313b61b8d5d2d9a7b17d9c",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/6#issuecomment-5520031403",
+          "created_at": "2026-09-03T03:47:08Z",
+          "body_sha256": "f989068d63c4ae6f68ab971849fd2ad389b35ba41c706c44773ed0c8b0a1cb57",
+          "body_present_on_forgejo": false
+        }
+      ]
+    },
+    {
+      "issue": 7,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/7",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/7",
+      "original_comments": 2,
+      "original_comments_present_on_forgejo": 1,
+      "original_history_links": [
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/7#issuecomment-5512390817",
+          "created_at": "2026-09-02T15:54:17Z",
+          "body_sha256": "6ac36afbf73aa550af09c6c24325aa9e40a6b10e126c9ddfab88ef35c600196f",
+          "body_present_on_forgejo": true
+        },
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/7#issuecomment-5520023057",
+          "created_at": "2026-09-03T03:46:05Z",
+          "body_sha256": "94f2b67eb86615d833ff96cb5d940f8d0f80676cdd3150ac0d19cfb918b1a6c9",
+          "body_present_on_forgejo": false
+        }
+      ]
+    },
+    {
+      "issue": 8,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/8",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/8",
+      "original_comments": 1,
+      "original_comments_present_on_forgejo": 0,
+      "original_history_links": [
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/pull/8#issuecomment-5514067271",
+          "created_at": "2026-09-02T18:01:37Z",
+          "body_sha256": "670feaa9e5a2bd844c35ba911b27038c1c554f928190102c3f3212652a04884d",
+          "body_present_on_forgejo": false
+        }
+      ]
+    },
+    {
+      "issue": 9,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/9",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/9",
+      "original_comments": 1,
+      "original_comments_present_on_forgejo": 0,
+      "original_history_links": [
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/9#issuecomment-5520691898",
+          "created_at": "2026-09-03T04:58:33Z",
+          "body_sha256": "7bca74bd8a0d5d04bcd4be59c8e1fd4dbe9d9f2823caa18c29c650080ce905d2",
+          "body_present_on_forgejo": false
+        }
+      ]
+    },
+    {
+      "issue": 10,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/10",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/10",
+      "original_comments": 1,
+      "original_comments_present_on_forgejo": 0,
+      "original_history_links": [
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/10#issuecomment-5520692237",
+          "created_at": "2026-09-03T04:58:35Z",
+          "body_sha256": "7bca74bd8a0d5d04bcd4be59c8e1fd4dbe9d9f2823caa18c29c650080ce905d2",
+          "body_present_on_forgejo": false
+        }
+      ]
+    },
+    {
+      "issue": 11,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/11",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/11",
+      "original_comments": 1,
+      "original_comments_present_on_forgejo": 0,
+      "original_history_links": [
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/11#issuecomment-5520692548",
+          "created_at": "2026-09-03T04:58:37Z",
+          "body_sha256": "7bca74bd8a0d5d04bcd4be59c8e1fd4dbe9d9f2823caa18c29c650080ce905d2",
+          "body_present_on_forgejo": false
+        }
+      ]
+    },
+    {
+      "issue": 12,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/12",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/12",
+      "original_comments": 1,
+      "original_comments_present_on_forgejo": 0,
+      "original_history_links": [
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/12#issuecomment-5535351814",
+          "created_at": "2026-09-04T03:44:52Z",
+          "body_sha256": "9d1a2d504461695a961ef41044ecdb41955a2d35b2956635d7073b4c06cad38a",
+          "body_present_on_forgejo": false
+        }
+      ]
+    },
+    {
+      "issue": 13,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/13",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/13",
+      "original_comments": 0,
+      "original_comments_present_on_forgejo": 0,
+      "original_history_links": []
+    },
+    {
+      "issue": 14,
+      "original_url": "https://github.com/KyaniteLabs/fl4write/issues/14",
+      "canonical_url": "https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/14",
+      "original_comments": 1,
+      "original_comments_present_on_forgejo": 0,
+      "original_history_links": [
+        {
+          "url": "https://github.com/KyaniteLabs/fl4write/issues/14#issuecomment-5549183331",
+          "created_at": "2026-09-05T03:56:12Z",
+          "body_sha256": "89d68bc5f90d7e233a4630e9322e81523f49a0edc4669485b15c2a4298bd107c",
+          "body_present_on_forgejo": false
+        }
+      ]
+    }
+  ]
+}

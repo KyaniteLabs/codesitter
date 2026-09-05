@@ -62,6 +62,51 @@ def test_unknown_severity_already_skips_fix_without_crashing(tmp_path, monkeypat
     assert report.fix_attempts == 0
 
 
+@pytest.mark.parametrize("complete", [True, False])
+def test_audit_issue_body_publishes_readiness_only_after_completion(complete):
+    findings = [{"id": 1, "path": "README.md", "line": 1,
+                 "rule": "general", "sev": "Minor", "msg": "Missing usage details."}]
+    body = engine._omni_report_body(config(), findings, 4 if complete else 2, 4, complete)
+    if complete:
+        score, _ = engine._omni_readiness(findings)
+        assert f"Readiness: {score}/100" in body
+        assert "missing-evidence caps" in body
+    else:
+        assert "Readiness:" not in body
+
+
+def test_completed_old_audit_is_refreshed_once_without_rescanning(monkeypatch, tmp_path):
+    st = {"omni_complete": True, "omni_published": True, "omni_issue": 7,
+          "omni_head": "a" * 40, "omni_total": 4,
+          "omni_findings": [{"id": 1, "path": "README.md", "line": 1,
+                             "rule": "general", "sev": "Minor", "msg": "Missing usage details."}]}
+    bodies = []
+    forge = SimpleNamespace(name="github", update_issue=lambda *a: bodies.append(a[-1]) or True)
+    monkeypatch.setattr(engine, "_probe_head", lambda *a: "a" * 40)
+    cfg = config().model_copy(update={"omnisweep": config().omnisweep.model_copy(update={"fix": False})})
+    engine._omnisweep_step(cfg, forge, tmp_path / "state.json", None, st,
+                          engine.CycleReport(repo=cfg.repo), None)
+    assert len(bodies) == 1 and "Readiness:" in bodies[0]
+    assert st["omni_report_version"] == 2
+    engine._omnisweep_step(cfg, forge, tmp_path / "state.json", None, st,
+                          engine.CycleReport(repo=cfg.repo), None)
+    assert len(bodies) == 1
+
+
+def test_failed_old_audit_refresh_defers_fixes(monkeypatch, tmp_path):
+    st = {"omni_complete": True, "omni_published": True, "omni_issue": 7,
+          "omni_head": "a" * 40, "omni_total": 1,
+          "omni_findings": [{"id": 1, "path": "a.py", "line": 1,
+                             "rule": "tests", "sev": "Major", "msg": "A concrete defect."}]}
+    forge = SimpleNamespace(name="github", update_issue=lambda *a: False)
+    monkeypatch.setattr(engine, "_probe_head", lambda *a: "a" * 40)
+    monkeypatch.setattr(engine, "_omni_fix_phase", lambda *a: pytest.fail("fix before publication"))
+    engine._omnisweep_step(config(), forge, tmp_path / "state.json", None, st,
+                          engine.CycleReport(repo="owner/project"), None)
+    assert st["omni_pub_fail"] == 1
+    assert st.get("omni_report_version") != 2
+
+
 @pytest.mark.parametrize("bad", [
     {"id": None}, {"id": True}, {"id": 0}, {"id": "3"},
     {"user": None}, {"user": {"login": 3}},

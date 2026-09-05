@@ -6,3 +6,4 @@ __pycache__/
 runner.log
 logs/
 .todos/
+.pm-private/

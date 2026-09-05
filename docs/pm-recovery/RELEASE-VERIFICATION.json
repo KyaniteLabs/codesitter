@@ -1,0 +1,18 @@
+{
+  "observed_at": "2026-09-05T04:27:50.910849+00:00",
+  "base_commit": "c75392ff0dff8ff9bd4da5758c6f074c0264ff45",
+  "scope": "Isolated approved release; excludes exhaustive feature candidate",
+  "command": "FL4WRITE_EVAL=1 python3 -m pytest -q",
+  "passed": 672,
+  "skipped": 0,
+  "failures": 0,
+  "errors": 0,
+  "junit_sha256": "fa5f0a07436bd6875759d8066774f4a6323d663904aefae640d273424b11a283",
+  "source_sha256": {
+    "fl4write/engine.py": "6c162f83cf187aee9d1a5e4fadba99102b33f87f3270167884a1cd226095e811",
+    "tests/test_fl4write.py": "1e725fb10aca08e75afb9eab209cbcc6f8bbcb82fff6a56beecbf70d16ba0467",
+    "tests/test_gauntlet_fixes.py": "6a8a33c39c72f3666185f6c2db947332271339384f68c652a58e94f02eedcede",
+    "tests/test_planted_diffs.py": "c009d2f9710fca0ce76b7fcb501598f5e15d5d690f2a42417d78dc0a258aae56",
+    "tests/test_round15.py": "a17a6f55f7ec88a48d431c6e37e2187cb5da59a1d2d570b79b6769899950273b"
+  }
+}

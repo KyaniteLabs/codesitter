@@ -1,5 +1,46 @@
 # FL4WRITE PM recovery — 2026-09-04
 
+## Current successor disposition — September 5
+
+This section supersedes operational status in the historical recovery record below.
+Forgejo is canonical, GitHub mirrors main automatically, and the sole NUCBox
+runner has deployed releases a5d56df and c75392f. Tastecheck adoption was restored
+through its merged PR 40 and verified with a live cycle. Historical CI issue 14
+is closed on both hosts. Seat registration, quality and comorbidity updates were
+posted; org registration was delivered in org-bus commit 95e77db.
+
+The next independently approved repair release passes **672 tests with zero
+skips**, including real configured model calls. Source hashes and scope are in
+[RELEASE-VERIFICATION.json](RELEASE-VERIFICATION.json); approval is in
+[FRESH-ROUND-16.md](FRESH-ROUND-16.md). It repairs publication of readiness on
+completed audit issues and the live evaluation harness. Candidate feature 13
+is excluded from this release.
+
+A real four-file audit completed on resonant-gifts at f2cd1ac, producing two
+findings and a computed readiness of 77/100. Its existing issue 7 still needs
+the approved report refresh before publication of that score can be claimed.
+No organic fix PR has completed: nine attempts remain five nofix, one testfail,
+three error. A private 20-finding sample awaits the CEO's adjudication.
+
+The exhaustive-resolution candidate is a local evidence prototype. Independent
+round 16 rejected shipment: malformed baseline state can crash, and the
+authenticated fix/refresh and forge publication workflows remain absent.
+The consecutive clean-round counter remains **0/3**. Round-14 source findings
+are preserved in the ledger, without inventing per-finding closure.
+
+Fleet health is not alert-free: the last hourly receipt was 29 ok / 0 errors,
+but included an empty-diff PR owned by another desk and one model outage.
+Tastecheck's then-current access failure was subsequently repaired and retested.
+Issue-lane scale proof, pilot fitness and public expansion remain unearned;
+GraphQL remains explicitly deferred. Original comment history is preserved by
+the source links and hashes in MIGRATION-HISTORY.json; migration copied issue
+bodies but did not copy every historical comment.
+
+Delivered tracker receipts: [seat map](https://github.com/KyaniteLabs/.github/issues/63#issuecomment-5549177546),
+[quality](https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/5#issuecomment-17758),
+[handoff](https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/3#issuecomment-17760),
+[comorbidity](https://git.kyanitelabs.tech/KyaniteLabs/fl4write/issues/3#issuecomment-17763).
+
 ## Continuation — 2026-09-05
 
 The CEO directed execution of the prepared delivery steps. Forgejo now has

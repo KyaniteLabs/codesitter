@@ -12,6 +12,7 @@ new miss-classes appear in the wild (the corpus grows from production).
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -132,7 +133,7 @@ class TestDeterministicLayer:
         assert case["test"] in finding.message  # auditable evidence (Sol-B2)
 
 
-@pytest.mark.skipif(not os.environ.get("FL4WRITE_EVAL"), reason="live eval (needs model keys)")
+@pytest.mark.skipif(os.environ.get("FL4WRITE_EVAL") != "1", reason="live eval (needs model keys)")
 class TestModelLayerLive:
     """Model recall on the corpus — the Q1 metric, measured when run with
     FL4WRITE_EVAL=1. Threshold per the #5 charter: >= 8/10 recall eventually;
@@ -141,7 +142,15 @@ class TestModelLayerLive:
     @pytest.mark.parametrize("case", CASES, ids=[c["id"] for c in CASES])
     def test_model_finds_it(self, case, monkeypatch):
         from fl4write.analyzer import analyze
+        from fl4write.cli import _org_model_keys
         from fl4write.models import PullRequest
+
+        # The opt-in live lane must exercise a real configured route, not
+        # the http://m unit-test fixture. Keys remain runtime-only.
+        _org_model_keys()
+        live_config = cfg.load_config(Path(os.environ.get(
+            "FL4WRITE_EVAL_CONFIG", str(Path(__file__).parents[1] / "fl4write.fl4write.yaml"))))
+        assert os.environ.get(live_config.model.key_env), "Live evaluation model key is unavailable"
 
         diff_text = (
             f"--- a/{case['impl']}\n+++ b/{case['impl']}\n"
@@ -150,7 +159,7 @@ class TestModelLayerLive:
             + "".join(f"+{ln}" for ln in case["test_code"].splitlines(keepends=True))
         )
         pr = PullRequest(forge="github", number=1, repo="o/r", head_sha="a" * 40)
-        doc = analyze(pr, {case["impl"], case["test"]}, diff_text, _config())
+        doc = analyze(pr, {case["impl"], case["test"]}, diff_text, live_config)
         assert doc.findings, f"MODEL LAYER MISS: {case['id']} ({case['origin']})"
         severities = [f.severity for f in doc.findings]
         assert any(s in ("Critical", "Major") for s in severities), severities

@@ -1,0 +1,29 @@
+{
+  "scope": "Full live suite before feature13 candidate and readiness-body repair",
+  "passed": 668,
+  "skipped": 0,
+  "failed": 0,
+  "junit_sha256": "999c10f82f69c04082cebf0e96d026e41aff2f50a78b86a7f58f7d07fb314a89",
+  "suites": [
+    {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "668",
+      "time": "48.220",
+      "timestamp": "2026-09-04T20:53:43.431646-07:00"
+    }
+  ],
+  "source_sha256": {
+    "tests/test_planted_diffs.py": "c009d2f9710fca0ce76b7fcb501598f5e15d5d690f2a42417d78dc0a258aae56",
+    "tests/test_fl4write.py": "1e725fb10aca08e75afb9eab209cbcc6f8bbcb82fff6a56beecbf70d16ba0467",
+    "tests/test_gauntlet_fixes.py": "6a8a33c39c72f3666185f6c2db947332271339384f68c652a58e94f02eedcede"
+  },
+  "live_cases": [
+    "test_model_finds_it[median-unsorted]",
+    "test_model_finds_it[off-by-one-boundary]",
+    "test_model_finds_it[inverted-comparison]"
+  ],
+  "note": "Configured real model route; full test evidence, not a fresh zero-defect recon round."
+}

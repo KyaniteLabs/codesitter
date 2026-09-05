@@ -639,3 +639,21 @@ cover restart-to-action behavior, malformed identities, and counterevidence.
 The proposed unknown-severity crash was rejected: an existing membership
 guard already prevents it. Independent review approved all three repairs.
 Full suite: 665 passed, 3 live-model skips. Exhaustive clean rounds remain 0/3.
+
+## 62. Verify the live evaluation and the published body (2026-09-05)
+
+The opt-in model tests pointed at a unit-test endpoint. Once connected to
+the configured real route, isolated cases passed but the full suite failed:
+fleet-config tests leaked dummy credentials through os.environ.setdefault.
+Use pytest's environment restoration, require explicit FL4WRITE_EVAL=1, and
+load runtime credentials only for the live lane. The nested README check
+also assumed some tests must be skipped; its parser now accepts zero skips.
+
+The first real readiness sweep computed 77/100 but published no score in
+its audit issue. End-to-end verification must inspect the delivered body,
+not infer publication from a log. Complete audit bodies now include the
+score and its evidence limitation. A report-version check refreshes old
+completed issues once, without rescanning or fixing before publication
+succeeds. Four behavioral cases pin complete/partial bodies and successful/
+failed legacy refresh. The isolated release passes 672 tests with no skips,
+including real model calls. This does not certify an exhaustive audit round.
