@@ -3,13 +3,21 @@
 ## Current successor disposition — September 5
 
 This section supersedes operational status in the historical recovery record below.
+
+The original first-week checklist is reconciled: charter/history read, seat
+posted, duplicate configs verified absent, self-review cycle verified live,
+capability-grounded fix attempts inspected, comorbidity checked, and quality
+report posted. Those seven obligations are complete. The eighth, an hourly
+green cycle, remains blocked by the live alerts described below; process exit
+success alone does not close it. A completed organic fix is a separate pilot
+milestone, not a substitute for the original attempt-observation checkbox.
 Forgejo is canonical, GitHub mirrors main automatically, and the sole NUCBox
 runner has deployed releases a5d56df and c75392f. Tastecheck adoption was restored
 through its merged PR 40 and verified with a live cycle. Historical CI issue 14
 is closed on both hosts. Seat registration, quality and comorbidity updates were
 posted; org registration was delivered in org-bus commit 95e77db.
 
-The next independently approved repair release passes **672 tests with zero
+The deployed independently approved release cae36ee passes **672 tests with zero
 skips**, including real configured model calls. Source hashes and scope are in
 [RELEASE-VERIFICATION.json](RELEASE-VERIFICATION.json); approval is in
 [FRESH-ROUND-16.md](FRESH-ROUND-16.md). It repairs publication of readiness on
@@ -17,8 +25,11 @@ completed audit issues and the live evaluation harness. Candidate feature 13
 is excluded from this release.
 
 A real four-file audit completed on resonant-gifts at f2cd1ac, producing two
-findings and a computed readiness of 77/100. Its existing issue 7 still needs
-the approved report refresh before publication of that score can be claimed.
+findings and a computed readiness of 77/100. Its existing issue 7 now publishes
+that score, verified directly after the deployed reportversion2 refresh.
+Forgejo, its automatic GitHub mirror and the runner agree on cae36ee;
+CI33944631441 succeeded. The refresh rescanned zero files and raised no model
+or gatekeeper failures. The original findings still need quality adjudication.
 No organic fix PR has completed: nine attempts remain five nofix, one testfail,
 three error. A private 20-finding sample awaits the CEO's adjudication.
 
@@ -29,7 +40,7 @@ The consecutive clean-round counter remains **0/3**. Round-14 source findings
 are preserved in the ledger, without inventing per-finding closure.
 
 Fleet health is not alert-free: the last hourly receipt was 29 ok / 0 errors,
-but included an empty-diff PR owned by another desk and one model outage.
+but included unavailable PR diffs and model outages in two repositories.
 Tastecheck's then-current access failure was subsequently repaired and retested.
 Issue-lane scale proof, pilot fitness and public expansion remain unearned;
 GraphQL remains explicitly deferred. Original comment history is preserved by

@@ -1,5 +1,18 @@
 # Recovered historical audit ledger
 
+## Successor round 16 — September 5
+
+FRESH-ROUND-16.md independently approved the readiness and live-evaluation
+repairs, now deployed as cae36ee. Isolated full release:672 passed, zero skips;
+RELEASE-VERIFICATION.json binds the reviewed source. Real audit issue7 now
+contains readiness77/100, verified after version2 refresh without rescanning.
+
+Whole-project verdict remains NOT GREEN. Feature13 was rejected for shipment:
+R16-001 malformed baseline state reproduced; parent fixed it with five
+run-boundary cases (candidate20 tests pass). Authenticated fix/refresh and
+forge publication remain under implementation in a separate candidate.
+No feature deployment or exhaustive certification is claimed; clean count0/3.
+
 ## Successor round 15 — 2026-09-05
 
 Fresh recon: FRESH-ROUND-15.md. R15-001, R15-003 and R15-004 accepted,
