@@ -1,5 +1,17 @@
 # Recovered historical audit ledger
 
+## Successor round 15 — 2026-09-05
+
+Fresh recon: FRESH-ROUND-15.md. R15-001, R15-003 and R15-004 accepted,
+reproduced, repaired and pinned in tests/test_round15.py. R15-002 rejected:
+the existing severity-membership guard prevents the claimed crash; the
+counterevidence is executable. Independent repair/config approval:
+ROUND15-REPAIR-REVIEW.md. Full suite: 665 passed, 3 live-model skips;
+ROUND15-VERIFICATION.json binds source and JUnit hashes. Round NOT GREEN
+because it found valid defects. Consecutive clean rounds remain 0/3.
+
+## Initial recovery record
+
 Successor repair result: six classes fixed locally, 45 new cases, full suite
 650 passed / 3 live-model skips. Scoped independent re-review APPROVED.
 See RECOVERY-REPORT.md and REVIEW-FOLLOWUP.md. This does not close round 14

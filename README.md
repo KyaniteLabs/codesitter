@@ -73,7 +73,7 @@ no fleet repo has enabled it yet — luna F3-004 doc truth).
 Current fleet state (2026-09-04; recovered [audit ledger](docs/pm-recovery/ROUND-LEDGER.md)): **129 central configs**
 across GitHub + Forgejo cycling ~100 repos/hour on the nucbox runner
 (`run-cycle.sh`, hourly crontab, single-host law — LEARNINGS #17). **500+
-tests green** (650 passing + 3 skipped in the local successor recovery;
+tests green** (665 passing + 3 skipped in the local successor recovery;
 the round-13 desk pass reported 605 passing). The live model tests are skipped
 without credentials. Round 14 remains open; no exhaustive certification is
 claimed. CI on every push. Quality loop on

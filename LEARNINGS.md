@@ -625,3 +625,17 @@ construction, rejected-row accounting before completion, and one canonical
 timestamp validator. Public lifecycle keys must not encode credentials
 reversibly. Preserve the source reproduction with each repair; commit messages
 and old green tests cannot substitute for that evidence.
+
+## 61. Optional corruption and uncertain remote identity (2026-09-05)
+
+Fresh round 15 reopened optional fix flags: normalization was nested inside
+the unrelated malformed-required-field branch. Normalize every retained row.
+Persisted source lines also accepted booleans and nonpositive integers;
+invalid evidence now resets sweep completion. Issue triage repeated the
+review-comment identity bug: a malformed marker row looked absent and could
+trigger a second comment. Uncertain identity now defers before model spend,
+preserves retry membership, and cannot advance the watermark. Fifteen tests
+cover restart-to-action behavior, malformed identities, and counterevidence.
+The proposed unknown-severity crash was rejected: an existing membership
+guard already prevents it. Independent review approved all three repairs.
+Full suite: 665 passed, 3 live-model skips. Exhaustive clean rounds remain 0/3.

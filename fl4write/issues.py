@@ -191,6 +191,9 @@ def _row_body_author(c) -> tuple[int, str, str] | None:
     login = user.get("login") if isinstance(user, dict) else None
     if isinstance(cid, bool) or not isinstance(cid, int) or cid <= 0 \
             or not isinstance(body, str) or not isinstance(login, str):
+        if isinstance(body, str) and any(marker in body for marker in
+                ("fl4write-triage:v1", "codesitter-triage:v1")):
+            raise ForgeError("triage marker has uncertain comment identity")
         return None
     return cid, body, login
 
@@ -281,8 +284,16 @@ def run_issues_cycle(config: RepoConfig, st: dict[str, Any], forge: ForgeAdapter
         # F14-B004: an attacker-planted marker must not schedule recurring
         # MODEL triage — quarantine before the LLM call (own-marker issues
         # still flow to the normal update path below)
-        if not config.shadow and num > 0 and _foreign_triage_exists(forge, config.repo, num) \
-                and find_existing_triage(forge, config.repo, num, config.bot_login) is None:
+        try:
+            foreign_marker = not config.shadow and num > 0 \
+                and _foreign_triage_exists(forge, config.repo, num) \
+                and find_existing_triage(forge, config.repo, num, config.bot_login) is None
+        except ForgeError as exc:
+            log.warning("issue #%s: marker inspection unavailable: %s", num, exc)
+            summary["errors"] += 1
+            retry.add(num)
+            continue
+        if foreign_marker:
             summary["quarantined"] += 1
             log.warning(
                 "issue #%s: foreign triage marker quarantined pre-triage "

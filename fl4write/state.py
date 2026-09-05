@@ -238,7 +238,9 @@ def _normalize_aux(data: dict[str, Any]) -> dict[str, Any]:
                                            and isinstance(r.get("msg"), str)
                                            and isinstance(r.get("id"), int)
                                            and not isinstance(r.get("id"), bool)
-                                           and isinstance(r.get("line"), int))]
+                                           and isinstance(r.get("line"), int)
+                                           and not isinstance(r.get("line"), bool)
+                                           and r["line"] > 0)]
             if bad:
                 # F13-C005/F14-C002: malformed findings mean the sweep's own
                 # records are untrustworthy — the FULL reset set (matching
@@ -253,13 +255,13 @@ def _normalize_aux(data: dict[str, Any]) -> dict[str, Any]:
                             "omni_unscannable", "omni_unfetchable",
                             "omni_truncated_seen"):
                     out.pop(key, None)
-                # F14-C003: optional per-row fix flags are truthiness-READ —
-                # a persisted "false" string would suppress eligible fixes
-                out["omni_findings"] = [
-                    {k: v for k, v in _r.items()
-                     if k not in ("fix_attempted", "fix_stale")
-                     or isinstance(v, bool)}
-                    for _r in out.get("omni_findings", [])]
+            # R15-001: normalize flags even when every required field is
+            # valid. Optional corruption must not silently suppress fixes.
+            out["omni_findings"] = [
+                {k: v for k, v in _r.items()
+                 if k not in ("fix_attempted", "fix_stale")
+                 or isinstance(v, bool)}
+                for _r in out.get("omni_findings", [])]
     # F13-C004: the publication-retry counter is consumed by raw int()
     v = out.get("omni_pub_fail")
     if v is not None:

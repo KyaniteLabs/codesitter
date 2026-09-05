@@ -1,7 +1,11 @@
 repo: KyaniteLabs/tastecheck
 forges:
-  github:
+  forgejo:
     role: primary
+    api_base: https://git.kyanitelabs.tech/api/v1
+    token_env: CODESITTER_FORGEJO_TOKEN
+  github:
+    role: mirror
     api_base: https://api.github.com
     token_env: CODESITTER_GITHUB_TOKEN
 model:
@@ -24,12 +28,13 @@ severity_vocab: [Critical, Major, Minor, Nit]
 tone: balanced
 tone_fork_override: balanced
 fix:
-  enabled: true
+  enabled: false  # Forgejo fix execution is not supported in v1.
   merge_own_prs: false
   max_fix_depth: 2
   fork_policy: comment-only
   dependency_policy: skip-patch
 shadow: false
+bot_login: fl4write
 post_merge:
   enabled: true
   initial_lookback_h: 24

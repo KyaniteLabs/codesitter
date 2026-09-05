@@ -1,0 +1,38 @@
+{
+  "observed_at": "2026-09-05T03:49:08.791543+00:00",
+  "passed": 665,
+  "skipped": 3,
+  "failures": 0,
+  "junit_sha256": "9e3ba2c1f55cb7c048234c0d7bf7be61fb4ee9345309b76e3c74644b978bdc3a",
+  "junit_summary": [
+    {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "3",
+      "tests": "668",
+      "time": "16.291",
+      "timestamp": "2026-09-04T20:43:44.402005-07:00",
+      "hostname": "Mac-90.lan"
+    }
+  ],
+  "source_sha256": {
+    "fl4write/issues.py": "eeff5acd62b8abc3bcfca45261e937ca41f695b86b4881b68923eafc023c9e84",
+    "fl4write/state.py": "173f28e93cdbb05f07ed58156500a645dad081a877cb504e91c095b1de2d8a0b",
+    "tests/test_round15.py": "cabb2c02bc0a117c0b944fb177dd995304ee6fe21eaa7c06a204407918befd8c",
+    ".fl4write.yaml": "f0609af277bf93f0c11ec77ecaf118e55c8b6f4b15fce461f047b93a904d75b9",
+    "fl4write.fl4write.yaml": "f0609af277bf93f0c11ec77ecaf118e55c8b6f4b15fce461f047b93a904d75b9",
+    "tastecheck.fl4write.yaml": "cf10e4258f3a1d92f5ea45bda5ed655be8e7f92a68d0d611657c34a571e1df24"
+  },
+  "review": "ROUND15-REPAIR-REVIEW.md",
+  "verdict": "APPROVE scoped repairs and authority config",
+  "accepted_findings": [
+    "R15-001",
+    "R15-003",
+    "R15-004"
+  ],
+  "rejected_findings": [
+    "R15-002"
+  ],
+  "clean_rounds": 0
+}
